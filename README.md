@@ -140,3 +140,7 @@ provider; neither leaves the host unless those providers are cloud services. Tur
 sessions in the serving profile with its full toolset. Command approvals raised during a voice turn
 are answered with `approval_choice` (deny by default); clarifying questions are cancelled. No
 telemetry, no third-party network calls of its own, no self-update.
+
+## License
+
+[MIT](LICENSE)
