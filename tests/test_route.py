@@ -609,3 +609,15 @@ def test_loopback_base_url_prefers_the_setting_then_the_listener():
     _Adapter._host = "192.168.1.5"
     assert loopback_base_url(_Adapter()) == "http://192.168.1.5:9000"
     assert loopback_base_url(object()) == "http://127.0.0.1:8642"
+
+
+def test_wire_on_a_frozen_router_warns_instead_of_raising(caplog):
+    """Enabling the plugin while the gateway runs reaches the factory after AppRunner.setup() froze
+    the router: that must be a clear warning (restart to register), never a traceback."""
+    app = web.Application()
+    app.router.freeze()
+    route = ConverseRoute(settings_getter=lambda key, default=None: default, base_url_resolver=lambda: "")
+    with caplog.at_level("WARNING"):
+        assert route.wire(app) is False
+    assert "restart the gateway" in caplog.text
+    assert not any(r.resource.canonical == "/v1/audio/converse" for r in app.router.routes())

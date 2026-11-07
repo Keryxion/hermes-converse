@@ -82,8 +82,15 @@ class ConverseRoute:
         self._base_url = base_url_resolver
         self._profile_name = profile_name
 
-    def wire(self, app: web.Application) -> None:
+    def wire(self, app: web.Application) -> bool:
+        """Add the route; False when the API server's router is already frozen (the plugin was
+        enabled while the gateway was running), in which case a restart registers it."""
+        if getattr(app.router, "frozen", False):
+            logger.warning("converse: the API server is already running; restart the gateway to "
+                           "register %s", ROUTE_PATH)
+            return False
         app.router.add_get(ROUTE_PATH, self.handle)
+        return True
 
     def _settings(self) -> Settings:
         return load_settings(self._settings_getter)
@@ -293,7 +300,7 @@ def make_platform_factory(ctx: Any) -> Callable[[Any, Any], None]:
 
         route = ConverseRoute(settings_getter=ctx.get_config, base_url_resolver=_base_url,
                               profile_name=getattr(ctx, "profile_name", "default"))
-        route.wire(app)
-        logger.info("converse: %s registered on the API server", ROUTE_PATH)
+        if route.wire(app):
+            logger.info("converse: %s registered on the API server", ROUTE_PATH)
 
     return factory
