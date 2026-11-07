@@ -1,0 +1,25 @@
+name: Code owner approval
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review]
+  workflow_run:
+    workflows: [Code owner review]
+    types: [completed]
+  workflow_dispatch: # re-checks every open PR
+  schedule:
+    - cron: '*/30 * * * *' # backstop if a review's relay didn't run
+
+concurrency:
+  group: code-owner-approval-${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha || 'all' }}
+
+permissions:
+  statuses: write
+  pull-requests: read
+  contents: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: DTTerastar/code-owner-approval@v1
