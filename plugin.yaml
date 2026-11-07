@@ -1,0 +1,74 @@
+# hermes-converse — server-owned realtime voice over one WebSocket on the Hermes API server.
+name: hermes-converse
+version: 0.1.0
+manifest_version: 2
+api_version: 1
+kind: standalone
+description: >-
+  Off-device realtime voice: GET /v1/audio/converse on the API server. A client streams
+  microphone PCM16 up one WebSocket; the plugin owns VAD, endpointing, STT, the agent turn
+  (through the public Runs API, so the session, tools and approvals stay Hermes's) and
+  per-sentence streaming TTS back down the same socket, with barge-in. Built for an ESP32
+  or a browser that has a microphone and a speaker and nothing else.
+author: "Darrell (@DTTerastar)"
+license: MIT
+homepage: https://github.com/DTTerastar/hermes-converse
+tags: [voice, api_server, realtime, websocket, esp32]
+requires_hermes: ">=0.21.6"
+# The VAD and the PCM resampler are numpy + PyAV; everything else is Hermes core or stdlib.
+python_dependencies:
+  - "numpy>=2,<3"
+  - "av>=14,<20"
+provides_tools: []
+provides_hooks: []
+config_schema:
+  name:
+    type: str
+    default: "Sakura"
+    label: "Assistant name"
+    description: "Name the voice prompt uses when a client's start frame carries none."
+  voice_model:
+    type: str
+    default: ""
+    description: "Voice-only model override sent with every run ('' = the gateway default)."
+  voice_provider:
+    type: str
+    default: ""
+    description: "Provider for the voice-only model override ('' = the configured one)."
+  turn_timeout_seconds:
+    type: float
+    default: 120
+    description: "A turn that produces nothing for this long is stopped and reported as an error."
+  playback_tail_timeout_seconds:
+    type: float
+    default: 45
+    description: "How long to hold VAD/quiet after turn_done waiting for the client's drained frame."
+  max_tts_chars_per_turn:
+    type: int
+    default: 1500
+    description: "Safety cap on how much of one reply is spoken aloud."
+  stop_phrases:
+    type: list
+    default: ["stop", "cancel"]
+    description: "Session mode: saying exactly one of these ends the exchange instead of reaching the agent."
+  end_phrases:
+    type: list
+    default: ["over and out"]
+    description: "Session mode: a reply ending with one of these signs off (turn_done.expects_more=false)."
+  endpoint_model:
+    type: str
+    default: ""
+    description: "Smart Turn v3 semantic endpointer: any value enables it (needs onnxruntime, transformers, huggingface_hub)."
+  endpoint_threshold:
+    type: float
+    default: 0.5
+    description: "P(turn complete) at or above which Smart Turn commits the utterance."
+  approval_choice:
+    type: str
+    choices: [deny, once]
+    default: deny
+    description: "What a voice turn answers when the agent asks for a command approval."
+  api_base_url:
+    type: str
+    default: ""
+    description: "Loopback base URL of this API server ('' = derived from the listener, e.g. http://127.0.0.1:8642)."

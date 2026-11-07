@@ -1,0 +1,11 @@
+# Tooling only. Runtime dependencies are declared in plugin.yaml (python_dependencies), so Hermes's
+# package manager admits them alongside core; this file never turns the plugin into a package.
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--import-mode=importlib"
+asyncio_mode = "auto"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
