@@ -12,7 +12,7 @@ description: >-
   or a browser that has a microphone and a speaker and nothing else.
 author: "Darrell (@DTTerastar)"
 license: MIT
-homepage: https://github.com/DTTerastar/hermes-converse
+homepage: https://github.com/Keryxion/hermes-converse
 tags: [voice, api_server, realtime, websocket, esp32]
 requires_hermes: ">=0.21.6"
 # The VAD and the PCM resampler are numpy + PyAV; everything else is Hermes core or stdlib.

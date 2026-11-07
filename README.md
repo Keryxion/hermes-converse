@@ -14,7 +14,7 @@ turns on one socket.
 ## Install
 
 ```bash
-hermes plugins install DTTerastar/hermes-converse
+hermes plugins install Keryxion/hermes-converse
 hermes plugins enable hermes-converse
 hermes converse doctor      # checks audio libraries, STT/TTS config, the API server and its key
 hermes gateway restart      # the route is registered when the API server platform connects
