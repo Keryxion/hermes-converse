@@ -1,242 +1,216 @@
 # Arya client tracing
 
-## Goal
+## Goal and scope
 
 Show one wake election across all participating Aryas, then follow the winner
-into capture, transcription, generation, playback, and drain. A four-device
-timeline must show four claims, one grant, three denials, and only the granted
-activation sending microphone audio. A three-device election has the same shape
-with two denials.
+through microphone audio, the voice turn, playback, and drain. With four devices
+in one window, show four claims, one server grant, three server denials, and only
+the client that accepts the grant sending activation audio. Repeat with three
+devices and two denials.
 
 This supplements [the client protocol](client.md), especially sections 4 and 8,
-and [server lifecycle responsibilities](server.md). It specifies instrumentation
-to implement; it does not claim every client already emits these spans.
+and [server responsibilities](server.md). It specifies implementation work for
+macOS, iOS, Echo, ESP32, and Converse; it does not claim current clients comply.
+macOS and iOS already have wake/turn tracing and optional export, but identity,
+terminal outcomes, and audio correlation need consistent coverage. Reuse existing
+exporters, service names, and connection/turn spans.
 
-At the time of writing, macOS emits a `wake` span with claim ID, wake phrase,
-outcome, and decision latency, plus a client `turn` span. The server logs election
-IDs and decisions and emits `voice.turn` phase traces. The missing pieces are
-consistent device identity, cross-device election tracing, and a link from the
-winning wake claim to its activation. The iOS client also needs wake telemetry.
-Implement this contract on macOS, iOS, Echo, and ESP32; server observations give
-coverage for devices that cannot export OTLP directly.
-
-## What the timeline must distinguish
+## Required observations
 
 | Observation | Meaning |
 |---|---|
 | Local detection | A device heard a wake phrase. |
-| Claim sent / received | The device asked to participate; the server received it. |
-| Server grant / denial | The server made a decision. |
-| Client grant / denial | The device received and accepted a matching decision before its deadline. |
-| Client timeout | The client abandoned its buffer. A later server grant does not undo that. |
-| First microphone PCM | This activation actually began streaming. |
-| User turn / reply | The activation progressed to a request and response. |
+| Claim sent / received | The client sent a claim; separately, the server received it. |
+| Server grant / denial | The server decided which claimant should respond. |
+| Client grant / denial | The client accepted a matching decision before its deadline. |
+| Client timeout | The client abandoned its buffer; a later grant cannot revive it. |
+| First successful PCM send / first PCM received | Audio actually left the client / reached the server. |
+| Voice turn / playback / drain | The request progressed to a reply and finished playing. |
 
-A server grant is not proof that the client received it or sent audio. A missing
-client span is not proof that the device did not detect a wake word. A winner
-that times out can correctly produce **zero** progressing activations. Losing a
-normal election is not an error.
+A server grant does not prove delivery, client acceptance, or audio transmission.
+A successful WebSocket send does not prove receipt by the peer. Missing client
+telemetry does not prove that a device heard nothing. A winner that times out
+can correctly produce zero progressing activations. Losing an election is normal.
+
+These observations may be spans, events on existing spans, or structured records
+with the IDs below. No particular span tree or tracing SDK is required.
 
 ## Identity and correlation
 
-Every client span carries:
+Wake records and first-PCM observations carry platform, server instance, socket
+session, and claim identity when applicable. Use these attributes consistently:
 
 | Attribute | Value |
 |---|---|
 | `arya.client.kind` | `macos`, `ios`, `echo`, or `esp32`. |
-| `arya.device.name` | Configured device label, e.g. `MacBook Pro`. |
-| `arya.assistant.name` | Configured assistant name, e.g. `Arya`. |
-| `arya.recipient_id` | Opaque named-device ID from `ready`, when present. |
 | `arya.session_id` | Socket session ID from `ready`. |
-
-Resource attributes include `service.name`, `service.version`, and
-`service.instance.id`. The instance ID identifies this installation, is persisted
-locally, and survives reconnects; it is not a hardware serial number, MAC address,
-API key, or device name. Keep service name configurable. Use attributes rather
-than a different service name for every room/device.
-
-Wake spans additionally carry:
-
-| Attribute | Value |
-|---|---|
 | `arya.wake.claim_id` | Client-generated claim ID, exactly as sent. |
-| `arya.wake.word` | Exact configured wake phrase used for election grouping. |
-| `arya.wake.election_id` | Server-generated ID shared by all claims in one election, when known. |
-| `arya.wake.outcome` | Terminal client outcome defined below. |
-| `arya.wake.confidence` | Reported confidence, if available. |
-| `arya.wake.volume` | Reported normalized RMS, if available. |
-| `arya.wake.heard_at_unix_ms` | Detection timestamp, if available. |
-| `arya.wake.decision_ms` | Monotonic elapsed time from sending the claim to its terminal outcome. |
+| `arya.wake.election_id` | Authoritative server election ID, when known. |
+| `arya.wake.word` | Exact wake phrase used for election grouping. |
 
-A claim is uniquely identified by server instance, socket session, and claim ID.
-IDs such as `wake-1` can repeat on other sockets. Never merge claims by claim ID
-alone. Device names are display labels, not unique trace keys. Server arbitration
-`device_id` and named-device `recipient_id` are distinct namespaces; record their
-mapping when available, never assume they are interchangeable.
+A claim's key is **(server instance, session_id, claim_id)**. Claim IDs such as
+`wake-1` can repeat on other sockets. Device names are display labels, not keys.
+Server arbitration `device_id` identifies the requesting socket; named-device
+`recipient_id` from `ready` is a separate namespace. Record their mapping on the
+server session record when available; never assume they are interchangeable.
 
-Election IDs are authoritative server identifiers. Do not invent a shared
-election ID by rounding timestamps or grouping by wake phrase. Claims arriving
-after a collection window closes belong to a new election even if people think
-they heard the same utterance.
+Keep existing platform `service.name` and version attributes. Configured device
+and assistant labels, `recipient_id`, and an optional persistent opaque
+installation ID belong on the resource or session record. They need not repeat
+on every diagnostic span. An installation ID must not be a hardware identifier,
+credential, or device name. No new service-name setting is required.
 
-## Client wake span
+Use server-issued election IDs, scoped by server instance. Never infer an
+election from rounded timestamps or phrase alone. A claim after a collection
+window closes belongs to a new election even if it heard the same utterance.
 
-Keep the existing span name `wake`. Open it at local detection/claim preparation,
-record `wake.claim.sent` immediately before sending, and end it exactly once at
-the decision, timeout, disconnect, cancellation, or buffer failure.
+## Client wake handling
 
-Terminal `arya.wake.outcome` values:
+Reuse the existing `wake` span where present. Record detection and
+`wake.claim.sent` at the actual claim send, then exactly one terminal outcome:
 
-- `granted`: matching grant accepted before the local deadline.
-- `denied`: matching denial accepted before the local deadline.
-- `timeout`: no accepted decision within 1000 ms.
-- `disconnected`: socket lost while pending.
-- `cancelled`: local Stop, mute, new configuration, or explicit Talk abandoned it.
-- `buffer_overflow`: insufficient space to preserve all buffered audio.
-- `bad_wake`: server rejected the claim.
+| `arya.wake.outcome` | Meaning |
+|---|---|
+| `granted` | Matching grant accepted before the deadline. |
+| `denied` | Matching denial accepted before the deadline. |
+| `timeout` | No accepted decision within 1000 ms. |
+| `disconnected` | Socket lost while pending. |
+| `cancelled` | Stop, mute, configuration change, or explicit Talk abandoned the claim. |
+| `buffer_overflow` | The client could not preserve the buffered audio. |
+| `bad_wake` | The server rejected the claim. |
 
-Record decision events with the echoed claim ID and phrase, and the server's
-winner device ID when supplied. Record buffered sample count/duration and the
-configured 1000 ms deadline. Missing ranking inputs stay absent, not zero.
+Record `arya.wake.decision_ms` using monotonic elapsed time from claim send to
+terminal outcome; omit it if no claim was sent. Include the echoed claim ID and
+phrase, winner device ID when supplied, buffered sample count/duration, and the
+1000 ms deadline. Preserve available confidence, normalized RMS volume, and
+`heard_at` Unix milliseconds; missing ranking inputs stay absent, not zero.
 
-Late or mismatched decisions must not change the terminal outcome, release PCM,
-or create a turn. Emit a diagnostic `wake.decision.ignored` event on a short
-diagnostic span with the incoming claim ID, current claim ID if any, and reason
-(`late`, `claim_mismatch`, `phrase_mismatch`, or `no_pending_claim`). Do not
-reopen an ended span.
+Late or mismatched decisions never change a terminal outcome, release an
+abandoned buffer, or create a turn. Record `wake.decision.ignored` with incoming
+and current claim IDs (when present), session, and reason: `late`,
+`claim_mismatch`, `phrase_mismatch`, or `no_pending_claim`. Use an existing
+connection record or diagnostic event; do not reopen a completed span.
 
-Use monotonic time for deadlines and durations. Use epoch timestamps for spans
-and `heard_at`. Record the existing handshake clock offset/RTT for cross-device
-comparisons; collector arrival time and unsynchronized client clocks cannot
-establish the winner.
+Use monotonic clocks for local deadlines and durations. Preserve measured epoch
+timestamps for spans and `heard_at`. Clock offset/RTT collection is optional.
+Election/session/claim IDs and server arrival order explain the recorded decision
+without synchronized clocks. Unsynchronized `heard_at` values can affect the
+existing tie-break; tracing records the values used rather than correcting them.
 
-## Server election trace
+## Server election and claim records
 
-The server must emit one `voice.wake.election` root span per actual collection
-window, with one `voice.wake.claim` child per received valid claim. Use the same
-trace for every claimant; separate unrelated roots are insufficient for the
-requested cross-device view.
+Record one election summary per actual collection window and every received
+claim and decision under its election ID. An election span with per-claim events,
+or existing structured records joined by election ID, is sufficient. Optional
+`voice.wake.election` and `voice.wake.claim` spans may improve visualization;
+a shared root and per-claim child spans are not prerequisites.
 
-The election span carries:
+The election summary includes server instance, election ID, enabled flag,
+policy, configured window, start/close times, duration, received/eligible/
+withdrawn counts, and the winning device and compound claim key, if any.
+Retain withdrawn claims in telemetry even when removed from live election state.
 
-- Election ID, server instance, enabled flag, policy, and configured window.
-- Number of received claims, number still eligible at decision time, and number
-  withdrawn by disconnect/cancellation.
-- Winning arbitration device ID and winning compound claim identity, if any.
-- Start/close times and decision duration.
+Each claim record includes session/claim IDs, arbitration device ID, available
+ranking inputs, server arrival order, outcome (`granted`, `denied`, `withdrawn`,
+or `error`), and decision-send result (`sent`, `failed`, or `not_attempted`).
+Denials include the winning device ID. Record the ranking tier that decided the
+winner: confidence, volume, detection time, or arrival order. Use the arbitration
+inputs and result; tracing must never rerank claims or change the decision.
 
-Each claim child carries the client session, claim ID, named-device identity
-when known, arbitration device ID, available ranking inputs, arrival order,
-server outcome (`granted`, `denied`, `withdrawn`, or `error`), and decision-send
-result. A denial records the winning device ID. Include why ranking resolved:
-confidence, volume, detection time, or arrival order. Preserve missing inputs
-as missing. Record the data already used by arbitration; tracing must not rerank
-or change its decision.
+When arbitration is disabled or the legacy policy grants immediately, record a
+single-claim summary marked as an immediate grant with its enabled flag and
+policy. Assign a distinct correlation ID; do not imply a ranked collection
+window occurred. Separate elections and immediate grants must remain distinct
+from multiple grants within one ranked election.
 
-When arbitration is disabled, emit a single-claim election marked disabled and
-an immediate grant. Multiple grants from independent windows or disabled
-arbitration must be visibly distinct from multiple grants in one ranked election.
+## Additive decision metadata
 
-## Joining clients to the server
+Current wake decisions echo `claim_id` and `wake_word`; a denial may carry
+`winner_device_id`. Adding the following fields to `wake_grant` and `wake_deny`
+is implementation work, not existing wire coverage:
 
-The current wake frames guarantee claim ID and phrase, but do not yet provide
-an election trace context. Implement these additive tracing fields on
-`wake_grant` and `wake_deny`:
-
-- `election_id`: the server's election ID.
-- `traceparent`: W3C context of that claimant's `voice.wake.claim` span.
+- `election_id`: the server ID for this claim's election or immediate-grant record.
 - `device_id`: the requesting socket's arbitration device ID.
+- Optional `traceparent`: valid W3C context for the server election or claim record.
 
-This is tracing metadata, not contract negotiation or permission to stream.
-Existing clients may ignore it. Missing or malformed metadata never blocks the
-existing claim/grant flow.
+`device_id` always identifies the claimant. Existing `winner_device_id` identifies
+the winner on a denial and may differ from the claimant. Do not rename it or use
+`device_id` as an alias for the winner. On a grant, the claimant is the winner.
 
-Clients finish the measured `wake` span after the decision and export it as a
-child of the supplied server claim context, retaining original detection and
-decision timestamps. A client can start earlier than its server parent because
-it measured local detection and transit; durations must not be clamped to hide
-that. Before receiving context, a timeout/disconnect exports an independent
-span with its compound claim identity for correlation with the server's claim.
-Never fabricate a parent or attach a later decision to a different activation.
+Clients correlate using session/claim IDs and add election ID when available.
+Missing or malformed tracing fields never block the existing claim/grant flow.
+Optional `traceparent` may add a span link where supported. Preserve measured
+timestamps; never rewrite live trace IDs. Retrospective parenting, delayed span
+construction, and SDK-specific plumbing are not required. A timeout can remain
+correlated by its compound claim key even if no decision metadata arrives.
 
-If an exporter cannot set a parent retrospectively, use an OTEL span link.
-Do not replace trace IDs manually on a live SDK span.
+## From accepted grant to voice turns
 
-## Only the winner moves on
+Record `wake.audio.started` on the client's first successful PCM send for the
+activation, from the actual send path, with sample count and accepted session/
+claim/election IDs. Record first PCM received separately on the server, with
+session and known claim/election IDs. Reuse connection or turn records; new
+activation spans are not required.
 
-The first microphone send after an accepted grant emits
-`wake.audio.started` on an activation span, with the winning session/claim/
-election IDs and sample count. This observation must come from the actual
-send path, not the grant handler.
+Keep the accepted claim/election IDs on existing client `turn` and server
+`voice.turn` records across follow-ups and barge-ins until standby or activation
+end. A fresh wake detection gets a new claim; a follow-up does not. Keep capture,
+endpoint/STT, thinking/working, first reply audio, interruption, `turn_done`,
+and actual speaker drain visible. `turn_done` ends transmission, not playback.
 
-Create a `voice.activation` server span when first PCM is actually received.
-Associate it with the last accepted wake decision for that connection and the
-election trace. Mark `activation.source` as `wake`, `manual`, `continuous`,
-or `outbound`. The server can know it sent a grant; only the client knows
-whether it accepted that grant before its deadline.
+Distinguish sources with `activation.source`: `wake`, `manual`, `continuous`,
+or `outbound` (temporary interruption monitoring for server-originated output).
+Manual, continuous, and outbound activity must not inherit an unrelated wake
+claim. The server knows its own decision and received PCM, not whether a client
+accepted a grant on time. Without client observations, label that acceptance
+unknown; do not infer it from audio or from the most recent grant alone.
 
-Link the client's existing `turn` span and server `voice.turn` spans to this
-activation/election. Follow-up turns and barge-ins keep the activation's wake
-identity until standby; they do not manufacture fresh wake claims. A client
-that stays idle after denial must have no new activation.
+Denied or expired claims send no activation audio. Record violations as
+`wake.audio.unexpected` with known session/claim identity. Separate them from
+an already-open activation, explicit Talk, continuous input, or outbound
+monitoring. If the source is unknown, report that uncertainty. The server accepts
+noncooperating audio; tracing observes this behavior and does not enforce a gate.
 
-Record unexpected PCM after a denied/expired activation as a diagnostic
-`wake.audio.unexpected` with device and claim identity. Distinguish it from
-audio belonging to an already-open activation, explicit Talk, continuous mode,
-or outbound playback monitoring. The server currently accepts noncooperating
-audio; tracing must report this honestly rather than imply it enforces the gate.
+## Export and bounds
 
-Keep capture, endpoint/STT, thinking/working, first reply audio, interruption,
-`turn_done`, and actual speaker drain visible. `turn_done` means transmission
-finished, not that the speaker is quiet.
+Reporting is configurable and off unless explicitly enabled. Reuse each
+platform's existing OTLP enable/disable and collector destination settings;
+use deployment configuration for embedded clients. Server observations cover
+received claims from devices without direct export, but cannot prove their local
+outcomes. Forwarding client observations over an authenticated socket requires
+a separately specified transport; do not assume it exists.
 
-## Export and operational behavior
-
-Reporting is configurable and disabled by default unless explicitly configured.
-Expose enable/disable and collector destination on clients with Settings; support
-deployment configuration for embedded clients. Preserve each platform's existing
-OTLP configuration. Constrained clients may send structured observations over
-their authenticated socket for server-side export; that transport must be
-specified before implementation, not assumed to exist.
-
-Telemetry is asynchronous, bounded, and best effort. Collector failure must never
-block the audio thread, shift the election window, extend the 1000 ms deadline,
-or change grant/deny behavior. Retain terminal wake outcomes when tracing is
-enabled; if sampling is used, keep an election and its children together rather
-than independently sampling away the losers.
+Telemetry is asynchronous, bounded, and best effort. Bound queues, batches,
+retries, and shutdown flushing; drop telemetry on overflow rather than delaying
+voice. Collector failure must never block audio, shift the election window,
+extend the 1000 ms deadline, or change grant/deny behavior. Record terminal
+outcomes when enabled, subject to these bounds; report drops when feasible.
+Sampling strategy and dashboard design are optional follow-ups, not prerequisites.
 
 Do not export PCM, transcripts, reply text, credentials, authorization headers,
-full credential-bearing URLs, or hardware identifiers. Export counts, durations,
-configured display names, exact configured wake phrases, and opaque correlation
-IDs. These IDs belong on spans/logs, not high-cardinality metric labels.
+credential-bearing URLs, or hardware identifiers. Counts, durations, configured
+labels/wake phrases, and opaque correlation IDs are sufficient. Keep correlation
+IDs on spans or records, not high-cardinality metric labels.
 
-Useful dashboard measurements are election claimant count, grant/deny/timeout
-counts, decision latency, grant-to-first-PCM latency, and unexpected-audio count.
-Show received, eligible, and successfully delivered decisions separately.
-A device table should show device name/platform, claim, reported signals,
-server decision, client outcome, and whether audio started.
+## Acceptance checks
 
-## Acceptance tests
-
-1. **Four simultaneous clients.** One phrase/window, four named clients with
-   different confidence scores. The trace contains one election, four claims,
-   one server grant, three server denials, four matching client outcomes, and
-   exactly one activation/first-PCM path. Repeat with three clients.
-2. **Winner proceeds.** Follow the grant through actual PCM send/receive,
-   transcript, agent run, playback, and drain. Correlation survives follow-ups
-   and barge-in without producing a second wake election.
-3. **Lost/delayed grant.** A server grant delivered after 1000 ms yields client
-   timeout and zero audio from that abandoned activation. Both observations are
-   visible; the late grant must not turn the timeout into a success.
-4. **Loss and mismatch.** Denied, stale-ID, wrong-phrase, buffer-overflow,
-   mute, and disconnect paths release no buffered activation audio. Terminal
-   spans end once; an ignored decision cannot reopen them.
-5. **Different windows and phrases.** Show distinct elections and explain why
-   two grants can be valid. Do not merge by timestamp proximity.
-6. **Disabled arbitration.** Mark immediate-grant behavior explicitly; do not
-   present it as a successful multi-device ranked election.
-7. **Absent device.** A client that detected but failed to send is visible only
-   through its local telemetry; do not fabricate a server claim or denial.
-8. **Collector failure / opt-out.** Repeat grant, denial, and timeout with
-   reporting disabled or a failing collector. Audio and arbitration behavior
-   remain identical; telemetry queues stay bounded.
+1. **Three/four clients.** One phrase/window yields one election with every
+   claim and decision: one server grant, the remaining server denials, matching
+   client outcomes, and exactly one first-PCM send/receive path into a voice turn.
+   Existing spans/events or structured records with correlation IDs suffice.
+2. **Follow-ups.** Follow the winner through reply and speaker drain, then a
+   follow-up and barge-in. Claim/election identity persists until standby without
+   a fresh election for each turn.
+3. **Lost/delayed grant.** A lost grant or one arriving after 1000 ms yields
+   client timeout and zero audio from that claim. Keep the server grant, send
+   result, timeout, and any ignored late decision distinct.
+4. **Abandoned claims.** Denial, stale ID, wrong phrase, buffer failure, mute,
+   and disconnect release no abandoned audio. Each pending claim ends once.
+5. **Separate elections.** Different phrases/windows and disabled/legacy
+   immediate grants remain distinct and explain otherwise valid multiple grants.
+6. **Missing telemetry.** A detection that never reaches the server exists only
+   in client telemetry. A missing client outcome remains unknown, not denied.
+7. **Unexpected audio.** A noncooperating loser sends PCM and remains visible;
+   manual, continuous, outbound, and already-open input are distinguishable.
+8. **Collector failure / opt-out.** Grant, denial, and timeout behave identically
+   with export off or a failing collector; queues and retries stay bounded.
