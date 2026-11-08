@@ -227,3 +227,91 @@ async def test_wake_signal_higher_confidence_wins_through_the_driver():
     assert len(h2.run_calls) == 1
     assert len(h1.run_calls) == 0
     assert h1.synth.spoken == []
+
+
+@pytest.mark.asyncio
+async def test_wake_handshake_granted_runs_turn():
+    """A device that won the wake-time election (wake_granted=True) proceeds straight to its turn
+    without a redundant transcript-time claim."""
+    arb = Arbitrator(bus=LocalBus(), policy=POLICY_WAKE_SIGNAL)
+    d1 = await arb.register("d1")
+    harness = _Harness(arbitrator=arb, device=d1, device_id="d1")
+    task = asyncio.create_task(harness.run(["hello"]))
+    harness.feed("hello", wake_word="arya", confidence=0.9, wake_granted=True)
+    await asyncio.sleep(0.4)
+    harness.session.stop()
+    await task
+    assert len(harness.run_calls) == 1
+    assert harness.run_calls[0].transcript == "hello"
+    # The turn completed (turn_done went out) even though the fake synth produced no PCM.
+    assert any(m.get("type") == "turn_done" for m in harness.sent)
+
+
+@pytest.mark.asyncio
+async def test_wake_handshake_denied_stays_silent():
+    """A device that lost the wake-time election (wake_granted=False) drops the utterance before
+    announcing it: no agent turn, no synthesis."""
+    arb = Arbitrator(bus=LocalBus(), policy=POLICY_WAKE_SIGNAL)
+    d1 = await arb.register("d1")
+    harness = _Harness(arbitrator=arb, device=d1, device_id="d1")
+    task = asyncio.create_task(harness.run(["hello"]))
+    harness.feed("hello", wake_word="arya", confidence=0.3, wake_granted=False)
+    await asyncio.sleep(0.4)
+    harness.session.stop()
+    await task
+    assert len(harness.run_calls) == 0
+    assert harness.synth.spoken == []
+    # The denied utterance never reached the client either.
+    assert all(m.get("type") != "transcript" for m in harness.sent)
+
+
+@pytest.mark.asyncio
+async def test_wake_handshake_different_wake_words_both_proceed():
+    """Different wake words elect independently: both granted devices run their turns."""
+    arb = Arbitrator(bus=LocalBus(), policy=POLICY_WAKE_SIGNAL)
+    d1 = await arb.register("d1")
+    d2 = await arb.register("d2")
+    h1 = _Harness(arbitrator=arb, device=d1, device_id="d1")
+    h2 = _Harness(arbitrator=arb, device=d2, device_id="d2")
+    t1 = asyncio.create_task(h1.run(["hello"]))
+    t2 = asyncio.create_task(h2.run(["hello"]))
+    h1.feed("hello", wake_word="arya", confidence=0.9, wake_granted=True)
+    h2.feed("hello", wake_word="echo", confidence=0.9, wake_granted=True)
+    await asyncio.sleep(0.4)
+    h1.session.stop()
+    h2.session.stop()
+    await t1
+    await t2
+    assert len(h1.run_calls) == 1
+    assert len(h2.run_calls) == 1
+    assert h1.synth.spoken == []
+    assert h2.synth.spoken == []
+    assert any(m.get("type") == "turn_done" for m in h1.sent)
+    assert any(m.get("type") == "turn_done" for m in h2.sent)
+
+
+@pytest.mark.asyncio
+async def test_no_wake_handshake_falls_back_to_claim_turn():
+    """Without a wake-time handshake decision (wake_granted=None), the driver claims at transcript
+    time as before — first_to_endpoint: d1 wins, d2 stays silent."""
+    arb = Arbitrator(bus=LocalBus(), policy="first_to_endpoint")
+    d1 = await arb.register("d1")
+    d2 = await arb.register("d2")
+    hold = asyncio.Event()
+    h1 = _Harness(arbitrator=arb, device=d1, device_id="d1", hold=hold)
+    h2 = _Harness(arbitrator=arb, device=d2, device_id="d2", hold=hold)
+    t1 = asyncio.create_task(h1.run(["hello"]))
+    t2 = asyncio.create_task(h2.run(["hello"]))
+    h1.feed("hello")
+    await asyncio.sleep(0.05)
+    h2.feed("hello")
+    await asyncio.sleep(0.05)
+    hold.set()
+    await asyncio.sleep(0.1)
+    h1.session.stop()
+    h2.session.stop()
+    await t1
+    await t2
+    assert len(h1.run_calls) == 1
+    assert len(h2.run_calls) == 0
+    assert h2.synth.spoken == []

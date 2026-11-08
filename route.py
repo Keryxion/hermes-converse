@@ -105,8 +105,15 @@ class ConverseRoute:
             if self._arbitrator is None:
                 from .arbitrate import LocalBus
 
-                self._arbitrator = Arbitrator(bus=LocalBus(), policy=settings.arbitrate_policy)
-                logger.info("converse: arbitration enabled (policy=%s)", settings.arbitrate_policy)
+                self._arbitrator = Arbitrator(
+                    bus=LocalBus(),
+                    policy=settings.arbitrate_policy,
+                    wake_window=settings.arbitrate_wake_window_seconds,
+                )
+                logger.info(
+                    "converse: arbitration enabled (policy=%s, wake_window=%.2fs)",
+                    settings.arbitrate_policy, settings.arbitrate_wake_window_seconds,
+                )
             return self._arbitrator
 
     def wire(self, app: web.Application) -> bool:
@@ -291,11 +298,35 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                     if frame.get("type") == "drained":
                         session.notify_drained(frame.get("turn_id"))
                     if frame.get("type") == "wake":
-                        session.note_wake_signal(
-                            wake_word=_wake_text(frame.get("wake_word")),
-                            confidence=_wake_number(frame.get("confidence")),
-                            heard_at=_wake_number(frame.get("heard_at")),
-                        )
+                        wake_word = _wake_text(frame.get("wake_word"))
+                        confidence = _wake_number(frame.get("confidence"))
+                        heard_at = _wake_number(frame.get("heard_at"))
+                        volume = _wake_number(frame.get("volume"))
+                        if arbitrator is not None and device is not None:
+                            # Cooperative handshake: ask the shared arbitrator whether this device
+                            # is the primary box for this wake word. The response is what lets the
+                            # client decide to stream (or stay silent); no audio is expected until
+                            # it arrives.
+                            granted, winner, claim_id = await arbitrator.claim_wake(
+                                device_id, wake_word=wake_word, confidence=confidence,
+                                heard_at=heard_at, volume=volume)
+                            session.note_wake_decision(
+                                granted=granted, claim_id=claim_id, wake_word=wake_word,
+                                confidence=confidence, heard_at=heard_at)
+                            reply: dict[str, Any] = {
+                                "type": "wake_grant" if granted else "wake_deny",
+                                "claim_id": claim_id,
+                                "wake_word": wake_word,
+                            }
+                            if not granted:
+                                reply["winner_device_id"] = winner
+                            await ws.send_json(reply)
+                        else:
+                            # Arbitration off: this device is always primary, but still answer so a
+                            # client that waits for the handshake is never stuck.
+                            session.note_wake_signal(
+                                wake_word=wake_word, confidence=confidence, heard_at=heard_at)
+                            await ws.send_json({"type": "wake_grant", "wake_word": wake_word})
                 elif msg.type in (web.WSMsgType.CLOSE, web.WSMsgType.ERROR):
                     break
         except Exception:
