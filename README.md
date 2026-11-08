@@ -39,7 +39,9 @@ A browser client can put the key in the WebSocket subprotocols instead (`hermes-
 Either way the key is verified against the API server itself, so your existing key is the only
 secret.
 
-Then stream binary PCM16 mono frames at `input_rate` (30 ms blocks are ideal). The server answers:
+After `ready`, continuously stream binary PCM16 mono frames at `input_rate` (30 ms blocks are
+ideal), including while idle, thinking, and playing reply audio. The server needs live microphone
+audio for VAD and barge-in. Only explicit user mute or session closure stops the stream. The server answers:
 
 | frame | meaning |
 |---|---|
@@ -54,23 +56,29 @@ Then stream binary PCM16 mono frames at `input_rate` (30 ms blocks are ideal). T
 | `stop_word` | session mode: you said a stop phrase; no turn ran |
 
 Handle `thinking` as an explicit turn boundary even without a preceding `transcript`:
-mark the agent turn active, stop forwarding microphone PCM for the current capture, and show
-"thinking" while keeping the socket open. Arm the client's turn deadline if it is not already
-running; do not restart it. This frame reports lifecycle status, not reasoning text. See
+mark the agent turn active and show "thinking" while continuing to send microphone PCM. Arm
+the client's turn deadline if it is not already running; do not restart it. This frame reports lifecycle status, not reasoning text. See
 [the client spec](client%20spec.md#handling-thinking) for the frame format and tracing behavior.
 
 Client control frames: `{"stop": true}` ends the session, `{"commit": true}` forces the current
 utterance to endpoint, `{"type": "cancel", "turn_id": "..."}` cancels the current turn while
 keeping the socket, session and history alive, `{"type": "drained", "turn_id": "..."}` says the
-reply's last audio has left the speaker (the server holds the VAD until then so its own echo is
-never transcribed),
+reply's last audio has left the speaker (or queued audio was discarded), ending the server's
+playback-tail tracking; keep sending microphone audio throughout playback,
 `{"type": "wake", "claim_id": "...", "wake_word": "..."}` requests an advisory wake decision
-(see below) — send it when the detector fires, then buffer audio while awaiting the decision.
+(see below) — send it when the detector fires without pausing the microphone stream.
 
 **Session mode** (`quiet_interval` > 0) is for wake-word devices: the server reports quiet in
 *received* audio (never wall-clock, so a held-open socket never accrues phantom quiet), ends the
 exchange on a stop phrase, and lets the agent sign off by ending a reply with an end phrase
 ("over and out"), which arrives as `turn_done.expects_more = false`.
+
+Conversation output should also reach attached clients without a wake word or user utterance.
+[Client spec sections 9–10](client%20spec.md#9-conversation-output-without-user-input-proposed-extension)
+describe the proposed conversation-output subscription, announcements with a lead-in sound and
+shared playback timestamp for optional system-wide synchronization, and server-owned timers with
+client alarm sounds. These are not implemented yet. Heartbeat 2 currently targets messaging-gateway chats;
+voice delivery needs integration, not just a prompt change. Clients do not schedule offline alarms.
 
 ## Settings
 
@@ -104,10 +112,12 @@ within a 250 ms window compete: highest confidence, then highest volume, then
 earliest detection time, then arrival order. The server echoes the request ID
 in `wake_grant` or `wake_deny`.
 
-Clients buffer audio while waiting, assume loss after **1000 ms**, and ignore
+Clients keep streaming live audio while waiting, assume loss after **1000 ms**, and ignore
 late decisions. A recommendation covers the activation and its follow-up
 conversation. It is advisory: audio streamed after a denial, or without any wake
 request, is processed normally. The server does not elect from transcripts.
+With continuous audio from several devices, duplicate answers remain possible;
+wake recommendations do not yet enforce exclusive response routing on the server.
 With arbitration disabled, requests receive immediate grants. The legacy
 `first_to_endpoint` setting also grants immediately; unknown policies fall back
 to `wake_signal`. See [client spec.md](client%20spec.md) for the full protocol,

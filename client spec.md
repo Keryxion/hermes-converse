@@ -14,6 +14,8 @@ them.
 
 Wake selection is cooperative: it recommends an answering device without
 restricting audio processing. Section 8 defines the cooperative wake contract.
+Sections 9–10 define the proposed conversation-output and timer/alarm
+extensions; the current server does not implement those extensions yet.
 
 ## 1. Connect and authenticate
 
@@ -50,9 +52,9 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 | `quiet_interval` | session mode: seconds of silence between turns (0 = off) |
 | `name` | the assistant's name — set this to "Arya" (not "Hey Arya"). Arya uses her name in the voice prompt so she knows she's being addressed and doesn't get confused about why she's being called that name |
 
-For cooperative wake selection, follow section 8 before sending audio for a
-wake activation. Otherwise, stream binary PCM16 mono frames at `input_rate`.
-30 ms blocks are ideal (e.g. 480 samples at 16 kHz).
+After `ready`, continuously stream binary PCM16 mono frames at `input_rate`.
+30 ms blocks are ideal (e.g. 480 samples at 16 kHz). Cooperative wake
+selection (section 8) runs alongside this stream; it does not gate audio.
 
 The server replies with `ready`, which includes the socket's `session_id`
 and clock-skew timestamps.
@@ -66,7 +68,7 @@ All are JSON text frames:
 | `{"stop": true}` | Ends the whole session and closes the socket. History is lost. |
 | `{"commit": true}` | Forces the current utterance to endpoint now (runs a turn on it). |
 | `{"type": "cancel", "turn_id": "..."}` | Cancels the **current** turn — stops TTS and the agent — but keeps the socket, session, and history alive. |
-| `{"type": "wake", "claim_id": "...", "wake_word": "Hey Arya"}` | request an advisory wake decision before streaming an activation; see section 8. |
+| `{"type": "wake", "claim_id": "...", "wake_word": "Hey Arya"}` | request an advisory wake decision without pausing microphone audio; see section 8. |
 | `{"type": "drained", "turn_id": "..."}` | Tells the server the reply's last audio has left the speaker, so the server won't transcribe its own echo as a new turn. |
 
 **`cancel` vs `stop`:** `stop` tears down the session; `cancel` only kills the
@@ -89,6 +91,35 @@ wake word again mid-turn and you want to keep the conversation going.
 | `stop_word` | session mode: you said a stop phrase; no turn ran |
 | `error` | the turn failed (spoken-safe text) |
 
+### Microphone streaming and barge-in
+
+Once `ready` arrives, send live microphone PCM continuously until the user
+explicitly mutes the microphone or ends the connection. Include silence;
+the server owns VAD, endpointing, and barge-in detection. Resume live audio
+on unmute; do not replay audio accumulated while muted.
+
+| client state or event | microphone transport |
+|---|---|
+| Idle / waiting for a wake word | Keep sending live PCM. |
+| Waiting for `wake_grant`, denied, or wake decision timed out | Keep sending live PCM; wake selection is advisory. |
+| `transcript` or `thinking` | Keep sending live PCM while the agent runs. |
+| `speaking`, binary reply audio, or queued speaker playback | Keep sending live PCM so server-side barge-in can work. |
+| `interrupted`, `error`, or `turn_done` | Keep sending live PCM; these events do not mute the microphone. |
+| Explicit user mute or closed session | Stop sending PCM. Server-side barge-in is unavailable while muted or disconnected. |
+
+Do not use an `agentTurn`, thinking, or playback flag to suppress upstream
+audio. Play incoming PCM and send microphone PCM concurrently. Local echo
+cancellation may clean the microphone signal, but must preserve the user's
+speech during playback. Do not replace the stream with synthetic silence
+while the assistant speaks.
+
+On `interrupted`, stop and discard queued reply audio for that turn. Send
+`drained` when its final queued audio has actually left the speaker (or
+has been discarded). `turn_done` means the server has finished sending,
+not that playback has drained; neither event stops microphone streaming.
+The existing server uses playback-aware detection to distinguish speech
+from speaker bleed; this requires real incoming microphone audio.
+
 ### Handling `thinking`
 
 `thinking` is the server's explicit signal that the agent turn has started.
@@ -99,9 +130,9 @@ For example:
 ```
 
 Treat it as a turn boundary even if the client has not received a
-`transcript` for that turn. Mark the agent turn active, stop forwarding
-microphone PCM for the current capture, and show "thinking". Keep the
-socket and session open so the reply can arrive.
+`transcript` for that turn. Mark the agent turn active and show "thinking".
+Keep sending microphone PCM: the server needs it to detect speech and
+barge-in. The UI state and the microphone transport are independent.
 
 If the client uses a turn deadline, arm it on `thinking` when `transcript`
 has not already armed it; do not restart an existing deadline. Record the
@@ -126,9 +157,10 @@ false`.
 1. Open `ws://<host>:<port>/v1/audio/converse`
 2. Send `start`
 3. Receive `ready`
-4. Stream microphone PCM
-5. Receive `transcript` → `thinking` → `speaking` + PCM → `turn_done`
-6. Repeat from step 4 for the next turn, or send `cancel`/`stop`
+4. Start continuously streaming microphone PCM
+5. While continuing to send PCM, receive `transcript` → `thinking` → `speaking` + PCM → `turn_done`
+6. Keep the same microphone stream running across turns; `cancel` cancels a
+   turn, while `stop` ends the session
 
 This is the typical sequence, not a prerequisite for handling `thinking`:
 the client must enter the active-turn state even without a preceding
@@ -167,9 +199,8 @@ when cancellation or session termination is actually wanted.
 
 ### Wake request and decision frames
 
-After `start` / `ready`, a cooperating client buffers microphone audio and sends
-this JSON text frame as soon as its local wake detector fires, before streaming
-audio for that activation:
+After `start` / `ready`, a cooperating client keeps streaming microphone audio
+and sends this JSON text frame as soon as its local wake detector fires:
 
 ```json
 {"type":"wake","claim_id":"activation-42","wake_word":"Hey Arya","confidence":0.93,"volume":0.098,"heard_at":1794142800123}
@@ -241,17 +272,189 @@ remains separate from the exact detected `wake_word` phrase.
 
 ### Cooperating client flows
 
-Start a **1000 ms** local monotonic deadline when sending `wake`. Buffer audio
-while awaiting the matching decision so the beginning of the request is kept.
-The one-second limit bounds audio-buffer memory on constrained clients such as
-arya-esp32.
+Start a **1000 ms** local monotonic deadline when sending `wake`. Keep
+streaming live audio while awaiting the decision; do not buffer it for later
+release on a grant. This deadline bounds the wait for a recommendation, not
+the microphone stream.
 
 | outcome | client action |
 |---|---|
-| Matching `wake_grant` before the deadline | Stream buffered audio followed by live PCM. Handle ordinary turn frames and follow-up turns on the same socket. |
-| Matching `wake_deny` before the deadline | Discard buffered audio for this activation and resume wake detection. Keep the socket available. |
-| No matching decision within 1000 ms | Assume loss, discard this activation's buffered audio, and resume wake detection. No extra cancel or stop frame is needed. |
+| Matching `wake_grant` before the deadline | Handle this activation and follow-up turns as the recommended device. Continue live PCM. |
+| Matching `wake_deny` before the deadline | Stand down in the wake-selection UI and resume wake detection. Continue live PCM. |
+| No matching decision within 1000 ms | Assume loss of the recommendation and resume wake detection. Continue live PCM; no extra cancel or stop frame is needed. |
 | Late decision or decision for another `claim_id` | Ignore it. Never reactivate a timed-out or completed claim. |
 
-A later detection always gets a new `claim_id`. A grant does not require audio:
-if the activation is abandoned locally, no reservation needs releasing.
+A later detection always gets a new `claim_id`. Abandoning an activation
+requires no reservation release and does not stop the microphone stream.
+
+The current server processes audio independently of wake decisions. Continuous
+streaming from several devices can therefore produce duplicate answers even
+when they follow wake recommendations. Wake selection alone does not provide
+exclusive response routing; that needs a separate server-side implementation.
+Do not work around this limitation by cutting audio needed for barge-in.
+
+
+## 9. Conversation output without user input (proposed extension)
+
+Converse is an audio transport attached to a conversation. The conversation
+can produce output without a new user utterance, microphone transcript,
+wake detection, or wake grant. A reminder, scheduled follow-up, or server
+event can start an outbound turn while the attached client is idle. Wake
+selection concerns user activations; it must not authorize or gate outbound
+conversation output. Clients keep sending microphone audio as in section 4.
+
+The server must subscribe to outbound conversation events, including turns
+started by other producers, rather than only the events of a run started
+from this socket's microphone input. Each delivered turn gets a `turn_id`.
+Use the same playback lifecycle as ordinary replies:
+
+| output available | server-to-client sequence |
+|---|---|
+| Agent run starting | `thinking` → optional `speaking` + PCM → `turn_done` |
+| Speech already prepared | `speaking` + PCM → `turn_done` |
+| Run fails or is interrupted | `error` or `interrupted`, followed by `turn_done` |
+
+No synthetic user `transcript` or wake event is sent. Both `thinking` and
+`speaking` must establish a turn even when no earlier frame exists for it.
+A client waiting for a wake word must accept and play that output. After it
+finishes, return to the previous idle state unless follow-up listening was
+explicitly requested; do not open a user activation merely because the
+server spoke. Microphone transport continues in either state.
+
+Serialize outbound audio on each socket: never interleave the untagged
+binary PCM of two turns. Queue an announcement behind an active turn and
+its playback drain; discard stale announcements instead of replaying them
+late. Ordinary barge-in, `cancel`, and `drained` apply equally to these turns.
+Choose the intended attached recipient before delivery; do not broadcast
+private conversation output to every connected device or run wake elections
+for it. Define authenticated conversation attachment, recipient selection,
+event deduplication, and expiry before enabling this extension. A socket
+connection alone does not grant access to another conversation's output.
+
+### Announcement sound and synchronized playback
+
+An announcement has a distinct lead-in sound before its speech. The server
+may target one attached client or an explicitly selected, authorized device
+group for a system-wide announcement. Use the same announcement ID, content,
+and scheduled playback time on every target; group delivery is deliberate,
+not an automatic broadcast of ordinary conversation replies.
+
+Draft header (requires negotiated announcement support):
+
+```json
+{"type":"announcement","announcement_id":"announce-42","event_id":"delivery-42","turn_id":"turn-10","sound":"announcement-v1","chime_duration_ms":600,"play_at_unix_ms":1794142805000,"expires_at_unix_ms":1794142806000,"late_policy":"skip"}
+```
+
+`play_at_unix_ms` is the intended **audible start of the lead-in sound**,
+in server Unix milliseconds, not the generation time or WebSocket send
+time. `expires_at_unix_ms` bounds how long the event is useful. For a group,
+all members use the same IDs to identify the same announcement; each client
+deduplicates it locally. A rescheduled replacement needs a new delivery
+`event_id` and must explicitly supersede the old one before playback.
+
+Send the header and the complete `speaking` + PCM payload sufficiently ahead
+of the deadline to buffer it; `turn_done` marks payload completion and may
+arrive before scheduled playback. Play the chime at the scheduled time,
+then start speech at `play_at_unix_ms + chime_duration_ms`. Negotiate a
+versioned chime asset with identical content and duration across clients;
+alternatively send one server-rendered chime-plus-speech PCM payload and
+schedule its first sample at `play_at_unix_ms`. Do not play the chime twice
+when using that fallback. For synchronization, do not generate separate TTS
+for each target. Resampling must preserve the shared audio timeline.
+
+Estimate the server-minus-client clock offset from the existing `ready`
+timestamps: record client send time `t0` for `start`, server receive/send
+`server_recv_unix_ms = t1`, `server_send_unix_ms = t2`, and client receive
+time `t3`. The estimate is `offset = ((t1 - t0) + (t2 - t3)) / 2`.
+Convert the server deadline to client time with `play_at_unix_ms - offset`,
+then schedule against a local monotonic clock. Account for measured output
+buffer/device latency so the timestamp refers to sound leaving the speaker,
+not merely enqueueing samples. A long-lived connection needs a periodic
+clock-sync exchange (still to be specified); a handshake estimate alone
+cannot bound drift indefinitely.
+
+A target that is muted, busy with another turn, lacks complete audio or the
+chime asset, or has insufficient clock confidence must report that it cannot
+meet the scheduled time. Do not silently postpone just that device while
+claiming a synchronized broadcast. The default `late_policy: "skip"` skips
+playback if the start deadline is missed; an explicitly requested immediate
+fallback may play before expiry but must report that it was unsynchronized.
+Never replay an expired announcement on reconnect. Preparation/status and
+cancellation frames must be defined before implementation so the server can
+reschedule or report partial delivery. Group playback is best effort, not
+an atomic or sample-accurate guarantee across independent audio devices.
+
+Keep microphone PCM flowing while buffering and playing. Mark the full
+chime-and-speech interval as playback for server echo/barge-in handling,
+acknowledge `drained` only after actual playback or discard, and keep the
+scheduled wait separate from the agent-run timeout. User barge-in or cancel
+stops that client's chime and speech; group-wide cancellation is an explicit
+server operation, not an automatic consequence of one device's interruption.
+
+**Current implementation and Heartbeat 2.** The server currently starts a
+run for each microphone transcript and subscribes to that run's events.
+It has no conversation-wide output subscription. Heartbeat 2 can generate
+later turns, but its documented integration currently targets messaging-
+gateway chats and rejects API-server sessions. Integration must connect
+its conversation output to this transport; a system prompt cannot create
+that missing delivery path. See [Heartbeat 2 compatibility](https://github.com/electricsheephq/heartbeat2#compatibility-and-known-issues).
+
+Once the delivery integration exists, the voice instructions should tell
+the agent to use the installed scheduler tools for later speech, retain
+the originating conversation and recipient, and confirm scheduling or
+cancellation only after the tool acknowledges it. Do not keep a voice run
+open or sleep inside it to wait for a timer. Until that integration is
+available, do not promise later spoken delivery merely because Heartbeat 2
+is installed. A scheduled reminder's timing also follows the scheduler's
+receipt and delivery policy; it is not automatically a precise alarm.
+
+## 10. Server-owned timers and client alarm sounds (proposed extension)
+
+The server owns timer creation, deadlines, updates, cancellation, and expiry.
+The client may display a countdown, but does not schedule an independent
+offline alarm. An expiry delivered by the server makes the client play a
+bundled alarm sound; it need not wait for an LLM response or TTS to hear the
+alarm. Spoken context, such as "Your pasta timer is done," can follow using
+the outbound-turn lifecycle in section 9. A scheduling confirmation does
+not play the expiry alarm.
+
+A draft expiry frame, sent only after alarm support is negotiated:
+
+```json
+{"type":"alarm","event_id":"expiry-42","timer_id":"timer-7","turn_id":"turn-9","sound":"timer"}
+```
+
+`event_id` identifies one delivery event for deduplication; reconnect or
+retry must not ring it twice. `timer_id` identifies the server timer across
+connections and lets the user cancel the intended timer. `sound` names a
+bundled client asset, not an arbitrary URL or audio file. A client without
+alarm-sound support needs a server-rendered audio fallback using the normal
+`speaking` + PCM path. Negotiate support explicitly before sending new frame
+types; these fields are not supported by the current `start` / `ready`.
+
+Keep the microphone stream running during the alarm so the user can speak.
+Treat its local sound as playback for echo handling. Specify playback-start
+notification to the server, stop/dismiss acknowledgement, bounded ringing,
+and `drained` coordination before implementation; an unannounced local
+alarm must not be transcribed as a new user request. An alarm has priority
+over queued speech, but the server must finish or interrupt the current
+turn before delivering it, so local sound and PCM replies do not overlap.
+
+Cancellation changes the server record and succeeds only on server
+acknowledgement. If expiry already won the race, report that result and
+allow dismissal of the ringing alarm. Dismissal silences that occurrence;
+it does not cancel another timer. Use correlated, idempotent operations
+and explicit accepted / already-expired / not-found results; do not infer
+success from a spoken promise or from the socket accepting a write.
+
+When disconnected, the client can silence audio already playing, but it
+cannot create, update, or cancel a server timer. Show cancellation as
+unavailable or unconfirmed until acknowledged; do not claim offline
+success. The server keeps its timer state. On reconnect, synchronize active
+and missed timers before displaying them. Report expiries missed during
+the disconnect without automatically replaying stale alarms. There is no
+promise of an audible alarm while the client is disconnected.
+
+Exact alarm capability negotiation, timer-operation frames, acknowledgements,
+recipient attachment, and playback signalling remain implementation work.
+These proposed extensions do not change the current wire protocol by themselves.
