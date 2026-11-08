@@ -47,6 +47,10 @@ CAPTURE_NO_DATA_SECONDS = 5.0
 # Reply speech: poll for deltas every 0.5 s; after 4 empty polls (~2 s) speak the buffered tail.
 IDLE_POLL_SECONDS = 0.5
 IDLE_POLLS_TO_FLUSH = 4
+# How long the driver may wait for the first PCM of a turn without sending a progress frame. A
+# wake-word client (e.g. the Echo's 30 s THINKING limit) can extend its own deadline on each
+# ``working`` frame instead of giving up on a long agent turn (issue #9).
+WORKING_FRAME_INTERVAL = 5.0
 SMART_TURN_DEFAULT_THRESHOLD = 0.5
 # Bound on the per-connection conversation history kept in memory (~20 user+assistant turns): a
 # simple tail-cap so a long-lived socket can't grow it without limit. The Runs API owns the real
@@ -815,22 +819,39 @@ def _produce_speech(d: _Driver, turn: _Turn) -> None:
 async def _stream_reply(d: _Driver, turn: _Turn, turn_task: asyncio.Future) -> None:
     """Stream the reply's PCM out; flip `playing` on only when real audio starts. A turn deadline
     backstops a hung run: once it trips the turn is abandoned, the task cancelled, and an error +
-    turn_done still go out, so the client is never left "thinking" forever."""
+    turn_done still go out, so the client is never left "thinking" forever.
+
+    While PCM has not yet started (the agent is still thinking or TTS has not emitted audio), a
+    ``working`` frame is sent every ``WORKING_FRAME_INTERVAL`` seconds so wake-word clients can
+    extend their own deadline instead of timing out on a long turn (issue #9)."""
     speaking = False
     deadline = d.loop.time() + d.turn_timeout if d.turn_timeout > 0 else None
+    last_working = d.loop.time()
     while True:
+        now = d.loop.time()
+        next_working_at = last_working + WORKING_FRAME_INTERVAL
+        if deadline is None:
+            wait_timeout = next_working_at - now
+        else:
+            remaining = deadline - now
+            if remaining <= 0:
+                turn.timed_out = True
+                break
+            wait_timeout = min(remaining, next_working_at - now)
+        if wait_timeout <= 0:
+            # A progress frame is due before any more waiting.
+            if not speaking:
+                await d.send_json({"type": "working", "turn_id": turn.turn_id})
+                last_working = d.loop.time()
+            continue
         try:
-            if deadline is None:
-                chunk = await turn.pcm_q.get()
-            else:
-                remaining = deadline - d.loop.time()
-                if remaining <= 0:
-                    turn.timed_out = True
-                    break
-                chunk = await asyncio.wait_for(turn.pcm_q.get(), timeout=remaining)
+            chunk = await asyncio.wait_for(turn.pcm_q.get(), timeout=wait_timeout)
         except TimeoutError:
-            turn.timed_out = True
-            break
+            # The wait expired on the working-frame interval: send a progress frame.
+            if not speaking:
+                await d.send_json({"type": "working", "turn_id": turn.turn_id})
+                last_working = d.loop.time()
+            continue
         if chunk is None:
             break
         if not speaking:
