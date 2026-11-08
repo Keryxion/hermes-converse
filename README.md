@@ -57,7 +57,10 @@ Client control frames: `{"stop": true}` ends the session, `{"commit": true}` for
 utterance to endpoint, `{"type": "cancel", "turn_id": "..."}` cancels the current turn while
 keeping the socket, session and history alive, `{"type": "drained", "turn_id": "..."}` says the
 reply's last audio has left the speaker (the server holds the VAD until then so its own echo is
-never transcribed).
+never transcribed),
+`{"type": "wake", "wake_word": "...", "confidence": 0.0-1.0, "heard_at": <unix_ms>}` reports a local
+wake-word hit for cross-device arbitration (see below) — send it the moment the detector fires,
+before/as audio for that utterance starts streaming.
 
 **Session mode** (`quiet_interval` > 0) is for wake-word devices: the server reports quiet in
 *received* audio (never wall-clock, so a held-open socket never accrues phantom quiet), ends the
@@ -82,18 +85,26 @@ plugin settings form):
 | `approval_choice` | `deny` | what a voice turn answers when the agent asks for a command approval |
 | `api_base_url` | `""` | loopback URL of the API server when it cannot be derived from the listener |
 | `arbitrate_enabled` | `false` | turn on cross-device voice arbitration so exactly one device answers each utterance |
-| `arbitrate_policy` | `first_to_endpoint` | how the winner is elected: `first_to_endpoint` (first claim wins) or `proximity` (same area/person as the speaker) |
+| `arbitrate_policy` | `first_to_endpoint` | how the winner is elected: `first_to_endpoint` (first claim wins) or `wake_signal` (see below) |
 | `arbitrate_device_id` | `""` | stable id for this device in arbitration; `""` = auto-generated per socket |
 
 STT and TTS come from your normal Hermes `stt.*` and `tts.*` configuration.
 
 **Cross-device voice arbitration.** When `arbitrate_enabled` is true, every device on this route
-shares one arbitrator. When a device captures and transcribes an utterance it claims the turn; the
-first claim wins (`first_to_endpoint`) or the device in the same area as the speaker wins
-(`proximity`, needs `start.area`/`start.person`). Only the elected winner runs the agent turn and
-speaks aloud — the losers still send the transcript frame but stay silent for that utterance, so
-exactly one device answers. The winner releases the turn when `turn_done` is sent or the socket
-closes, allowing re-election on a later utterance.
+shares one arbitrator. When a device captures and transcribes an utterance it claims the turn.
+Under `first_to_endpoint` the first claim simply wins. Under `wake_signal`, claims for the same
+utterance are first split by the `wake_word` each device reported in its `wake` frame — devices
+that heard a *different* wake word aren't competing (two assistants were addressed, or the
+transcripts just coincided) and each elects independently; within a group the highest wake-word
+`confidence` wins, ties go to the loudest captured `volume`, then the earliest `heard_at`, then
+whoever's claim reached the server first. A device that sends none of this still arbitrates, just
+by claim order. (There used to be a `proximity` policy guessing the speaker's room from a majority
+vote over a self-reported `area` string; it had no real proximity signal behind it and is gone —
+an unrecognized `arbitrate_policy`, including `proximity`, now falls back to `first_to_endpoint`.)
+Only the elected winner runs the agent turn and speaks aloud — the losers still send the transcript
+frame but stay silent for that utterance, so exactly one device answers per wake word. The winner
+releases the turn when `turn_done` is sent or the socket closes, allowing re-election on a later
+utterance.
 
 **Smart Turn v3** (optional): with `endpoint_model: smart-turn-v3` the fixed silence endpoint
 becomes adaptive — on each candidate pause the model estimates whether the utterance sounds

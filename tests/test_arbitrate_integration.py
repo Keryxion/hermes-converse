@@ -20,7 +20,7 @@ import pytest
 
 import hermes_converse.loop as cl
 from hermes_converse import speech
-from hermes_converse.arbitrate import Arbitrator, LocalBus
+from hermes_converse.arbitrate import Arbitrator, LocalBus, POLICY_WAKE_SIGNAL
 from hermes_converse.loop import ConverseSession, drive_converse_turns, Utterance
 
 
@@ -122,8 +122,8 @@ class _Harness:
             owned_utterance_setter=owned_setter,
         )
 
-    def feed(self, text):
-        self.session.transcripts.put(Utterance(text, None))
+    def feed(self, text, **wake_kwargs):
+        self.session.transcripts.put(Utterance(text, None, **wake_kwargs))
 
 
 # ── tests ────────────────────────────────────────────────────────────────────────────────────
@@ -193,3 +193,37 @@ async def test_winner_release_allows_re_election():
     # Both utterances were claimed and won by d1 (re-elected after release).
     assert len(harness.run_calls) == 2
     assert [c.transcript for c in harness.run_calls] == ["one", "two"]
+
+
+@pytest.mark.asyncio
+async def test_wake_signal_higher_confidence_wins_through_the_driver():
+    """Full pipeline: the Utterance carrying wake_word/confidence (as route.py's ConverseSession
+    would attach them from a client ``wake`` frame plus the server-computed volume) decides the
+    election, not claim order — d2 claims second but has the clearer wake-word hit."""
+    arb = Arbitrator(bus=LocalBus(), policy=POLICY_WAKE_SIGNAL)
+    d1 = await arb.register("d1")
+    d2 = await arb.register("d2")
+
+    hold = asyncio.Event()
+    h1 = _Harness(arbitrator=arb, device=d1, device_id="d1", hold=hold)
+    h2 = _Harness(arbitrator=arb, device=d2, device_id="d2", hold=hold)
+
+    t1 = asyncio.create_task(h1.run(["hello"]))
+    t2 = asyncio.create_task(h2.run(["hello"]))
+
+    # Feed both right away so both claims land inside either one's 50ms finalization window —
+    # unlike first_to_endpoint, wake_signal's winner is decided by confidence, not claim order.
+    h1.feed("hello", wake_word="arya", confidence=0.55)
+    h2.feed("hello", wake_word="arya", confidence=0.97)
+    await asyncio.sleep(0.2)  # let the wake_signal finalization window close
+    hold.set()
+    await asyncio.sleep(0.1)
+
+    h1.session.stop()
+    h2.session.stop()
+    await t1
+    await t2
+
+    assert len(h2.run_calls) == 1
+    assert len(h1.run_calls) == 0
+    assert h1.synth.spoken == []
