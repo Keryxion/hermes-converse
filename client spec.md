@@ -6,7 +6,7 @@
 GET /v1/audio/converse
 ```
 
-One socket = one conversation. You stream microphone PCM up, the server does
+Currently, one socket = one conversation. You stream microphone PCM up, the server does
 voice activity detection, endpointing, speech-to-text, the agent turn, and
 streams the reply back as PCM audio — all on the same socket. The socket,
 session, and conversation history stay alive across turns unless you close
@@ -15,7 +15,8 @@ them.
 Wake selection is cooperative: it recommends an answering device without
 restricting audio processing. Section 8 defines the cooperative wake contract.
 Sections 9–10 define the proposed conversation-output and timer/alarm
-extensions; the current server does not implement those extensions yet.
+extensions. Section 11 proposes resumable conversations independent of socket
+lifetime. The current server does not implement these extensions yet.
 
 ## 1. Connect and authenticate
 
@@ -69,7 +70,7 @@ All are JSON text frames:
 
 | frame | meaning |
 |---|---|
-| `{"stop": true}` | Ends the whole session and closes the socket. History is lost. |
+| `{"stop": true}` | Stops live work and closes the socket. The current protocol cannot resume its conversation; this does not promise deletion of Hermes history. |
 | `{"commit": true}` | Forces the current utterance to endpoint now (runs a turn on it). |
 | `{"type": "cancel", "turn_id": "..."}` | Cancels the **current** turn — stops TTS and the agent — but keeps the socket, session, and history alive. |
 | `{"type": "wake", "claim_id": "...", "wake_word": "Hey Arya"}` | request an advisory wake decision while buffering the new activation locally; see section 8. |
@@ -543,3 +544,188 @@ promise of an audible alarm while the client is disconnected.
 Exact alarm capability negotiation, timer-operation frames, acknowledgements,
 recipient attachment, and playback signalling remain implementation work.
 These proposed extensions do not change the current wire protocol by themselves.
+
+
+## 11. Resumable conversations and session lifetime (proposed extension)
+
+### Problem and proposed policy
+
+Today each socket gets a fresh random `voice_<uuid>` for Runs API calls,
+while `ready.session_id` is a separate random ID used for connection tracing.
+Turns on the same socket share Hermes history, but reconnecting cannot recover
+it. Conversely, a socket left open retains context across unrelated wake
+activations indefinitely. Network lifetime should not decide which context
+the assistant remembers.
+
+Keep random IDs, but separate their purposes:
+
+| identity | lifetime and purpose |
+|---|---|
+| `session_id` | Existing connection/tracing ID; fresh on every socket. Preserve its current meaning. |
+| `conversation_id` | Server-issued opaque ID mapped to one Hermes Runs session and its history; resumable across sockets. |
+| `device_id` | Stable client installation ID, persisted across reconnects; part of conversation scope, not authentication or the per-socket arbitration candidate ID. |
+| `turn_id` | One voice turn; cancellation and playback drain remain scoped to this ID. |
+
+Proposed default: reuse the current conversation for **15 minutes of
+inactivity**, configurable server-side as `conversation_idle_seconds`.
+Scope reuse to authenticated principal + serving profile + stable device ID.
+Room-to-room handoff and speaker recognition are separate work. A shared room
+device shares context among its users within this window; clients should offer
+an explicit new-conversation action.
+
+Measure inactivity from the last user turn's completion and playback drain
+(or the bounded drain fallback). For turns without playback, use completion.
+Cancellation/error also completes the turn for this purpose. Persist server
+activity timestamps across restarts; client clocks are not authoritative.
+PCM silence, heartbeats, wake claims, standby, and outbound announcements or
+timer deliveries do not refresh activity. This policy is independent of
+`quiet_interval` and does not keep the microphone streaming while idle.
+
+Check expiry before accepting each user utterance into a conversation, even
+on a continuously open socket. An utterance accepted within the window pins
+its conversation through the run and playback drain. After expiry, select a
+fresh conversation before starting the next run. Never rotate during a turn,
+capture, queued utterance, or pending playback drain; serialize selection with
+turn creation. A wake claim alone must not create or rotate a conversation:
+arbitration is advisory and activations can be abandoned.
+
+### Negotiated attachment
+
+Opt in explicitly; preserve existing per-socket behavior for legacy clients.
+Proposed `start` additions:
+
+```json
+{"type":"start","key":"<API_SERVER_KEY>","input_rate":16000,"output_rate":24000,
+ "capabilities":["conversation-v1"],"device_id":"installation-7",
+ "conversation":{"mode":"auto","id":"conv-42"}}
+```
+
+`conversation.mode` is `auto` (default when opting in), `resume`, or `new`.
+`id` is optional for `auto`, required for `resume`, and forbidden for `new`.
+Require a stable nonempty `device_id`; reject malformed combinations. IDs in
+these examples are illustrative; clients treat issued IDs as opaque.
+
+| request | server behavior |
+|---|---|
+| `auto`, no ID | Attach the scope's current unexpired conversation, or create one if absent/expired. |
+| `auto`, with ID | Resume that authorized, current, unexpired conversation; if unknown/expired/superseded within this scope, attach the scope's current unexpired conversation or create one. Authorization or attachment conflicts must not silently fall back. |
+| `resume`, with ID | Resume exactly that authorized, current, unexpired conversation; otherwise return an explicit error. |
+| `new` | Create and attach fresh context, superseding the scope's current conversation without deleting its history. |
+
+Proposed additions to `ready`, alongside existing rates and clock timestamps:
+
+```json
+{"type":"ready","session_id":"socket-9","capabilities":["conversation-v1"],
+ "conversation":{"id":"conv-42","status":"resumed","idle_timeout_seconds":900}}
+```
+
+Status is `created` or `resumed`. Clients persist the returned conversation ID
+and their device ID. A client requesting this capability must check the
+`ready` acknowledgement before streaming audio or sending new control frames.
+An old server may ignore unknown `start` fields; absent acknowledgement means
+resumption is unavailable. Show that state and use an explicit legacy fallback
+or disconnect, rather than claiming that previous context was restored.
+
+Persist a server-owned registry of scope, conversation ID, Hermes session ID,
+last activity, and superseded state. A process-local map is insufficient for
+restart recovery. Hermes remains the source of history; do not reconstruct or
+replay messages from the plugin's local reply list. Restore or replace any
+local history-dependent sign-off bookkeeping on attachment, so reconnecting
+does not assume an empty Hermes conversation merely because that list is empty.
+
+### Updates, reset, and disconnect
+
+When expiry rotates context on an open socket, send this frame before the
+new utterance's `transcript` and before starting its run:
+
+```json
+{"type":"conversation","conversation_id":"conv-43","reason":"idle_expired"}
+```
+
+All negotiated user-turn lifecycle frames carrying `turn_id` also carry
+`conversation_id`, binding the turn to its chosen history. Clients update their
+persisted ID on `ready` and `conversation`; late frames retain their original
+binding. A failed change notification must not start an unseen run.
+
+For an explicit new-conversation action on an open socket:
+
+```json
+{"type":"conversation_reset","request_id":"reset-8"}
+```
+
+Accept only with no turn, capture, queued utterance, or playback drain active;
+otherwise return `conversation_busy` with the same `request_id` and leave the
+binding unchanged. On success, atomically supersede the old conversation and
+acknowledge before accepting new audio:
+
+```json
+{"type":"conversation","request_id":"reset-8","conversation_id":"conv-44","reason":"reset"}
+```
+
+Deduplicate reset requests by authenticated scope + `request_id` in the durable
+registry for at least 24 hours. Retries return the original result without
+creating another conversation. The client pauses audio until acknowledgement.
+A retry must not reattach a superseded conversation or emit an old change as
+current: after a later reset, return `conversation_reset_superseded` instead.
+A spoken "new conversation" shortcut requires separate control intent handling;
+an ordinary model reply must not silently reset context.
+
+`cancel` and barge-in stop the current turn. Sign-off, stop phrases, and
+`next_action: "standby"` end the activation. None resets the conversation.
+`stop` and socket loss stop live work and release the attachment, but preserve
+resumable context until inactivity expiry. Expiry and reset select future
+context; they do not erase stored history. Deletion is a separate Hermes
+retention operation. This is the negotiated behavior; legacy sockets still
+cannot resume after disconnect.
+
+### Ownership, recovery, and outbound delivery
+
+Authenticate before looking up a conversation. An opaque ID alone grants no
+access. Use the principal established by Hermes authentication; never trust a
+principal supplied in `start`. Deployments with only one shared API key share
+that security boundary: device IDs do not establish distinct users. Attaching
+an arbitrary Hermes session or a session owned by another surface is forbidden.
+
+Allow one live Converse attachment per scope, enforced by an atomic lease.
+A competing socket receives `conversation_busy`; it must not steal ownership
+or silently create parallel context. Release the lease after teardown and
+in-flight run cancellation settle; support bounded lease recovery after a
+process failure. Reconnecting clients can retry busy with backoff. Resume
+restores context, not an interrupted run or audio. Never automatically replay
+an unacknowledged utterance or promise exactly-once tool execution on reconnect.
+
+Explicit resume failures use `conversation_unavailable` for unknown, expired,
+superseded, or unauthorized IDs, without revealing another scope's existence.
+For `auto`, an ID belonging to another scope also fails generically rather than
+falling back. Registry/Hermes lookup failures return `conversation_unavailable`
+instead of silently starting empty context. Pre-ready attachment failures send
+`error` and close with 4400. Reset errors keep the socket open and echo
+`request_id`; notification/lookup failures during rotation fail the utterance
+without starting its run.
+
+Sections 9–10 need durable recipient identity independent of the current
+conversation. Reset/expiry must not cancel timers, redirect old output into new
+context, or lose its intended recipient. Deliver a scheduled event with its
+originating conversation ID and an authorized recipient attachment; it must
+not reattach the user to old context. Specify and negotiate that mapping
+before enabling combined outbound delivery and resumption support.
+
+### Implementation and acceptance criteria
+
+This section proposes protocol behavior; it does not implement it. Add the
+durable registry and ownership checks, negotiate attachment, then route Runs
+calls through the selected conversation and emit its identity. Verify:
+
+- Reconnect within the window restores the same Hermes context; restart
+  recovers persisted mappings without replaying messages.
+- Expiry selects fresh context on reconnect and on an open socket. Active
+  capture, turns, queued utterances, and playback never switch history midway.
+- Reset is acknowledged and idempotent, including stale retries after a later
+  reset; busy reset is rejected. Cancel, sign-off, standby, and disconnect
+  preserve context.
+- Different principals, profiles, and devices do not accidentally share context;
+  concurrent attachments cannot steal ownership or create competing runs.
+- Unknown/expired IDs, registry/Hermes failures, and old servers produce the
+  specified outcomes without falsely reporting successful resumption.
+- Legacy clients retain current behavior. When combined with sections 9–10,
+  timers survive reset/expiry and output retains its origin and recipient.
