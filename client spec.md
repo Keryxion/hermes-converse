@@ -14,8 +14,9 @@ them.
 
 Wake selection is cooperative: it recommends an answering device without
 restricting audio processing. Section 8 defines the cooperative wake contract.
-Sections 9–10 define the proposed conversation-output and timer/alarm
-extensions. Section 11 proposes named Aryas attached to existing Hermes conversations. The current server does not implement these extensions yet.
+Sections 9–10 propose conversation output and timers. Section 11 proposes
+named Aryas attached to existing Hermes conversations. These extensions are
+not implemented by the current server; negotiate them before use.
 
 ## 1. Connect and authenticate
 
@@ -74,6 +75,7 @@ All are JSON text frames:
 | `{"type": "cancel", "turn_id": "..."}` | Cancels the **current** turn — stops TTS and the agent — but keeps the socket, session, and history alive. |
 | `{"type": "wake", "claim_id": "...", "wake_word": "Hey Arya"}` | request an advisory wake decision while buffering the new activation locally; see section 8. |
 | `{"type": "drained", "turn_id": "..."}` | Tells the server the reply's last audio has left the speaker, so the server won't transcribe its own echo as a new turn. |
+| `conversation_select` | Proposed conversation-v1 selection, only after negotiation (section 11). |
 
 **`cancel` vs `stop`:** `stop` tears down the session; `cancel` only kills the
 current turn. Use `cancel` when the user hits the action button or says the
@@ -95,6 +97,7 @@ wake word again mid-turn and you want to keep the conversation going.
 | `quiet` | session mode: the stream has been silent for another `quiet_interval` seconds |
 | `stop_word` | session mode: you said a stop phrase; no turn ran |
 | `error` | the turn failed (spoken-safe text) |
+| `conversation` | Proposed conversation-v1 selection acknowledgement (section 11). |
 
 ### Microphone streaming and barge-in
 
@@ -590,7 +593,8 @@ Every provisioned Arya has a required human-readable name, usually its room:
 serving profile, name, optional room and aliases, permissions, and a revocable
 device-bound attachment credential. The recipient identifies the physical
 Arya across reconnects; it is not a conversation or the transient arbitration
-candidate. Internal IDs are opaque strings; their wire format need not be a
+candidate. The existing `start.name` still names the assistant for its voice
+prompt; it does not name or register the physical Arya. Internal IDs are opaque strings; their wire format need not be a
 GUID. Users identify Aryas by name.
 
 Within one household/profile, require unique names after Unicode NFKC
@@ -684,7 +688,11 @@ After setup, resume by saved Hermes reference; names are for people and lookup,
 not a replacement for stable binding. If the saved session was deleted or
 becomes inaccessible, report `conversation_unavailable` and require explicit
 selection or new-conversation recovery. Storage failure must not silently
-create empty context. Follow Hermes ownership/admission rules for sessions used
+create empty context. Pre-ready selection failures send `error` with
+`error: "conversation_unavailable"` and close with `4404 conversation_unavailable`.
+Live selection failures echo `request_id`, keep the socket open, and preserve
+the prior selection; use the same generic unavailable error for missing or
+unauthorized sessions. Follow Hermes ownership/admission rules for sessions used
 by another surface; selecting a session does not authorize taking over its run.
 
 There is **no Converse inactivity expiry** for the default or an explicitly
