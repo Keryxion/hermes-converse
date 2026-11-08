@@ -56,7 +56,7 @@ def test_adaptive_commits_immediately_when_turn_sounds_complete():
     det = _ScriptedDetector([0.95])
     session = _adaptive_session(det)
     _feed_silence(session, session._endpoint_blocks + 4)
-    wav_path, volume = session._capture_adaptive(silence_rms=float(vad.SILENCE_RMS_THRESHOLD))
+    wav_path, volume = session._capture_adaptive()
     assert det.calls == 1
     assert volume >= 0
     with wave.open(wav_path, "rb") as wf:
@@ -68,7 +68,7 @@ def test_adaptive_holds_then_commits_capturing_more_audio():
     det = _ScriptedDetector([0.1, 0.2, 0.9])
     session = _adaptive_session(det)
     _feed_silence(session, session._endpoint_blocks * 4 + 4)
-    wav_path, _volume = session._capture_adaptive(silence_rms=float(vad.SILENCE_RMS_THRESHOLD))
+    wav_path, _volume = session._capture_adaptive()
     assert det.calls == 3
     vad.unlink_quietly(wav_path)
 
@@ -77,7 +77,7 @@ def test_adaptive_gives_up_after_max_holds():
     det = _ScriptedDetector([0.0])
     session = _adaptive_session(det, max_blocks=500)
     _feed_silence(session, session._endpoint_blocks * 6 + 4)
-    wav_path, _volume = session._capture_adaptive(silence_rms=float(vad.SILENCE_RMS_THRESHOLD))
+    wav_path, _volume = session._capture_adaptive()
     assert det.calls == MAX_ENDPOINT_HOLDS
     vad.unlink_quietly(wav_path)
 

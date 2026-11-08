@@ -12,6 +12,7 @@ from typing import Any, Callable, Optional
 
 from .phrases import normalize_phrases
 from .arbitrate import DEFAULT_WAKE_WINDOW, POLICY_FIRST_TO_ENDPOINT, POLICY_WAKE_SIGNAL
+from .speech_detector import DEFAULT_VAD_MODEL
 
 DEFAULT_NAME = "Arya"
 DEFAULT_STOP_PHRASES = ("stop", "cancel")
@@ -53,6 +54,7 @@ class Settings:
     end_phrases: tuple[str, ...] = DEFAULT_END_PHRASES
     endpoint_model: bool = False
     endpoint_threshold: float = DEFAULT_ENDPOINT_THRESHOLD
+    vad_model: str = DEFAULT_VAD_MODEL
     approval_choice: str = "deny"
     api_base_url: str = ""
     # Cooperative wake recommendations; never suppress streamed audio.
@@ -105,6 +107,7 @@ def load_settings(get: Getter) -> Settings:
         stop_phrases=normalize_phrases(get("stop_phrases", DEFAULT_STOP_PHRASES), DEFAULT_STOP_PHRASES),
         end_phrases=normalize_phrases(get("end_phrases", DEFAULT_END_PHRASES), DEFAULT_END_PHRASES),
         endpoint_model=_model_enabled(get("endpoint_model", "")),
+        vad_model="energy" if str(get("vad_model", DEFAULT_VAD_MODEL)).strip().lower() == "energy" else "silero",
         endpoint_threshold=min(1.0, max(0.0, _number(get("endpoint_threshold", DEFAULT_ENDPOINT_THRESHOLD),
                                                        DEFAULT_ENDPOINT_THRESHOLD))),
         approval_choice=approval if approval in APPROVAL_CHOICES else "deny",

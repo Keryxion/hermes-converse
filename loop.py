@@ -7,7 +7,7 @@ Pieces:
 * :class:`NetworkMicStream` — a ``sounddevice``-shaped shim whose ``.read()`` pulls int16 blocks
   from a thread-safe queue fed by a WebSocket.
 * :class:`ConverseSession` — drives the VAD/STT loop on a worker thread: read 30 ms blocks, feed the
-  :class:`~.vad.BargeDetector`, and on a trip capture the utterance, transcribe it and hand the
+  :class:`~.speech_detector.SpeechDetector`, and on a trip capture the utterance, transcribe it and hand the
   transcript to the driver. It also owns the ``playing`` flag and barge-in (a trip while playing cuts
   TTS) and the session-mode quiet / playback-tail accounting.
 * :func:`drive_converse_turns` — one agent turn per transcript: announce it, run the turn through
@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Iterator, Optional
 
 from . import speech, vad
+from .speech_detector import DEFAULT_VAD_MODEL, SpeechDetector
 from .phrases import is_end_phrase, is_stop_phrase, strip_end_phrase
 from .settings import (
     DEFAULT_END_PHRASES, DEFAULT_MAX_TTS_CHARS, DEFAULT_NAME, DEFAULT_STOP_PHRASES,
@@ -234,6 +235,7 @@ class ConverseSession:
         self, np: Any, *, input_rate: int = DEFAULT_INPUT_RATE, quiet_interval: float = 0.0,
         transcribe: Optional[Callable[[str], str]] = None, barge_multiplier: Optional[float] = None,
         endpoint_model: bool = False, endpoint_threshold: float = SMART_TURN_DEFAULT_THRESHOLD,
+        vad_model: str = DEFAULT_VAD_MODEL,
     ) -> None:
         self._np = np
         self._state_lock = threading.RLock()
@@ -280,7 +282,7 @@ class ConverseSession:
         # None sentinel on shutdown.
         self.transcripts: queue.Queue = queue.Queue()
         self._block = int(self._input_rate * vad.BLOCK_MS / 1000)
-        self._detector = vad.converse_detector(np, mult=barge_multiplier)
+        self._detector = SpeechDetector(np, model=vad_model, input_rate=self._input_rate, mult=barge_multiplier)
         self._pre_roll: deque = deque(maxlen=max(1, vad.PRE_ROLL_MS // vad.BLOCK_MS))
         self._endpoint_blocks = max(1, vad.ENDPOINT_SILENCE_MS // vad.BLOCK_MS)
         self._max_blocks = max(1, vad.MAX_UTTERANCE_MS // vad.BLOCK_MS)
@@ -350,7 +352,6 @@ class ConverseSession:
         self._worker.start()
 
     def _run(self) -> None:
-        np = self._np
         try:
             while not self._stop.is_set():
                 if self._tail_active and time.monotonic() >= self._tail_deadline:
@@ -361,10 +362,9 @@ class ConverseSession:
                 with self._state_lock:
                     if self.stream._read_epoch != self.stream._epoch:
                         continue  # samples received before the last drain/reset
-                    level = vad.rms(np, data)
                     busy = self._turn_active.is_set() or self._pending_turn.is_set() or self._tail_active
                     playing = self.playing() or self._tail_active
-                    phase = self._detector.feed(level, playing)
+                    phase = self._detector.feed(data, playing)
                     if busy or self._discard_until_quiet:
                         # Never put active-turn speech (or its pre-roll) through ordinary STT.
                         self._pre_roll.clear()
@@ -378,8 +378,7 @@ class ConverseSession:
                             elif self._pending_turn.is_set():
                                 self._cancelled.set()
                         if self._discard_until_quiet:
-                            if level < max(float(vad.SILENCE_RMS_THRESHOLD),
-                                           self._detector.quiet_floor * vad.CONVERSE_ENDPOINT_FLOOR_MULT):
+                            if self._detector.quiet:
                                 self._discard_quiet_blocks += 1
                                 if self._discard_quiet_blocks >= self._endpoint_blocks:
                                     self._discard_until_quiet = False
@@ -581,20 +580,19 @@ class ConverseSession:
         np = self._np
         generation = self._generation
         recorder = recorder or PhaseRecorder()
-        silence_rms = max(float(vad.SILENCE_RMS_THRESHOLD),
-                          self._detector.quiet_floor * vad.CONVERSE_ENDPOINT_FLOOR_MULT)
         with recorder.phase("voice.capture", **{
                 "endpoint.silence_ms": self._endpoint_blocks * self._block * 1000 / self._input_rate,
         }) as cap:
             if self._turn_detector is not None:
                 cap.set(**{"endpoint.mode": "smart_turn"})
-                wav_path, volume = self._capture_adaptive(silence_rms, phase=cap)
+                wav_path, volume = self._capture_adaptive(phase=cap)
             else:
                 cap.set(**{"endpoint.mode": "fixed"})
                 wav_path, volume = vad.capture_until_quiet(
                     self.stream, np, self._block, self._pre_roll,
                     endpoint_blocks=self._endpoint_blocks, max_blocks=self._max_blocks,
-                    sample_rate=self._input_rate, silence_rms=silence_rms)
+                    sample_rate=self._input_rate, is_quiet=self._detector.is_quiet)
+            cap.set(**{"vad.model": self._detector.name})
             # Audio duration differs from elapsed capture time when activation audio is buffered.
             # Read only the WAV header; no audio or transcript is exported.
             with contextlib.suppress(OSError, wave.Error):
@@ -616,7 +614,7 @@ class ConverseSession:
             stt.set(**{"stt.transcript_chars": len(transcript), "stt.success": bool(transcript)})
         return transcript, volume
 
-    def _capture_adaptive(self, silence_rms: float, *, phase: Any = None) -> tuple[str, float]:
+    def _capture_adaptive(self, *, phase: Any = None) -> tuple[str, float]:
         """Semantic endpoint: mirror the fixed-silence capture, but on reaching a candidate pause ask
         Smart Turn whether the utterance *sounds* finished; hold (keep listening) when it doesn't,
         bounded by ``MAX_ENDPOINT_HOLDS`` and the utterance cap. Returns ``(wav_path, volume)``."""
@@ -629,7 +627,7 @@ class ConverseSession:
             if self._stop.is_set():
                 break
             frames.append(data.copy())
-            if vad.rms(np, data) < silence_rms:
+            if self._detector.is_quiet(data):
                 quiet += 1
             else:
                 quiet = 0

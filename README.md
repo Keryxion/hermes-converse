@@ -139,6 +139,7 @@ plugin settings form):
 | `max_tts_chars_per_turn` | `1500` | safety cap on how much of one reply is spoken |
 | `stop_phrases` | `[stop, cancel]` | session mode: saying exactly one of these ends the exchange |
 | `end_phrases` | `[over and out]` | session mode: a reply ending with one of these signs off |
+| `vad_model` | `silero` | speech detection with automatic energy fallback; set `energy` to use RMS detection only |
 | `endpoint_model`, `endpoint_threshold` | off, `0.5` | Smart Turn v3 semantic endpointer (see below) |
 | `approval_choice` | `deny` | what a voice turn answers when the agent asks for a command approval |
 | `api_base_url` | `""` | loopback URL of the API server when it cannot be derived from the listener |
@@ -181,6 +182,27 @@ audio sent by noncooperating clients after a denial or without a claim. Cooperat
 must follow the gate; idle and losing devices do not stream their ambient audio.
 With arbitration disabled, requests receive immediate grants. See [client spec.md](client%20spec.md) for the full protocol,
 and examples.
+
+**Speech detection.** Silero VAD is the default for speech onset, barge-in, and
+capture silence. It runs locally on CPU through ONNX Runtime without PyTorch.
+On first use, the plugin downloads the ~1.3 MB MIT-licensed Silero v6.2.3 model
+from its pinned upstream tag, verifies its SHA-256, and caches it under
+`<HERMES_HOME>/cache/voice/silero_vad_16k_op15.onnx`. A verified cache supports
+offline use. Run `hermes converse doctor` before restarting the gateway to
+prepare the cache and check the selected detector.
+
+Missing ONNX Runtime, unavailable weights, or inference failures fall back to
+the energy detector and log the reason. `vad_model: energy` skips model loading
+and downloads entirely. Doctor reports the fallback as a failed Silero check.
+Intel macOS and Android installations without ONNX Runtime use energy detection.
+Silero distinguishes speech from non-speech; it can also hear speaker echo as
+speech, so playback uses an echo-relative level guard. Detection alone does not
+prevent a spoken wake phrase from becoming an utterance.
+
+Silero and Smart Turn work together: Silero finds candidate pauses; Smart Turn,
+when enabled, decides whether the person has finished their thought. Speech
+onset needs at least 250 ms above Silero's speech threshold (0.5, continuing down
+to 0.35). The existing silence window and utterance cap still apply.
 
 **Smart Turn v3** (optional): with `endpoint_model: smart-turn-v3` the fixed silence endpoint
 becomes adaptive — on each candidate pause the model estimates whether the utterance sounds
@@ -248,7 +270,7 @@ API-server client.
 | `arbitrate.py` | advisory selection among wake claims; audio processing is independent |
 | `agent_client.py` | the Runs API client: idempotent run creation, SSE with replay-safe sequence tracking, stop, approval answers |
 | `auth.py` | key verification through the API server's own `/v1/capabilities` |
-| `vad.py` | the barge/onset detector, endpointer and WAV capture |
+| `vad.py`, `speech_detector.py`, `silero_vad.py` | energy/Silero speech detection, verified model cache, endpointing and WAV capture |
 | `synth.py` | one `text → int16 PCM` seam over streaming or one-shot TTS, plus resampling |
 | `speech.py` | the only module that imports Hermes core speech helpers |
 | `phrases.py`, `settings.py` | stop/end phrase policy and the settings schema |
@@ -290,6 +312,14 @@ Tracing SDK/exporter tests run when `opentelemetry-sdk` is installed (included i
 
 The suite drives the real VAD, endpointer, capture, resampler, Runs client and route against a
 scripted in-process stand-in for the Runs API; only STT, the TTS provider and the model are faked.
+
+
+Real Silero regression tests use the checked-in human-speech fixture and a separately cached
+model. Ordinary tests stay offline and exercise the energy fallback. To include real inference:
+
+```bash
+HERMES_TEST_SILERO_MODEL=/path/to/silero_vad_16k_op15.onnx HERMES_AGENT_ROOT=/path/to/hermes-agent python -m pytest tests/test_silero_vad.py
+```
 
 ## Disclosure
 

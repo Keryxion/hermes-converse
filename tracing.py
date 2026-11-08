@@ -24,7 +24,7 @@ _provider_lock = threading.Lock()
 # Explicit metadata only: never export audio, transcripts, reply text, or exception messages.
 _ATTRIBUTE_KEYS = frozenset({
     "turn_id", "session.id", "input_rate", "session_mode", "outcome", "interrupted", "next_action",
-    "endpoint.mode", "endpoint.probability", "endpoint.threshold", "endpoint.decision", "endpoint.reason",
+    "vad.model", "endpoint.mode", "endpoint.probability", "endpoint.threshold", "endpoint.decision", "endpoint.reason",
     "endpoint.holds", "stt.success", "stt.model", "stt.transcript_chars", "llm.ttft_ms", "reply.chars",
     "input.audio_ms", "endpoint.silence_ms",
     "llm.deltas", "error", "llm.timed_out", "tts.pcm_chunks", "tts.first_pcm_ms",
