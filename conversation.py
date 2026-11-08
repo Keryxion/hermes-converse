@@ -23,6 +23,7 @@ class VoiceRequest:
 @dataclass
 class Attachment:
     session: Any
+    conversation_id: str = ""
     seen: OrderedDict = field(default_factory=OrderedDict)
     voice_request: VoiceRequest | None = None
     pending: int = 0
@@ -39,14 +40,22 @@ class ConversationHub:
         with self._lock:
             if conversation_id in self._attachments:
                 raise ValueError("conversation_in_use")
-            item = Attachment(session)
+            item = Attachment(session, conversation_id)
             self._attachments[conversation_id] = item
             return item
 
     def detach(self, conversation_id: str, attachment: Attachment) -> None:
         with self._lock:
-            if self._attachments.get(conversation_id) is attachment:
-                self._attachments.pop(conversation_id)
+            for alias, item in list(self._attachments.items()):
+                if item is attachment:
+                    self._attachments.pop(alias)
+
+    def alias(self, conversation_id: str, attachment: Attachment) -> None:
+        with self._lock:
+            existing = self._attachments.get(conversation_id)
+            if existing is not None and existing is not attachment:
+                raise ValueError("conversation_in_use")
+            self._attachments[conversation_id] = attachment
 
     @contextmanager
     def owned_run(self, attachment: Attachment, text: str):
@@ -68,7 +77,7 @@ class ConversationHub:
                               if response[0] == request.reply), None)
             for event_id, (response, expiry) in candidates:
                 if not request.cancelled and event_id != own_event:
-                    self.publish(attachment.session.session_id, response, event_id, expires_at=expiry)
+                    self.publish(attachment.conversation_id, response, event_id, expires_at=expiry)
                 else:
                     # Only confirmed duplicates or explicitly cancelled requests are suppressed.
                     # A failed run with no reply cannot identify any candidate as its duplicate.
@@ -103,7 +112,7 @@ class ConversationHub:
             return "accepted"
 
     def on_response(self, *, session_id=None, turn_id=None, assistant_response=None,
-                    user_message=None, **kwargs):
+                    user_message=None, task_id=None, **kwargs):
         """Observe final, transformed conversation responses, not raw token/reasoning streams.
 
         Voice-owned runs already have a streaming TTS path and must never be spoken twice.
@@ -119,9 +128,15 @@ class ConversationHub:
         event_id = f"turn:{turn_id}"
         with self._lock:
             item = self._attachments.get(session_id)
+            # Hermes keeps the API task identity when compression rotates agent.session_id.
+            if item is None and isinstance(task_id, str):
+                item = self._attachments.get(task_id)
+                if item is not None:
+                    self._attachments[session_id] = item
+            delivery_id = item.conversation_id if item is not None else session_id
             request = item.voice_request if item is not None else None
             if request is not None and user_message == request.text:
                 if len(request.candidates) < 32 or event_id in request.candidates:
                     request.candidates[event_id] = (assistant_response, time.time() + 60)
                 return
-        self.publish(session_id, assistant_response, event_id, expires_at=time.time() + 60)
+        self.publish(delivery_id, assistant_response, event_id, expires_at=time.time() + 60)

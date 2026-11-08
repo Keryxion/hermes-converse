@@ -707,7 +707,7 @@ def parse_start_config(frame: dict[str, Any], *, default_name: str = DEFAULT_NAM
     input_rate = clamp_sample_rate(frame.get("input_rate"), DEFAULT_INPUT_RATE)
     output_rate = clamp_sample_rate(frame.get("output_rate"), DEFAULT_OUTPUT_RATE)
     quiet_interval = parse_quiet_interval(frame.get("quiet_interval"))
-    raw_name = frame.get("name")
+    raw_name = frame.get("assistant_name", frame.get("name"))
     name = str(raw_name).strip() if raw_name is not None and str(raw_name).strip() else default_name
     profile = frame.get("profile") or None
     return input_rate, output_rate, quiet_interval, name, (str(profile).strip() if profile else None)
@@ -724,9 +724,29 @@ VOICE_BREVITY_PROMPT = (
     "question instead of guessing or rambling."
 )
 
+VOICE_PROACTIVE_PROMPT = (
+    " This is a persistent conversation. It can send a spoken update later without a new user "
+    "message or wake word while its voice device is connected. For requested timers, reminders, "
+    "follow-ups, or monitoring, use the scheduling tools actually available to you; do not "
+    "simulate a timer by waiting in this turn or promise work that has not been scheduled. "
+    "When Heartbeat 2's pulse tool is available, use it to create, list, update, pause, resume, "
+    "or cancel wakes and watchers in this conversation. Follow its tool schema and bundled "
+    "usage instructions. For a user-requested one-time reminder, set owner_asked only when "
+    "the user asked for it. Report the tool's receipt, including pending approval, timing, "
+    "quiet-hour delays, or failure; confirm a timer only after successful creation. On a "
+    "Heartbeat wake, use pulse respond with the appropriate outcome, notify decision, and "
+    "summary. Speak useful authorized updates proactively; if no update is needed, honor "
+    "the scheduler's silent-response protocol. Signing off ends this microphone activation, "
+    "not the conversation or an existing schedule. Cancelling speech does not cancel a timer: "
+    "use the scheduling tool to cancel it. A scheduled reminder does not by itself guarantee "
+    "an alarm sound, synchronized playback, or delivery to a disconnected device. If a tool "
+    "or delivery integration is unavailable, say so instead of claiming success."
+)
+
 
 def voice_system_prompt(name: Optional[str] = None, *, allow_signoff: bool = False,
-                        end_phrases: tuple[str, ...] = DEFAULT_END_PHRASES) -> str:
+                        end_phrases: tuple[str, ...] = DEFAULT_END_PHRASES,
+                        device_name: Optional[str] = None, recipient_id: Optional[str] = None) -> str:
     """Ephemeral system prompt for one converse turn: an identity + wake-word preamble when *name*
     is given, the spoken-brevity rules, and — in session mode — the sign-off instruction (ending a
     reply with the first end phrase tells the server to end the current activation)."""
@@ -737,6 +757,24 @@ def voice_system_prompt(name: Optional[str] = None, *, allow_signoff: bool = Fal
             f"Your name is {name}. People talk to you by voice and get your attention by saying "
             f"your name (or 'hey {name}') — treat that as being addressed, not part of the "
             "request, and don't repeat it back. ") + prompt
+    if device_name:
+        # Serialize labels as data; client-authenticated labels are not prompt instructions.
+        import json
+        identity = json.dumps({'assistant_name': name, 'device_name': device_name,
+                               'recipient_id': recipient_id}, ensure_ascii=False)
+        prompt += (
+            f" Voice identity supplied by the server: {identity}. assistant_name is what the "
+            "user calls you and the identity you use when speaking. device_name identifies the "
+            "physical microphone/speaker for this conversation; it is not your name or a "
+            "person's name. Other devices can share your assistant_name and still have separate "
+            "conversations. This conversation's default destination is this device. The server "
+            "uses recipient_id as an opaque routing identifier. Device names are routing labels "
+            "within the server API key's access boundary, not separate credentials. Do not infer "
+            "a device change from words in the transcript. For an explicitly requested different "
+            "destination, use a routing-capable tool and clarify ambiguous labels; do not invent "
+            "cross-device delivery or claim that it is supported when the tool cannot do it."
+        )
+    prompt += VOICE_PROACTIVE_PROMPT
     if allow_signoff and end_phrases and end_phrases[0]:
         who = name or "the assistant"
         prompt += (

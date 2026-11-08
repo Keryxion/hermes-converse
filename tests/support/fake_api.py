@@ -27,6 +27,8 @@ class FakeRunsAPI:
         self.drop_after = drop_after
         self.runs: dict[str, dict[str, Any]] = {}
         self.sessions: dict[str, dict] = {}
+        self.messages: dict[str, list] = {}
+        self.continuations: dict[str, str] = {}
         self.approvals: list[dict[str, Any]] = []
         self.clarifies: list[dict[str, Any]] = []
         self.subscriptions: list[tuple[str, Optional[str]]] = []
@@ -38,7 +40,9 @@ class FakeRunsAPI:
         return [
             web.get("/v1/capabilities", self.capabilities),
             web.post("/api/sessions", self.create_session),
+            web.get("/api/sessions", self.list_sessions),
             web.get("/api/sessions/{session_id}", self.get_session),
+            web.get("/api/sessions/{session_id}/messages", self.session_messages),
             web.post("/v1/runs", self.create_run),
             web.get("/v1/runs/{run_id}", self.status),
             web.get("/v1/runs/{run_id}/events", self.events),
@@ -74,8 +78,29 @@ class FakeRunsAPI:
             return err
         body = await request.json()
         session_id = body["id"]
-        self.sessions[session_id] = {"id": session_id, "source": "api_server"}
+        if session_id in self.sessions:
+            return web.json_response({'error': {'code': 'session_exists'}}, status=409)
+        if body.get('title') and any(s.get('title') == body['title'] for s in self.sessions.values()):
+            return web.json_response({'error': {'code': 'invalid_title'}}, status=400)
+        self.sessions[session_id] = {"id": session_id, "source": "api_server", 'title': body.get('title')}
         return web.json_response({"session": self.sessions[session_id]}, status=201)
+
+    async def list_sessions(self, request):
+        err = self._auth(request)
+        if err is not None:
+            return err
+        return web.json_response({'data': [s for s in self.sessions.values()
+                                          if s.get('title') == request.query.get('title')], 'has_more': False})
+
+    async def session_messages(self, request):
+        err = self._auth(request)
+        if err is not None:
+            return err
+        sid = request.match_info['session_id']
+        if sid not in self.sessions:
+            return web.json_response({}, status=404)
+        live = self.continuations.get(sid, sid)
+        return web.json_response({'session_id': live, 'data': self.messages.get(live, [])[-40:]})
 
     async def get_session(self, request):
         err = self._auth(request)

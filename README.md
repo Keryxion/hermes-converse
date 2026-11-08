@@ -31,13 +31,21 @@ Dial `ws://<host>:<port>/v1/audio/converse` and send one `start` frame first:
 
 ```json
 {"type": "start", "key": "<API_SERVER_KEY>", "input_rate": 16000, "output_rate": 24000,
- "quiet_interval": 0, "name": "Sakura"}
+ "quiet_interval": 0, "assistant_name": "Alexa", "device_name": "Den Echo",
+ "extensions": {"arya-v1": {}}}
 ```
 
 A browser client can put the key in the WebSocket subprotocols instead (`hermes-voice-v1` plus
 `hermes-key.<API_SERVER_KEY>`); the server accepts only `hermes-voice-v1` and never echoes the key.
 Either way the key is verified against the API server itself, so your existing key is the only
 secret.
+
+`assistant_name` is what you call the assistant. `device_name` is the microphone/speaker label,
+unique within this server/profile. The server opens the Hermes conversation titled
+`Alexa: Den Echo`, reusing its history across reconnects and gateway restarts. The voice prompt
+explains both names, the default device destination, and proactive output through available
+scheduling tools. Configure the same names on reconnect; changing names does not migrate history.
+Wait for `ready.extensions.arya-v1` before treating named-device behavior as available.
 
 For wake-word clients, detect the wake word locally, send `wake`, and buffer all microphone
 PCM while awaiting arbitration for up to **1000 ms**. Only a matching grant starts streaming:
@@ -95,9 +103,15 @@ Keep streaming through playback drain, then follow `next_action`. An open socket
 require sending idle ambient audio. See [the client spec](client%20spec.md#handling-turn_donenext_action)
 for the full action contract.
 
-`ready.conversation_id` is the persisted API conversation ID, also returned as `session_id`.
-Send it as `start.conversation_id` to reattach. One voice client may attach at a time. Completed
-responses for that conversation can play without microphone input or a wake word. The public
+Named clients send names and the API key, without a conversation override or another credential.
+`ready.session_id` identifies this socket; `ready.extensions.arya-v1.recipient_id` identifies the
+device for routing. A replacement closes the old socket with `4409 attachment_replaced` and
+settles its run before accepting new work. Uncertain admission or unfinished cancellation returns
+`conversation_busy`; retry rather than replaying an utterance whose outcome is unknown.
+The server keeps device identities/session references in profile-local
+`plugin-data/hermes-converse/devices.db`. Messages, compression, and retention stay in Hermes.
+
+Completed responses for the underlying conversation can play without microphone input or a wake word. The public
 final-response hook suppresses voice-owned duplicates and `[SILENT]` output; producers outside
 the process can use authenticated `POST /v1/audio/conversations/<id>/output` with `event_id`,
 `text`, and `expires_at_unix_ms`. Delivery is connected-only and waits for prior speaker drain.
@@ -106,7 +120,10 @@ See [client spec section 9](client%20spec.md#9-conversation-output-without-user-
 Announcement/alarm capabilities and playback acknowledgements, server-owned timers, and
 synchronized group announcements remain in [issue #34](https://github.com/Keryxion/hermes-converse/issues/34).
 Heartbeat 2 scheduling still needs integration with API conversations; installing it alone does
-not enable later voice delivery. Clients do not schedule offline alarms.
+not enable later voice delivery. Its installed `pulse` tool may refuse API-server sessions;
+the prompt requires the assistant to report that refusal and to confirm only successful scheduling
+receipts. It explains that cancelling speech does not cancel a scheduled timer. Clients do not
+schedule offline alarms.
 
 ## Settings
 
@@ -235,6 +252,7 @@ API-server client.
 | `synth.py` | one `text → int16 PCM` seam over streaming or one-shot TTS, plus resampling |
 | `speech.py` | the only module that imports Hermes core speech helpers |
 | `phrases.py`, `settings.py` | stop/end phrase policy and the settings schema |
+| `named.py` | named-device routing records and public Hermes conversation lookup/continuation |
 | `turn_detector.py`, `tracing.py` | the optional Smart Turn endpointer and host-configured OTEL tracing backend |
 
 `speech.py` imports a handful of core helpers that are not yet on Hermes's public plugin API

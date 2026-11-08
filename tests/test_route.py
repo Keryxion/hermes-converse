@@ -54,14 +54,14 @@ class Harness:
     """One app serving the fake Runs API and the plugin route; the route's loopback URL is this
     server's own URL once it has started."""
 
-    def __init__(self, fake: FakeRunsAPI, settings: dict | None = None):
+    def __init__(self, fake: FakeRunsAPI, settings: dict | None = None, *, device_store=None):
         self.fake = fake
         self.settings = settings or {}
         self.base = {"url": ""}
         app = web.Application()
         app.add_routes(fake.routes())
         self.route = ConverseRoute(settings_getter=lambda key, default=None: self.settings.get(key, default),
-                      base_url_resolver=lambda: self.base["url"], profile_name="default")
+                      base_url_resolver=lambda: self.base["url"], profile_name="default", device_store=device_store)
         self.route.wire(app)
         self.app = app
 

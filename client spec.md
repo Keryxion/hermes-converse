@@ -40,7 +40,8 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 
 ```json
 {"type": "start", "key": "<API_SERVER_KEY>", "input_rate": 16000,
- "output_rate": 24000, "quiet_interval": 0, "assistant_name": "Arya", "device_name": "Den Echo"}
+ "output_rate": 24000, "quiet_interval": 0, "assistant_name": "Arya", "device_name": "Den Echo",
+ "extensions": {"arya-v1": {}}}
 ```
 
 | field | what it does |
@@ -52,6 +53,7 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 | `quiet_interval` | session mode: seconds of silence between turns (0 = off) |
 | `device_name` | The configured device label, such as `Den Echo`; required for named-device connections (section 11). |
 | `assistant_name` | What you call the assistant, such as `Arya` or `Alexa`, without “Hey”. Used in the voice system prompt; separate from the device label, such as `Den Echo`. |
+| `extensions` | Include `{"arya-v1":{}}` to negotiate named-device behavior (section 11). No extra token is required. |
 
 **Client profile selection is removed.**
 
@@ -63,7 +65,7 @@ This applies to every client, including macOS, iOS, Echo, and ESP32 clients.
 
 The connection uses the Hermes profile that owns the configured server listener.
 Clients select a server URL and authenticate to it; the `start` frame does not
-select or switch Hermes profiles. `name` only sets the assistant's spoken identity
+select or switch Hermes profiles. `assistant_name` only sets the assistant's spoken identity
 and does not select a profile either. There is no supported profile-prefixed
 converse route in this contract; do not construct `/p/<profile>/` URLs to replace
 the removed field.
@@ -649,6 +651,10 @@ Use `device_name` for the device label, such as `Den Echo` or `Kitchen`.
 Device labels must be unique on the server; configure the label in the client.
 Many devices may share the same assistant name. The detected wake phrase is
 sent separately in `wake.wake_word` (section 8).
+
+Names are case-sensitive labels. The server normalizes Unicode to NFC, trims and collapses
+whitespace, and rejects control/format characters, empty names, or a combined title over 100
+characters. Use the same configured names on reconnect. The names are not additional credentials.
 
 Each device uses a persistent conversation titled
 **`<assistant_name>: <device_name>`**, for example `Alexa: Den Echo`.
