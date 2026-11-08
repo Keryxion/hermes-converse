@@ -54,8 +54,10 @@ Then stream binary PCM16 mono frames at `input_rate` (30 ms blocks are ideal). T
 | `stop_word` | session mode: you said a stop phrase; no turn ran |
 
 Client control frames: `{"stop": true}` ends the session, `{"commit": true}` forces the current
-utterance to endpoint, `{"type": "drained", "turn_id": "..."}` says the reply's last audio has left
-the speaker (the server holds the VAD until then so its own echo is never transcribed).
+utterance to endpoint, `{"type": "cancel", "turn_id": "..."}` cancels the current turn while
+keeping the socket, session and history alive, `{"type": "drained", "turn_id": "..."}` says the
+reply's last audio has left the speaker (the server holds the VAD until then so its own echo is
+never transcribed).
 
 **Session mode** (`quiet_interval` > 0) is for wake-word devices: the server reports quiet in
 *received* audio (never wall-clock, so a held-open socket never accrues phantom quiet), ends the

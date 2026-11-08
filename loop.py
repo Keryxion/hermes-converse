@@ -147,6 +147,18 @@ class TailBarge:
         self.turn_id = turn_id
 
 
+class CancelTurn:
+    """Marker: the client sent ``{"type": "cancel"}``. The current capture is aborted (its
+    transcript is discarded, no turn runs on it) and any in-flight turn's TTS + agent are stopped,
+    but the socket, session and conversation history stay alive. The driver turns this into
+    ``interrupted`` + ``turn_done`` for the cancelled turn."""
+
+    __slots__ = ("turn_id",)
+
+    def __init__(self, turn_id: Optional[str] = None) -> None:
+        self.turn_id = turn_id
+
+
 class Utterance(str):
     """A transcript carrying the :mod:`tracing` recorder of the capture that produced it. It is a
     ``str``, so everything that reads the queue as plain transcripts keeps working."""
@@ -198,6 +210,12 @@ class ConverseSession:
         self._playing = threading.Event()
         self._tts_stop: Optional[threading.Event] = None
         self._interrupted = threading.Event()
+        # Cancel: set by ``cancel()`` to abort an in-progress capture (its transcript is discarded,
+        # no turn runs on it) and to stop an in-flight turn's TTS + agent without ending the session.
+        self._cancelled = threading.Event()
+        # True while the VAD worker is mid-capture, so ``cancel()`` knows whether aborting a capture
+        # (and queuing a CancelTurn marker) applies to the capture happening right now.
+        self._capturing = False
         self.stream = NetworkMicStream(np, stop=self._stop)
         # The event stream the driver consumes: a transcript str, a QuietTick, a TailBarge, or the
         # None sentinel on shutdown.
@@ -297,7 +315,16 @@ class ConverseSession:
                     except Exception:
                         logger.debug("converse on_trip callback failed", exc_info=True)
                 recorder = PhaseRecorder(input_rate=self._input_rate, session_mode=self._quiet_interval > 0)
-                transcript = self._capture_and_transcribe(recorder)
+                self._capturing = True
+                self._cancelled.clear()  # fresh capture: an idle cancel must not poison it
+                try:
+                    transcript = self._capture_and_transcribe(recorder)
+                finally:
+                    self._capturing = False
+                # A cancelled capture is discarded: no turn runs on it, the session stays alive.
+                if self._cancelled.is_set():
+                    self._cancelled.clear()
+                    continue
                 if transcript:
                     self.transcripts.put(Utterance(transcript, recorder))
         except Exception:
@@ -347,6 +374,27 @@ class ConverseSession:
         the current tail when no id is given)."""
         if self._tail_active and (turn_id is None or turn_id == self._tail_turn_id):
             self.end_playback_tail()
+
+    def cancel(self, turn_id: Optional[str] = None) -> None:
+        """Client hook (``{"type":"cancel"}``): abort an in-progress capture (its transcript is
+        discarded, no turn runs on it), stop the in-flight turn's TTS + agent if one is playing,
+        end the playback tail — and keep the socket, session and history. Queues a
+        :class:`CancelTurn` marker when a capture was aborted so the driver emits ``interrupted``
+        + ``turn_done`` for the cancelled turn."""
+        self._cancelled.set()
+        # Unblock stream.read() so an in-progress capture ends promptly instead of blocking on the
+        # mic queue. (Mirrors commit().)
+        silence = self._np.zeros(self._block, dtype=self._np.int16).tobytes()
+        for _ in range(self._endpoint_blocks + 1):
+            self.stream.feed(silence)
+        # Stop an in-flight turn's TTS + agent, like a VAD barge-in does.
+        if self._tts_stop is not None:
+            self._tts_stop.set()
+            self._interrupted.set()
+        self._playing.clear()
+        self.end_playback_tail()
+        if self._capturing:
+            self.transcripts.put(CancelTurn(turn_id))
 
     def _trigger_barge_in(self) -> None:
         """Cut the in-flight reply: latch the interrupt note and stop TTS."""
@@ -601,6 +649,12 @@ async def drive_converse_turns(
             continue
         if isinstance(item, TailBarge):
             await send_json({"type": "interrupted", "turn_id": item.turn_id})
+            continue
+        if isinstance(item, CancelTurn):
+            # A cancelled capture / turn: the socket, session and history stay alive; only this
+            # turn stops. Emit interrupted + turn_done for it.
+            await send_json({"type": "interrupted", "turn_id": item.turn_id})
+            await send_json({"type": "turn_done", "turn_id": item.turn_id})
             continue
         transcript = item
         if not transcript:
