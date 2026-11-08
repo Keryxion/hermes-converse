@@ -9,10 +9,11 @@ Keep one device record per Arya: stable recipient identity, household/profile,
 human name, optional room/aliases, permissions, credential, and default Hermes
 session reference. Names must be unique in a household. Device names identify
 destinations; conversation names select context. Neither is a credential.
-`start.name` is the assistant's spoken name for the voice system prompt, often
+`start.assistant_name` is the assistant's spoken name for the voice system prompt, often
 related to the wake word. It is not the device label and must not be used to
 identify a recipient or choose its default conversation. Several devices may
-share that assistant name. For example, a device labeled `Den Echo` can answer
+share that assistant name. `start.device_name` is the configured device label;
+check it against the authenticated device record, not against the assistant name. For example, a device labeled `Den Echo` can answer
 to `Arya` and use the default conversation `Arya: Den Echo`.
 
 Authenticate the device before resolving a conversation or accepting a timer

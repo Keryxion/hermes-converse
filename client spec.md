@@ -40,7 +40,7 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 
 ```json
 {"type": "start", "key": "<API_SERVER_KEY>", "input_rate": 16000,
- "output_rate": 24000, "quiet_interval": 0, "name": "Arya"}
+ "output_rate": 24000, "quiet_interval": 0, "assistant_name": "Arya", "device_name": "Den Echo"}
 ```
 
 | field | what it does |
@@ -51,7 +51,8 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 | `output_rate` | sample rate of PCM the server sends back (default 24000) |
 | `quiet_interval` | session mode: seconds of silence between turns (0 = off) |
 | `conversation` | Optional Hermes conversation title, used with negotiated conversation-v1; defaults to `Arya: <device name>` (section 11). |
-| `name` | What you call the assistant, such as `Arya` or `Alexa`, without “Hey”. Used in the voice system prompt; separate from the device label, such as `Den Echo`. |
+| `device_name` | The configured device label, such as `Den Echo`; required for named-device connections (section 11). |
+| `assistant_name` | What you call the assistant, such as `Arya` or `Alexa`, without “Hey”. Used in the voice system prompt; separate from the device label, such as `Den Echo`. |
 
 For a wake-word client, detect the wake word locally, buffer microphone
 PCM while awaiting arbitration for up to **1000 ms**, and start streaming
@@ -366,7 +367,7 @@ client's `claim_id` and `wake_word`.
 
 `start.device_id`, `start.area`, and `start.person` are not supported selection
 inputs. The existing `arbitrate_device_id` is an optional server-configured label prefix;
-the server appends a unique socket identifier to keep candidates distinct. The assistant's `start.name`
+the server appends a unique socket identifier to keep candidates distinct. The assistant's `start.assistant_name`
 remains separate from the exact detected `wake_word` phrase.
 
 ### Cooperating client flows
@@ -585,18 +586,19 @@ must be unique in your household; configure them during device setup. They are
 separate from what you call the assistant: many devices can answer to `Arya`
 or `Alexa` while having different device labels.
 
-`start.name` tells the assistant its name in the voice system prompt. It is
+`start.assistant_name` tells the assistant its name in the voice system prompt. It is
 related to the wake name, not the device label. The detected wake phrase is
 still sent separately in `wake.wake_word` (section 8). Renaming a device or
 choosing another conversation does not change what you call the assistant.
 
 ### Start and ready
 
-Send the device's attachment credential and optionally a conversation name in
-`start`. If `conversation` is omitted, use `Arya: <device name>`.
+Send `assistant_name`, `device_name`, the device attachment credential, and
+optionally a conversation name in `start`. `device_name` must match the device
+label configured during setup. If `conversation` is omitted, use `Arya: <device name>`.
 
 ```json
-{"type":"start","key":"<API_SERVER_KEY>","input_rate":16000,"output_rate":24000,"name":"Arya",
+{"type":"start","key":"<API_SERVER_KEY>","input_rate":16000,"output_rate":24000,"assistant_name":"Arya","device_name":"Den Echo",
  "conversation":"Arya: Den Echo",
  "extensions":{"arya-v1":{"attachment_token":"<device credential>"},"conversation-v1":{}}}
 ```
@@ -610,11 +612,11 @@ the conversation name actually opened:
 
 ```json
 {"type":"ready","session_id":"socket-9","conversation":"Arya: Den Echo",
- "extensions":{"arya-v1":{"recipient_id":"device-7","name":"Den Echo","attachment_id":"attachment-9"},"conversation-v1":{}}}
+ "extensions":{"arya-v1":{"recipient_id":"device-7","device_name":"Den Echo","attachment_id":"attachment-9"},"conversation-v1":{}}}
 ```
 
-`ready.extensions.arya-v1.name` is the device label (`Den Echo` here), not
-the assistant name supplied in `start.name` (`Arya` here). The default
+`ready.extensions.arya-v1.device_name` is the device label (`Den Echo` here), not
+the assistant name supplied in `start.assistant_name` (`Arya` here). The default
 conversation uses the device label: `Arya: Den Echo`.
 
 `session_id` identifies this socket for diagnostics. `recipient_id` identifies
