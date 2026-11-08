@@ -136,6 +136,7 @@ async def _drive_full_turn(ws, streamer):
     assert pcm == [b"\x01\x02\x03\x04", b"\x05\x06"]
     assert streamer.requests
     assert [f["type"] for f in frames] == ["transcript", "thinking", "speaking", "turn_done"]
+    assert frames[-1]["next_action"] == "listen"
     return frames
 
 
@@ -594,6 +595,7 @@ async def test_run_refusal_is_spoken_as_an_error_frame(monkeypatch):
             errors = [f for f in frames if f["type"] == "error"]
             assert errors and "409" in errors[0]["error"] and "another surface" in errors[0]["error"]
             assert pcm == [] and frames[-1]["type"] == "turn_done"
+            assert frames[-1]["next_action"] == "listen"
         finally:
             await _end(ws)
 

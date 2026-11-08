@@ -53,7 +53,7 @@ A non-wake client may stream after `ready`. The server answers:
 | `speaking` + binary frames | the reply as PCM16 at `output_rate` |
 | `interrupted` | you spoke over the reply: stop playing, the turn is cancelled |
 | `error` | the turn failed (the message is spoken-safe text) |
-| `turn_done` | the reply is fully sent; in session mode `expects_more` says whether to keep listening |
+| `turn_done` | the reply is fully sent; `next_action` tells the client to listen or enter standby after drain |
 | `quiet` | session mode: the stream has been silent for another `quiet_interval` seconds |
 | `stop_word` | session mode: you said a stop phrase; no turn ran |
 
@@ -74,12 +74,19 @@ playback-tail tracking; keep sending microphone audio throughout playback,
 `{"type": "wake", "claim_id": "...", "wake_word": "..."}` requests an advisory wake decision
 (see below) — send it when the local detector fires, then buffer audio until a matching grant.
 
+Every `turn_done` includes `next_action: "listen"` or `"standby"`. After speaker drain and
+`drained`, `listen` keeps the microphone stream open for a fresh user utterance; `standby` stops
+upstream audio and returns to local wake detection while keeping the socket open. The server
+chooses the action; clients never interpret sign-off phrases. Normal completions, cancellations,
+interruptions, and errors return `listen`; only a successful sign-off in session mode requests
+`standby`. The deprecated `expects_more` field remains for older clients. New clients prefer
+`next_action`, falling back to legacy `expects_more = false` for standby, otherwise listen.
+
 **Session mode** (`quiet_interval` > 0) is for wake-word devices: the server reports quiet in
-*received* audio (never wall-clock, so a held-open socket never accrues phantom quiet), ends the
-exchange on a stop phrase, and lets the agent sign off by ending a reply with an end phrase
-("over and out"), which arrives as `turn_done.expects_more = false`. Keep streaming through
-playback drain, then stop upstream audio and return to local wake detection when the activation
-ends. An open socket does not require sending idle ambient audio.
+*received* audio, recognizes stop phrases, and decides when to return the client to standby.
+Keep streaming through playback drain, then follow `next_action`. An open socket does not
+require sending idle ambient audio. See [the client spec](client%20spec.md#handling-turn_donenext_action)
+for the full action and migration contract.
 
 Conversation output should also reach attached clients without a wake word or user utterance.
 [Client spec sections 9–10](client%20spec.md#9-conversation-output-without-user-input-proposed-extension)

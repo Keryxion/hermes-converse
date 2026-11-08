@@ -178,7 +178,7 @@ def test_parse_start_config_defaults_and_clamps():
 
 def test_voice_system_prompt_signoff_instruction():
     with_signoff = voice_system_prompt("Sakura", allow_signoff=True)
-    assert "Over and out" in with_signoff and "stops listening" in with_signoff
+    assert "Over and out" in with_signoff and "server interprets" in with_signoff
     assert "Over and out" not in voice_system_prompt("Sakura", allow_signoff=False)
     assert "Over and out" not in voice_system_prompt("Sakura", allow_signoff=True, end_phrases=())
     assert "Your name is Sakura" in with_signoff and "Your name" not in voice_system_prompt(None)
@@ -460,6 +460,7 @@ def test_drive_converse_turns_times_out_hung_turn():
 
     asyncio.run(_main())
     assert "error" in _types(sent) and _types(sent)[-1] == "turn_done"
+    assert _turn_done_frame(sent)["next_action"] == "listen"
     assert cancelled == [True]  # the hung turn was cancelled, not left running
 
 
@@ -563,6 +564,7 @@ def test_driver_tail_barge_emits_interrupted_not_a_turn():
 def test_drive_converse_turns_signoff_sets_expects_more_false():
     sent = _run_driver(_FakeConverseSession(["are we done?"]), [], ["All set. Over and out."], quiet_interval=1.0)
     assert _turn_done_frame(sent).get("expects_more") is False
+    assert _turn_done_frame(sent)["next_action"] == "standby"
 
 
 def test_drive_converse_turns_signoff_is_not_spoken_but_still_flags():
@@ -570,6 +572,7 @@ def test_drive_converse_turns_signoff_is_not_spoken_but_still_flags():
     spoken = _spoken_bytes(sent).lower()
     assert b"see you later" in spoken and b"over and out" not in spoken
     assert _turn_done_frame(sent).get("expects_more") is False
+    assert _turn_done_frame(sent)["next_action"] == "standby"
 
 
 def test_drive_converse_turns_signoff_spoken_in_continuous_mode():
@@ -580,17 +583,20 @@ def test_drive_converse_turns_signoff_spoken_in_continuous_mode():
 def test_drive_converse_turns_question_sets_expects_more_true():
     sent = _run_driver(_FakeConverseSession(["set a timer"]), [], ["Sure — for how long?"], quiet_interval=1.0)
     assert _turn_done_frame(sent).get("expects_more") is True
+    assert _turn_done_frame(sent)["next_action"] == "listen"
 
 
 def test_drive_converse_turns_plain_reply_has_no_expects_more():
     sent = _run_driver(_FakeConverseSession(["what's the weather?"]), [], ["It's sunny and 72."], quiet_interval=1.0)
     assert "expects_more" not in _turn_done_frame(sent)
+    assert _turn_done_frame(sent)["next_action"] == "listen"
 
 
 def test_drive_converse_turns_continuous_mode_never_sets_expects_more():
     for reply in ("All set. Over and out.", "For how long?"):
         sent = _run_driver(_FakeConverseSession(["hi"]), [], [reply], quiet_interval=0.0)
         assert "expects_more" not in _turn_done_frame(sent)
+        assert _turn_done_frame(sent)["next_action"] == "listen"
 
 
 def test_drive_converse_turns_caps_tts_output():
@@ -696,4 +702,50 @@ def test_driver_cancel_turn_emits_frames():
     sent = _run_driver(session, [], [], quiet_interval=1.0)
     assert _types(sent) == ["interrupted", "turn_done"]
     assert sent[0]["turn_id"] == "turn-9" and sent[1]["turn_id"] == "turn-9"
+    assert _turn_done_frame(sent)["next_action"] == "listen"
     assert session.turns_begun == 0 and session.turns_ended == 0
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_incomplete_signoff_keeps_listening_and_does_not_drop_queued_input(interrupted):
+    class Session(_FakeConverseSession):
+        def set_playing(self, value, *, tts_stop=None):
+            if interrupted and value and tts_stop is not None:
+                tts_stop.set()
+
+    session = Session(["bye", "fresh request"])
+    sent = []
+
+    async def send(frame):
+        sent.append(frame)
+
+    async def run(transcript, on_delta, **kwargs):
+        if transcript == "bye":
+            on_delta("Goodbye. Over and out.")
+            return "Goodbye. Over and out.", None if interrupted else "provider failed"
+        on_delta("Ready.")
+        return "Ready.", None
+
+    async def main():
+        await drive_converse_turns(
+            session=session, synth=_EchoSynth(), cap=4000, loop=asyncio.get_running_loop(),
+            send_json=send, send_bytes=send, run_turn=run, history=[], quiet_interval=1.0)
+
+    asyncio.run(main())
+    completions = [frame for frame in sent if isinstance(frame, dict) and frame.get("type") == "turn_done"]
+    assert len(completions) == 2  # the partial sign-off must not flush the next request
+    assert all(frame["next_action"] == "listen" for frame in completions)
+    assert all(frame.get("expects_more") is not False for frame in completions)
+
+
+def test_standby_preserves_playback_tail_until_matching_drain():
+    session = ConverseSession(np)
+    session.transcripts.put("bye")
+    session.transcripts.put(None)
+    sent = _run_driver(session, [], ["Goodbye. Over and out."], quiet_interval=1.0)
+    done = _turn_done_frame(sent)
+    assert done["next_action"] == "standby" and session._tail_active
+    session.notify_drained("another-turn")
+    assert session._tail_active
+    session.notify_drained(done["turn_id"])
+    assert not session._tail_active
