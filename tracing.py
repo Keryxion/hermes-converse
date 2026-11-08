@@ -18,7 +18,7 @@ Phases, in order, per turn:
 Capture and STT run on the VAD worker and are recorded live into a :class:`PhaseRecorder` that
 travels with that utterance's transcript. The driver then opens the turn with :func:`start_turn`,
 appends the agent/TTS phases via :meth:`TurnTrace.add_phase`, sets ``outcome`` (``ok`` / ``error``
-/ ``timeout`` / ``interrupted`` / ``stop_word``) plus ``interrupted`` and ``expects_more``, and calls
+/ ``timeout`` / ``interrupted`` / ``stop_word``) plus ``interrupted``, ``next_action``, and legacy ``expects_more``, and calls
 :meth:`TurnTrace.end`. An utterance discarded after a sign-off turn is handed to
 :func:`emit_turn_trace` with ``outcome="discarded_after_signoff"``.
 

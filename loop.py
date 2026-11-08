@@ -537,7 +537,7 @@ def voice_system_prompt(name: Optional[str] = None, *, allow_signoff: bool = Fal
                         end_phrases: tuple[str, ...] = DEFAULT_END_PHRASES) -> str:
     """Ephemeral system prompt for one converse turn: an identity + wake-word preamble when *name*
     is given, the spoken-brevity rules, and — in session mode — the sign-off instruction (ending a
-    reply with the first end phrase closes the conversation so a wake-word client stops listening)."""
+    reply with the first end phrase tells the server to end the current activation)."""
     name = (str(name).strip() if name is not None else "")
     prompt = VOICE_BREVITY_PROMPT
     if name:
@@ -549,8 +549,8 @@ def voice_system_prompt(name: Optional[str] = None, *, allow_signoff: bool = Fal
         who = name or "the assistant"
         prompt += (
             f" When the exchange is complete and you don't expect the user to follow up, end "
-            f"your reply with '{end_phrases[0].capitalize()}.' — that closes the conversation so "
-            f"{who} stops listening. Use it only when truly done, never mid-task.")
+            f"your reply with '{end_phrases[0].capitalize()}.' — the server interprets that as "
+            f"{who} signing off from the current exchange. Use it only when truly done, never mid-task.")
     return prompt
 
 
@@ -655,7 +655,7 @@ async def drive_converse_turns(
             # A cancelled capture / turn: the socket, session and history stay alive; only this
             # turn stops. Emit interrupted + turn_done for it.
             await send_json({"type": "interrupted", "turn_id": item.turn_id})
-            await send_json({"type": "turn_done", "turn_id": item.turn_id})
+            await send_json({"type": "turn_done", "turn_id": item.turn_id, "next_action": "listen"})
             continue
         transcript = item
         if not transcript:
@@ -673,12 +673,12 @@ async def drive_converse_turns(
             tt.set(outcome="stop_word")
             tt.end()
             continue
-        if await _run_turn(d, _Turn(transcript, turn_id, meta), tt) is False:
+        if await _run_turn(d, _Turn(transcript, turn_id, meta), tt) == "standby":
             _discard_after_signoff(session)
 
 
-async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> Optional[bool]:
-    """Run one agent turn and speak its reply; return turn_done's ``expects_more``."""
+async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
+    """Run one agent turn and speak its reply; return the explicit client next action."""
     session = d.session
     await d.send_json({"type": "thinking", **turn.meta})
     session.begin_turn()
@@ -728,16 +728,27 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> Optional[bool]:
         await d.send_json({"type": "interrupted", "turn_id": turn.turn_id})
     elif turn_err:
         await d.send_json({"type": "error", "error": turn.result["err"], "turn_id": turn.turn_id})
-    expects_more = _expects_more(reply, d.quiet_interval, d.end_phrases)
-    turn_done: dict[str, Any] = {"type": "turn_done", "turn_id": turn.turn_id}
+    # Only a completed reply may sign off. Partial output from a failed or interrupted
+    # run is not a decision to put the client in standby.
+    completed = not (barged or turn_err or turn.timed_out)
+    expects_more = _expects_more(reply, d.quiet_interval, d.end_phrases) if completed else None
+    next_action = (
+        "standby" if completed and d.quiet_interval > 0 and is_end_phrase(reply, d.end_phrases)
+        else "listen"
+    )
+    turn_done: dict[str, Any] = {"type": "turn_done", "turn_id": turn.turn_id,
+                                "next_action": next_action}
     if expects_more is not None:
         turn_done["expects_more"] = expects_more
     await d.send_json(turn_done)
-    _finish_trace(tt, turn, reply, err=turn_err, barged=barged, expects_more=expects_more)
+    _finish_trace(tt, turn, reply, err=turn_err, barged=barged, expects_more=expects_more,
+                  next_action=next_action)
     session.end_turn()
-    if d.quiet_interval > 0 and expects_more is not False and not turn.timed_out:
+    # Standby takes effect at speaker drain, not when the server finishes sending.
+    # Keep playback-tail monitoring alive even after a successful sign-off.
+    if d.quiet_interval > 0 and not turn.timed_out:
         session.begin_playback_tail(turn.turn_id, d.tail_fallback)
-    return expects_more
+    return next_action
 
 
 async def _run_agent(d: _Driver, turn: _Turn, interrupted: bool) -> None:
@@ -859,8 +870,7 @@ def _record_history(history: list[dict[str, str]], turn: _Turn) -> str:
 
 
 def _expects_more(reply: str, quiet_interval: float, end_phrases: tuple[str, ...]) -> Optional[bool]:
-    """turn_done's follow-up expectation in session mode: False when the model signed off (sleep
-    now), True when it asked a question (keep the mic hot), None — the field ABSENT — otherwise."""
+    """Legacy field: False for session sign-off, True for a session question, absent otherwise."""
     if quiet_interval <= 0:
         return None
     if is_end_phrase(reply, end_phrases):
@@ -869,7 +879,7 @@ def _expects_more(reply: str, quiet_interval: float, end_phrases: tuple[str, ...
 
 
 def _finish_trace(tt: Any, turn: _Turn, reply: str, *, err: bool, barged: bool,
-                  expects_more: Optional[bool]) -> None:
+                  expects_more: Optional[bool], next_action: str) -> None:
     tt.add_phase("voice.agent", turn.ns["turn_start"], turn.ns.get("agent_end"),
                  **{"llm.ttft_ms": turn.ms("first_delta"), "reply.chars": len(reply),
                     "llm.deltas": len(turn.reply_parts), "error": err, "llm.timed_out": turn.timed_out})
@@ -877,7 +887,7 @@ def _finish_trace(tt: Any, turn: _Turn, reply: str, *, err: bool, barged: bool,
                  **{"tts.pcm_chunks": turn.pcm_chunks,
                     "tts.first_pcm_ms": turn.ms("first_pcm", since="first_sentence")})
     outcome = ("timeout" if turn.timed_out else "interrupted" if barged else "error" if err else "ok")
-    tt.set(outcome=outcome, interrupted=barged, expects_more=expects_more)
+    tt.set(outcome=outcome, interrupted=barged, expects_more=expects_more, next_action=next_action)
     tt.end()
 
 

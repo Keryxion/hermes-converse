@@ -90,7 +90,7 @@ wake word again mid-turn and you want to keep the conversation going.
 | `thinking` | the agent turn is running (show "thinking", not "listening") |
 | `speaking` + binary frames | the reply as PCM16 at `output_rate` |
 | `interrupted` | the turn was cancelled (you barged in or sent `cancel`); stop playing |
-| `turn_done` | the reply is fully sent; in session mode `expects_more` says whether to keep listening |
+| `turn_done` | the reply is fully sent; `next_action` tells the client to listen or enter standby after drain |
 | `quiet` | session mode: the stream has been silent for another `quiet_interval` seconds |
 | `stop_word` | session mode: you said a stop phrase; no turn ran |
 | `error` | the turn failed (spoken-safe text) |
@@ -141,7 +141,7 @@ replay audio accumulated while muted.
 On `interrupted`, stop and discard queued reply audio for that turn. Send
 `drained` after its audio has actually left the speaker or been discarded.
 `turn_done` means the server finished sending, not that playback drained.
-For `expects_more = false` or a local decision to end the activation, finish
+For `next_action = "standby"` or a local decision to end the activation, finish
 playback/drain handling and then stop upstream audio and return to wake
 detection; do not cut off barge-in monitoring during the playback tail.
 
@@ -177,13 +177,51 @@ This is a lifecycle status notification, not streamed reasoning text.
 Continue handling `speaking`, `interrupted`, `error`, and `turn_done` as
 usual to play the reply or finish the turn.
 
+### Handling `turn_done.next_action`
+
+Every `turn_done` includes an explicit client action:
+
+```json
+{"type":"turn_done","turn_id":"turn-42","next_action":"listen"}
+```
+
+```json
+{"type":"turn_done","turn_id":"turn-42","next_action":"standby"}
+```
+
+| `next_action` | client behavior after playback drain |
+|---|---|
+| `listen` | Keep streaming microphone PCM and allow the server to capture/transcribe a fresh user utterance. |
+| `standby` | Stop upstream PCM and return to local wake detection (or the non-wake client's idle UI). Keep the socket/session open for outbound events. |
+
+Continue interruption/control monitoring until queued playback has actually
+finished or been discarded. Send `drained` for that turn, then apply its
+pending action. Do not apply a late completion/action from an abandoned
+turn to a newer activation. Cancellation, interruption, errors, and timeouts
+return `listen`; a partial or failed reply cannot put the client in standby.
+A normal reply also returns `listen`, even when it does not ask a question.
+The current server requests `standby` only for a successful server-side
+sign-off in session mode; non-session/continuous mode returns `listen`.
+
+The server decides the action. Clients must not inspect reply text, detect
+sign-off phrases, or interpret whether the agent expects a follow-up.
+
+**Migration:** `expects_more` is deprecated but retained for older clients:
+a successful sign-off still sends `false`, a successful question still sends
+`true`, and other replies omit it. New clients use a recognized `next_action`
+in preference to `expects_more`. For an older server with no recognized
+`next_action`, fall back to `expects_more = false` → `standby`, otherwise
+`listen`. No new negotiation is required for this additive field.
+
 ## 5. Session mode (`quiet_interval > 0`)
 
 For wake-word devices. The server reports quiet in **received** audio (never
-wall-clock, so a held-open socket never accrues phantom quiet), ends the
-exchange on a stop phrase, and lets the agent sign off by ending a reply with
-an end phrase ("over and out"), which arrives as `turn_done.expects_more =
-false`.
+wall-clock, so a held-open socket never accrues phantom quiet). A recognized
+stop phrase produces `stop_word` and ends the activation without an agent
+run. Otherwise `turn_done.next_action` tells the client whether to continue
+listening or return to standby after playback drain. The mechanism used by
+the server to decide a sign-off is internal; there is no client-side phrase
+contract.
 
 ## 6. Typical flow
 
@@ -223,7 +261,7 @@ its transcript.
 A recommendation covers one **wake activation**: the detected wake phrase and
 its ensuing conversation, including follow-up turns. The selected client does
 not request another election for each utterance or `turn_done`. When that
-exchange ends (for example, a stop phrase, `expects_more = false`, or the client
+exchange ends (for example, a stop phrase, `next_action = "standby"`, or the client
 returning to wake detection), a fresh wake detection starts a new activation.
 Other devices may start independent activations while that conversation runs.
 
@@ -357,10 +395,10 @@ Use the same playback lifecycle as ordinary replies:
 
 No synthetic user `transcript` or wake event is sent. Both `thinking` and
 `speaking` must establish a turn even when no earlier frame exists for it.
-A client waiting for a wake word must accept and play that output. After it
-finishes, return to the previous idle state unless follow-up listening was
-explicitly requested; do not open a user activation merely because the
-server spoke. For a targeted outbound turn while idle, temporarily enable
+A client waiting for a wake word must accept and play that output. For an
+idle-originated turn, the server should request `next_action: "standby"`
+unless follow-up listening is explicitly requested; do not open a user
+activation merely because the server spoke. For a targeted outbound turn while idle, temporarily enable
 microphone streaming for interruption/control detection when `thinking` or
 `speaking` arrives, subject to explicit user mute. This requires no local
 wake or arbitration. After the turn and playback drain, stop that temporary
