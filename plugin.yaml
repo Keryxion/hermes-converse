@@ -15,7 +15,7 @@ license: MIT
 homepage: https://github.com/Keryxion/hermes-converse
 tags: [voice, api_server, realtime, websocket, esp32]
 requires_hermes: ">=0.21.6"
-# Smart Turn dependencies are installed for everyone; model loading remains opt-in.
+# ONNX Runtime supports default Silero VAD and optional Smart Turn endpointing.
 python_dependencies:
   - "numpy>=2,<3"
   - "av>=14,<20"
@@ -27,6 +27,11 @@ python_dependencies:
 provides_tools: []
 provides_hooks: [post_llm_call]
 config_schema:
+  vad_model:
+    type: str
+    choices: [silero, energy]
+    default: silero
+    description: "Speech detection: Silero with automatic energy fallback, or energy only. Smart Turn is configured separately."
   name:
     type: str
     default: "Arya"

@@ -81,6 +81,18 @@ def doctor() -> int:
     from .settings import load_settings
 
     settings = load_settings(lambda key, default=None: _plugin_setting(cfg, key, default))
+    if settings.vad_model == "silero":
+        from .silero_vad import load_silero_session
+
+        session, reason = load_silero_session()
+        if session is None:
+            _bad("VAD", f"Silero unavailable ({reason}); using energy. Check ONNX Runtime and model cache/network, "
+                 "or set vad_model: energy.")
+            failures += 1
+        else:
+            _ok("VAD", "Silero (CPU); energy fallback on inference failure")
+    else:
+        _ok("VAD", "energy (configured)")
     if settings.endpoint_model:
         from .turn_detector import load_turn_detector, missing_modules
 

@@ -70,7 +70,7 @@ def test_smart_turn_events_include_hold_commit_and_budget(otel):
         session = _adaptive_session(_ScriptedDetector(probabilities), max_blocks=500)
         _feed_silence(session, session._endpoint_blocks * 6 + 4)
         with recorder.phase('voice.capture', **{'endpoint.mode': 'smart_turn'}) as phase:
-            wav, _ = session._capture_adaptive(float(vad.SILENCE_RMS_THRESHOLD), phase=phase)
+            wav, _ = session._capture_adaptive(phase=phase)
         vad.unlink_quietly(wav)
         tracing.start_turn(recorder=recorder, turn_id=reason).end()
         capture = [s for s in exporter.get_finished_spans() if s.name == 'voice.capture'][-1]
