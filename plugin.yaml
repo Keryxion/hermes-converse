@@ -71,6 +71,14 @@ config_schema:
     type: float
     default: 5
     description: "Seconds of wall-clock silence in a capture before the capture is abandoned and dropped, rather than left open for a later stream to complete and merge two unrelated utterances."
+  mic_during_playback:
+    type: bool
+    default: false
+    description: "Whether the client streams mic audio while its reply plays (enables voice barge-in during playback). AEC-capable clients need less barge margin."
+  barge_multiplier:
+    type: float
+    default: ""
+    description: "Per-client barge multiplier for playback trigger (overrides the detector default when set). Lower = less margin needed, e.g. AEC devices."
   approval_choice:
     type: str
     choices: [deny, once]

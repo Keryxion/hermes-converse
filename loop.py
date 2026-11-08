@@ -523,16 +523,25 @@ def parse_quiet_interval(raw: Any) -> float:
 
 
 def parse_start_config(frame: dict[str, Any], *, default_name: str = DEFAULT_NAME,
-                       ) -> tuple[int, int, float, str, Optional[str]]:
-    """``(input_rate, output_rate, quiet_interval, name, profile)`` from a ``start`` frame. All
-    fields optional; rates are clamped to [8000, 48000]."""
+                       ) -> tuple[int, int, float, str, Optional[str], bool, Optional[float]]:
+    """``(input_rate, output_rate, quiet_interval, name, profile, mic_during_playback,
+    barge_multiplier)`` from a ``start`` frame. All fields optional; rates are clamped to [8000,
+    48000]."""
     input_rate = clamp_sample_rate(frame.get("input_rate"), DEFAULT_INPUT_RATE)
     output_rate = clamp_sample_rate(frame.get("output_rate"), DEFAULT_OUTPUT_RATE)
     quiet_interval = parse_quiet_interval(frame.get("quiet_interval"))
     raw_name = frame.get("name")
     name = str(raw_name).strip() if raw_name is not None and str(raw_name).strip() else default_name
     profile = frame.get("profile") or None
-    return input_rate, output_rate, quiet_interval, name, (str(profile).strip() if profile else None)
+    mic_during_playback = bool(frame.get("mic_during_playback", False))
+    barge_multiplier = frame.get("barge_multiplier")
+    try:
+        barge_multiplier = None if barge_multiplier is None else float(barge_multiplier)
+    except (TypeError, ValueError):
+        barge_multiplier = None
+    return (input_rate, output_rate, quiet_interval, name,
+            (str(profile).strip() if profile else None),
+            mic_during_playback, barge_multiplier)
 
 
 # Voice replies are spoken aloud — keep them short and speakable. Sent as the run's ``instructions``

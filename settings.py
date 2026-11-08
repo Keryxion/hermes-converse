@@ -29,6 +29,13 @@ DEFAULT_ENDPOINT_THRESHOLD = 0.5
 # How long a capture may wait for audio with nothing arriving before it is abandoned and dropped,
 # rather than left open so a much-later stream can complete it and merge two unrelated utterances.
 DEFAULT_CAPTURE_NO_DATA_SECONDS = 5.0
+# Per-client barge multiplier applied when the client streams its mic during playback (see the
+# ``mic_during_playback`` start frame field). An AEC-equipped device needs less margin than a
+# laptop speaker; None keeps the detector default.
+DEFAULT_BARGE_MULTIPLIER = None
+# Whether clients stream mic audio while the reply plays (enables voice barge-in during playback).
+# Defaults off: clients only stream after the wake word / end of reply.
+DEFAULT_MIC_DURING_PLAYBACK = False
 APPROVAL_CHOICES = ("deny", "once")
 
 Getter = Callable[..., Any]
@@ -85,6 +92,9 @@ def load_settings(get: Getter) -> Settings:
                                                       DEFAULT_ENDPOINT_THRESHOLD))),
         capture_no_data_seconds=_number(get("capture_no_data_seconds", DEFAULT_CAPTURE_NO_DATA_SECONDS),
                                         DEFAULT_CAPTURE_NO_DATA_SECONDS),
+        mic_during_playback=_model_enabled(get("mic_during_playback", DEFAULT_MIC_DURING_PLAYBACK)),
+        barge_multiplier=_number(get("barge_multiplier", DEFAULT_BARGE_MULTIPLIER),
+                                 DEFAULT_BARGE_MULTIPLIER),
         approval_choice=approval if approval in APPROVAL_CHOICES else "deny",
         api_base_url=str(get("api_base_url", "") or "").strip().rstrip("/"),
     )

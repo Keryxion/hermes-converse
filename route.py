@@ -127,14 +127,16 @@ class ConverseRoute:
                 api_key = str(frame.get("key") or "")
             server_recv_unix_ms = int(time.time() * 1000)
             settings = self._settings()
-            input_rate, output_rate, quiet_interval, name, profile = parse_start_config(
+            input_rate, output_rate, quiet_interval, name, profile, mic_during_playback, barge_multiplier = parse_start_config(
                 frame, default_name=settings.name)
             if not self._profile_allowed(profile):
                 await _fail(ws, "profile_unsupported", 4400)
                 return ws
             try:
                 synth, cap, session = await asyncio.get_running_loop().run_in_executor(
-                    None, lambda: _resolve_session(settings, input_rate, output_rate, quiet_interval))
+                    None, lambda: _resolve_session(settings, input_rate, output_rate, quiet_interval,
+                                                   mic_during_playback=mic_during_playback,
+                                                   barge_multiplier=barge_multiplier))
             except Exception:
                 logger.exception("converse setup failed")
                 await _fail(ws, "converse setup failed", 1011)
@@ -153,7 +155,8 @@ class ConverseRoute:
         return ws
 
 
-def _resolve_session(settings: Settings, input_rate: int, output_rate: int, quiet_interval: float):
+def _resolve_session(settings: Settings, input_rate: int, output_rate: int, quiet_interval: float,
+                     mic_during_playback: bool = False, barge_multiplier: Optional[float] = None):
     """Blocking provider/config resolution — runs off the event loop. Returns ``(synth, cap,
     session)``: a synthesizer emitting int16 PCM at *output_rate* (NEVER ``None``), its per-request
     text cap, and a fresh :class:`ConverseSession` capturing at *input_rate*."""
@@ -171,10 +174,13 @@ def _resolve_session(settings: Settings, input_rate: int, output_rate: int, quie
     def _transcribe(wav_path: str) -> str:
         return speech.transcribe_wav(wav_path, model=stt_model, stop_phrases=stop_phrases)
 
+    # A client that streams mic during playback (AEC device) needs less barge margin than one that
+    # doesn't; honor the per-client barge_multiplier from the start frame.
     session = ConverseSession(
         np, input_rate=input_rate, quiet_interval=quiet_interval, transcribe=_transcribe,
         endpoint_model=settings.endpoint_model, endpoint_threshold=settings.endpoint_threshold,
-        capture_no_data_seconds=settings.capture_no_data_seconds)
+        capture_no_data_seconds=settings.capture_no_data_seconds,
+        barge_multiplier=barge_multiplier)
     return synth, cap, session
 
 
