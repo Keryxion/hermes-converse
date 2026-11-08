@@ -19,6 +19,10 @@ DEFAULT_END_PHRASES = ("over and out",)
 DEFAULT_ARBITRATE_POLICY = "first_to_endpoint"  # first_to_endpoint | wake_signal
 DEFAULT_ARBITRATE_DEVICE_ID = None  # ''/None = auto-generate from socket
 DEFAULT_ARBITRATE_ENABLED = False
+# How long the arbitrator collects concurrent wake claims for the same wake word before electing
+# the primary device. Long enough to cover detector jitter across devices, short enough that a
+# client is not left waiting before it starts streaming.
+DEFAULT_ARBITRATE_WAKE_WINDOW_SECONDS = 0.25
 # Hard cap on a single agent turn (LLM think + stream). A turn that produces nothing — an LLM call
 # hung with no request timeout — otherwise never ends: no reply, no turn_done, so the client is stuck
 # "thinking" forever. The driver stops the run at this deadline, sends an error + turn_done, and
@@ -54,6 +58,7 @@ class Settings:
     arbitrate_enabled: bool = DEFAULT_ARBITRATE_ENABLED
     arbitrate_policy: str = DEFAULT_ARBITRATE_POLICY
     arbitrate_device_id: Optional[str] = DEFAULT_ARBITRATE_DEVICE_ID
+    arbitrate_wake_window_seconds: float = DEFAULT_ARBITRATE_WAKE_WINDOW_SECONDS
 
 
 def _number(raw: Any, default: float) -> float:
@@ -101,4 +106,8 @@ def load_settings(get: Getter) -> Settings:
         arbitrate_enabled=_model_enabled(get("arbitrate_enabled", DEFAULT_ARBITRATE_ENABLED)),
         arbitrate_policy=_arbitrate_policy(get("arbitrate_policy", DEFAULT_ARBITRATE_POLICY)),
         arbitrate_device_id=_text(get("arbitrate_device_id", DEFAULT_ARBITRATE_DEVICE_ID)),
+        arbitrate_wake_window_seconds=_number(
+            get("arbitrate_wake_window_seconds", DEFAULT_ARBITRATE_WAKE_WINDOW_SECONDS),
+            DEFAULT_ARBITRATE_WAKE_WINDOW_SECONDS,
+        ),
     )

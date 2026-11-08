@@ -71,6 +71,11 @@ POLICY_FIRST_TO_ENDPOINT = "first_to_endpoint"
 POLICY_WAKE_SIGNAL = "wake_signal"
 DEFAULT_POLICY = POLICY_FIRST_TO_ENDPOINT
 
+# How long the server collects concurrent wake claims for the same wake word before electing the
+# primary device. Long enough to cover detector jitter across devices, short enough that the client
+# is not left waiting before it starts streaming.
+DEFAULT_WAKE_WINDOW = 0.25
+
 
 # ── messages ─────────────────────────────────────────────────────────────────────────────────
 
@@ -125,6 +130,24 @@ class TurnReleased:
     released_at: float
 
 
+@dataclass(frozen=True)
+class WakeClaim:
+    """A device asks, at wake-word time, whether it is the primary box for this wake word.
+
+    ``wake_word``/``confidence``/``volume``/``heard_at`` are the cooperative signals the client
+    reports the moment its local detector fires. ``volume`` may also be supplied server-side when
+    the client has no level meter. ``claim_id`` is echoed back to the client so it can correlate the
+    grant/deny response with the wake hit that produced it.
+    """
+    claim_id: str
+    device_id: str
+    wake_word: Optional[str]
+    confidence: Optional[float]
+    heard_at: Optional[float]
+    volume: Optional[float]
+    claimed_at: float
+
+
 # ── device ───────────────────────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -157,6 +180,24 @@ class Device:
             confidence=confidence,
             heard_at=heard_at,
             volume=volume,
+        )
+
+    def wake_claim(
+        self,
+        *,
+        wake_word: Optional[str] = None,
+        confidence: Optional[float] = None,
+        heard_at: Optional[float] = None,
+        volume: Optional[float] = None,
+    ) -> WakeClaim:
+        return WakeClaim(
+            claim_id=uuid.uuid4().hex,
+            device_id=self.device_id,
+            wake_word=wake_word,
+            confidence=confidence,
+            heard_at=heard_at,
+            volume=volume,
+            claimed_at=time.monotonic(),
         )
 
 
@@ -213,6 +254,19 @@ class LocalBus(Bus):
 
 # ── arbitrator ───────────────────────────────────────────────────────────────────────────────
 
+class _WakeElection:
+    """One wake-time election: claims for the same wake word collected inside a short window."""
+
+    __slots__ = ("wake_word", "created_at", "claims", "done", "winner")
+
+    def __init__(self, wake_word: Optional[str], created_at: float) -> None:
+        self.wake_word = wake_word
+        self.created_at = created_at
+        self.claims: list[WakeClaim] = []
+        self.done = asyncio.Event()
+        self.winner: Optional[str] = None
+
+
 class Arbitrator:
     """Elects the single device that answers each utterance.
 
@@ -222,13 +276,19 @@ class Arbitrator:
         The message bus devices publish claims on and subscribe to grants/denials on.
     policy:
         ``first_to_endpoint`` (default) or ``wake_signal``.
+    wake_window:
+        Seconds to collect concurrent wake claims for the same wake word before electing the
+        primary device. ``0`` elects as soon as the first claim lands (still giving claims in the
+        same event-loop tick a chance to join).
     """
 
-    def __init__(self, *, bus: Optional[Bus] = None, policy: str = DEFAULT_POLICY) -> None:
+    def __init__(self, *, bus: Optional[Bus] = None, policy: str = DEFAULT_POLICY,
+                 wake_window: float = DEFAULT_WAKE_WINDOW) -> None:
         self.bus = bus or LocalBus()
         if policy not in (POLICY_FIRST_TO_ENDPOINT, POLICY_WAKE_SIGNAL):
             raise ValueError(f"unknown arbitrate policy {policy!r}")
         self.policy = policy
+        self.wake_window = max(0.0, float(wake_window))
         self._lock = asyncio.Lock()
         self._devices: dict[str, Device] = {}
         # election_key -> (winner_device_id, granted). Under first_to_endpoint the key is always
@@ -243,6 +303,9 @@ class Arbitrator:
         self._finalized: dict[tuple[str, Optional[str]], asyncio.Event] = {}
         # election_key -> winning device_id (wake_signal outcome)
         self._wake_winner: dict[tuple[str, Optional[str]], str] = {}
+        # wake_word -> the wake-time election currently collecting claims. A claim that arrives after
+        # the window closed starts a fresh election (a new spoken wake hit), never joins the old one.
+        self._wake_open: dict[Optional[str], "_WakeElection"] = {}
 
     def _election_key(self, utterance_id: str, wake_word: Optional[str]) -> tuple[str, Optional[str]]:
         """The key claims are grouped and elected under: just the utterance under
@@ -283,6 +346,68 @@ class Arbitrator:
             self._wins.pop(device_id, None)
         if device is not None:
             logger.info("arbitrate: unregistered device %s", device_id)
+
+    # ── claiming at wake time (cooperative handshake) ───────────────────────────────────
+
+    async def claim_wake(
+        self,
+        device_id: str,
+        *,
+        wake_word: Optional[str] = None,
+        confidence: Optional[float] = None,
+        heard_at: Optional[float] = None,
+        volume: Optional[float] = None,
+    ) -> tuple[bool, Optional[str], str]:
+        """Ask, the moment this device's local wake detector fires, whether it is the primary box.
+
+        Every device that heard the same wake word inside ``wake_window`` competes in one election:
+        highest ``confidence`` wins, then loudest ``volume``, then earliest ``heard_at`` (the
+        client's wall clock at the wake hit), then whichever claim reached the server first.
+        Different wake words elect independently, so two assistants addressed at once both proceed.
+
+        Returns ``(granted, winner_device_id, claim_id)``. ``claim_id`` identifies this specific
+        claim so the client can correlate the response with the wake hit that produced it. A claim
+        that arrives after the window closed starts a *new* election — it is a new spoken wake hit,
+        not a late member of the old one.
+        """
+        async with self._lock:
+            device = self._devices.get(device_id)
+            if device is None:
+                logger.warning("arbitrate: wake claim from unregistered device %s", device_id)
+                return False, None, ""
+            now = time.monotonic()
+            election = self._wake_open.get(wake_word)
+            if election is None or now - election.created_at > self.wake_window:
+                election = _WakeElection(wake_word, now)
+                self._wake_open[wake_word] = election
+                # Created under the lock; every claim appended below is in the list before the
+                # finalizer can acquire the lock and elect.
+                asyncio.ensure_future(self._finalize_wake(election))
+            claim = device.wake_claim(
+                wake_word=wake_word, confidence=confidence, heard_at=heard_at, volume=volume,
+            )
+            election.claims.append(claim)
+        await self.bus.publish(claim)
+        await election.done.wait()
+        return election.winner == device_id, election.winner, claim.claim_id
+
+    async def _finalize_wake(self, election: _WakeElection) -> None:
+        """Close *election* after its collection window and elect the best-ranked claimant."""
+        if self.wake_window > 0:
+            await asyncio.sleep(self.wake_window)
+        async with self._lock:
+            # Only retire the entry if it is still the open election; a late claim may already have
+            # replaced it with a fresh one, which must stay open for its own window.
+            if self._wake_open.get(election.wake_word) is election:
+                self._wake_open.pop(election.wake_word, None)
+            if not election.claims:  # defensive: an election is only created with a claim pending
+                election.winner = None
+            else:
+                election.winner = min(election.claims, key=self._rank_wake_signal).device_id
+        election.done.set()
+        logger.info(
+            "arbitrate: wake election for %r -> %s (%d claimant(s))",
+            election.wake_word, election.winner, len(election.claims))
 
     # ── claiming a turn ──────────────────────────────────────────────────────────────────
 
