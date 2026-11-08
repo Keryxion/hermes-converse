@@ -6,17 +6,16 @@
 GET /v1/audio/converse
 ```
 
-Currently, one socket = one conversation. You stream microphone PCM up, the server does
-voice activity detection, endpointing, speech-to-text, the agent turn, and
-streams the reply back as PCM audio — all on the same socket. The socket,
-session, and conversation history stay alive across turns unless you close
-them.
+Each Arya has a name and uses an existing Hermes conversation, titled
+`Arya: <name>` by default. A WebSocket carries microphone PCM to the server,
+which handles voice activity detection, endpointing, speech-to-text, and the
+agent turn, then streams reply PCM back. Conversation history persists across
+turns and reconnects; closing the socket does not end the Hermes conversation.
 
 Wake selection is cooperative: it recommends an answering device without
 restricting audio processing. Section 8 defines the cooperative wake contract.
-Sections 9–10 propose conversation output and timers. Section 11 proposes
-named Aryas attached to existing Hermes conversations. These extensions are
-not implemented by the current server; negotiate them before use.
+Sections 9–10 define conversation output and timers. Section 11 defines named
+Aryas and attachment to Hermes conversations. Negotiate extensions before use.
 
 ## 1. Connect and authenticate
 
@@ -70,12 +69,12 @@ All are JSON text frames:
 
 | frame | meaning |
 |---|---|
-| `{"stop": true}` | Stops live work and closes the socket. The current protocol cannot resume its conversation; this does not promise deletion of Hermes history. |
+| `{"stop": true}` | Stops live work and closes the socket. Preserves the selected Hermes conversation and its history for reconnection (section 11). |
 | `{"commit": true}` | Forces the current utterance to endpoint now (runs a turn on it). |
 | `{"type": "cancel", "turn_id": "..."}` | Cancels the **current** turn — stops TTS and the agent — but keeps the socket, session, and history alive. |
 | `{"type": "wake", "claim_id": "...", "wake_word": "Hey Arya"}` | request an advisory wake decision while buffering the new activation locally; see section 8. |
 | `{"type": "drained", "turn_id": "..."}` | Tells the server the reply's last audio has left the speaker, so the server won't transcribe its own echo as a new turn. |
-| `conversation_select` | Proposed conversation-v1 selection, only after negotiation (section 11). |
+| `conversation_select` | Conversation-v1 selection, only after negotiation (section 11). |
 
 **`cancel` vs `stop`:** `stop` tears down the session; `cancel` only kills the
 current turn. Use `cancel` when the user hits the action button or says the
@@ -97,7 +96,7 @@ wake word again mid-turn and you want to keep the conversation going.
 | `quiet` | session mode: the stream has been silent for another `quiet_interval` seconds |
 | `stop_word` | session mode: you said a stop phrase; no turn ran |
 | `error` | the turn failed (spoken-safe text) |
-| `conversation` | Proposed conversation-v1 selection acknowledgement (section 11). |
+| `conversation` | Conversation-v1 selection acknowledgement (section 11). |
 
 ### Microphone streaming and barge-in
 
@@ -580,11 +579,11 @@ recipient attachment, and playback signalling remain implementation work.
 These proposed extensions do not change the current wire protocol by themselves.
 
 
-## 11. Named Aryas and Hermes conversation attachment (proposed extensions)
+## 11. Named Aryas and Hermes conversation attachment
 
-This section proposes `arya-v1` and `conversation-v1`; neither is implemented
-by the current server. Section 10's timer delivery uses this same named-device
-attachment. Legacy clients retain today's per-socket conversation behavior.
+This section defines `arya-v1` and `conversation-v1`. Section 10's timer
+delivery uses this same named-device attachment. Clients that do not negotiate
+these extensions use a separate conversation per socket.
 
 ### Named Aryas and shared device attachment
 
@@ -801,4 +800,4 @@ Before implementation, verify these scenarios:
 - Trusted source context stays correct with another selected conversation;
   a remote timer rings on its named target and preserves its source session.
 - Unsupported extensions and Hermes versions fail explicitly; legacy behavior
-  remains unchanged. No feature in this section ships merely by editing this spec.
+  remains unchanged.
