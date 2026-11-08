@@ -153,9 +153,29 @@ and examples.
 
 **Smart Turn v3** (optional): with `endpoint_model: smart-turn-v3` the fixed silence endpoint
 becomes adaptive — on each candidate pause the model estimates whether the utterance sounds
-finished and keeps listening when you trailed off. It needs `onnxruntime`, `transformers` and
-`huggingface_hub` importable in the Hermes environment; `hermes converse doctor` names what is
-missing, and the loop falls back to the fixed endpoint if it cannot load.
+finished and keeps listening when you trailed off. The plugin declares `onnxruntime`,
+`transformers` and `huggingface_hub` as runtime dependencies, so Hermes installs them alongside
+`numpy` and `av` even when Smart Turn is off. Model loading stays opt-in and uses the NumPy
+feature-extraction path without requiring PyTorch. ONNX Runtime is omitted on Intel macOS and
+Android, which have no current wheels; those hosts keep fixed silence endpointing.
+
+For an existing install, update/reinstall hermes-converse through Hermes's plugin manager so it
+installs the new manifest dependencies. Set the following under
+`plugins.entries.hermes-converse.settings` in `config.yaml`, then run `hermes converse doctor`
+and restart the gateway:
+
+```yaml
+endpoint_model: smart-turn-v3
+endpoint_threshold: 0.5
+```
+
+With Smart Turn enabled, doctor checks the dependencies **and loads the model**, returning a
+failure if either is unavailable. The first load downloads `smart-turn-v3.2-cpu.onnx` from
+`pipecat-ai/smart-turn-v3` on Hugging Face into its normal Hub cache. For offline use, populate
+that cache first, then set `HF_HUB_OFFLINE=1`. Missing packages, incompatible runtimes, and
+unavailable weights all retain the fixed silence endpoint and log the reason once per process.
+Doctor leaves the model untouched when Smart Turn is off. A successful doctor check confirms
+model loading, not the quality of endpointing on real speech; tune the threshold with real audio.
 
 **Browser clients and CORS.** The API server's origin guard runs before any route. A browser or
 Electron client (which sends `Origin: null`) must have its origin listed in
