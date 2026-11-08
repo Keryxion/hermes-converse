@@ -683,7 +683,7 @@ the conversation was restored.
 Reconnect with the same API key and names to continue its history.
 Inactivity, standby, sign-off, cancellation, and socket closure do not reset it.
 Do not automatically resend an utterance whose outcome is unknown: its actions
-may already have happened. Rename/history migration is outside this contract.
+may already have happened.
 
 A replacement connection closes the old one with `4409 attachment_replaced`.
 Stop sending on the old connection. Invalid fields return `4402 bad_extension`.

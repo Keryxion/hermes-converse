@@ -27,9 +27,6 @@ winner. A failed lookup or inaccessible title must not silently create another
 history. Save the session reference for reconnect; do not build a
 parallel conversation store or expose Hermes session mechanics to clients.
 
-Rename/history migration is outside this contract. Do not infer a rename from
-changed names in `start` or silently transfer existing history or timers.
-
 Use the authenticated socket for named-device and timer behavior. A
 replacement fences the old connection and stops/settles its in-flight work
 before new admission. Report busy while settlement is pending. Supply trusted
