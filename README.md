@@ -104,8 +104,10 @@ conversation. It is advisory: audio streamed after a denial, or without any wake
 request, is processed normally. The server does not elect from transcripts.
 With arbitration disabled, requests receive immediate grants. The legacy
 `first_to_endpoint` setting also grants immediately; unknown policies fall back
-to `wake_signal`. See [client spec.md](client%20spec.md) for the full protocol,
-and examples.
+to `wake_signal`. A wake-only transcript in the first capture after a wake report
+keeps listening without an agent reply; Aria/Arya spellings are equivalent, and
+a continuous wake phrase plus request is preserved intact.
+See [client spec.md](client%20spec.md) for the full protocol and examples.
 
 **Smart Turn v3** (optional): with `endpoint_model: smart-turn-v3` the fixed silence endpoint
 becomes adaptive — on each candidate pause the model estimates whether the utterance sounds

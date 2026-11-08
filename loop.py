@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Iterator, Optional
 
 from . import speech, vad
-from .phrases import is_end_phrase, is_stop_phrase, strip_end_phrase
+from .phrases import is_end_phrase, is_stop_phrase, is_wake_only, strip_end_phrase
 from .settings import (
     DEFAULT_END_PHRASES, DEFAULT_MAX_TTS_CHARS, DEFAULT_NAME, DEFAULT_STOP_PHRASES,
     DEFAULT_TAIL_FALLBACK, DEFAULT_TURN_TIMEOUT)
@@ -162,9 +162,10 @@ class CancelTurn:
 class Utterance(str):
     """A transcript carrying the tracing recorder of its audio capture."""
 
-    def __new__(cls, text: str, recorder: Any) -> "Utterance":
+    def __new__(cls, text: str, recorder: Any, *, wake_phrases: tuple[str, ...] = ()) -> "Utterance":
         self = super().__new__(cls, text)
         self.recorder = recorder
+        self.wake_phrases = wake_phrases
         return self
 
 
@@ -236,6 +237,17 @@ class ConverseSession:
                 self._turn_detector = None
         self._worker: Optional[threading.Thread] = None
         self.on_trip: Optional[Callable[[str], None]] = None  # called with the phase name on every trip
+        self._wake_lock = threading.Lock()
+        self._pending_wake: tuple[str, ...] = ()
+
+    def note_wake(self, wake_word: str, *, name: str = "") -> None:
+        """Arm wake-only filtering for the next nonempty captured transcript.
+
+        Keep this independent of the election decision: audio after denial is
+        still processed, but a wake cue alone is not an agent request.
+        """
+        with self._wake_lock:
+            self._pending_wake = tuple(p for p in (wake_word, name) if p)
 
     # ── playback / barge-in coordination ──
     def playing(self) -> bool:
@@ -311,6 +323,10 @@ class ConverseSession:
                         self.on_trip(phase)
                     except Exception:
                         logger.debug("converse on_trip callback failed", exc_info=True)
+                # Snapshot at capture onset: a wake arriving mid-capture belongs to
+                # the following utterance, not this one.
+                with self._wake_lock:
+                    wake_phrases = self._pending_wake
                 recorder = PhaseRecorder(input_rate=self._input_rate, session_mode=self._quiet_interval > 0)
                 self._capturing = True
                 self._cancelled.clear()  # fresh capture: an idle cancel must not poison it
@@ -323,7 +339,10 @@ class ConverseSession:
                     self._cancelled.clear()
                     continue
                 if transcript:
-                    self.transcripts.put(Utterance(transcript, recorder))
+                    with self._wake_lock:
+                        if self._pending_wake is wake_phrases:
+                            self._pending_wake = ()
+                    self.transcripts.put(Utterance(transcript, recorder, wake_phrases=wake_phrases))
         except Exception:
             logger.warning("converse VAD loop failed", exc_info=True)
         finally:
@@ -659,6 +678,18 @@ async def drive_converse_turns(
             continue
         transcript = item
         if not transcript:
+            continue
+        # Only a capture associated with a reported wake is eligible. A stop
+        # phrase retains priority; combined wake + request text is untouched.
+        if (is_wake_only(transcript, getattr(item, "wake_phrases", ()))
+                and not (quiet_interval > 0 and is_stop_phrase(transcript, d.stop_phrases))):
+            recorder = getattr(item, "recorder", None)
+            if recorder is not None:
+                recorder.set(outcome="wake_only", **{"wake.suppressed": True})
+                emit_turn_trace(recorder)
+            logger.info("converse: wake-only utterance suppressed; continuing to listen (session=%s endpoint=%s)",
+                        getattr(session, "session_id", ""),
+                        "smart_turn" if getattr(session, "_turn_detector", None) is not None else "fixed")
             continue
         turn_id = uuid.uuid4().hex
         tt = start_turn(recorder=getattr(item, "recorder", None), turn_id=turn_id,

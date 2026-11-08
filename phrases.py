@@ -54,3 +54,17 @@ def strip_end_phrase(text: str, end_phrases: Iterable[str]) -> str:
         if m:
             return text[:m.start()].rstrip()
     return text
+
+
+def is_wake_only(transcript: str, wake_phrases: Iterable[str]) -> bool:
+    """Whole-utterance wake cue, ignoring case, punctuation, and word separators.
+
+    Aria and Arya are equivalent spellings of the assistant's name. Never use
+    substring or fuzzy matches: request words must survive, even after a wake cue.
+    """
+    def words(text: str) -> tuple[str, ...]:
+        return tuple("aria" if word == "arya" else word
+                     for word in re.findall(r"[^\W_]+", text.casefold()))
+
+    cleaned = words(transcript)
+    return bool(cleaned) and any(cleaned == words(phrase) for phrase in wake_phrases)

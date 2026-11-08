@@ -137,6 +137,22 @@ STT, agent execution, and TTS. Duplicate answers remain possible when clients
 do not follow the recommendation. Use the existing `cancel` or `stop` controls
 when cancellation or session termination is actually wanted.
 
+### Buffered wake audio
+
+The first nonempty capture after a valid `wake` report may contain only the wake
+cue retained in the client's audio buffer. If its entire transcript matches the
+reported phrase or `start.name`, ignoring case and punctuation, the server stays
+listening and produces no agent turn or reply frames. Aria and Arya are treated
+as equivalent name spellings for this check. This works with both Smart Turn
+and the fixed silence endpointer.
+
+A continuous utterance such as “Hey Arya, set a five minute timer” is passed to
+the agent intact. The wake-only guard applies to one capture per wake report;
+ordinary follow-ups and explicit session-mode stop phrases retain their normal
+behavior. Wake-only suppression neither closes the socket nor changes the
+client's listening timeout. Election grouping still uses the exact reported
+`wake_word` string.
+
 ### Wake request and decision frames
 
 After `start` / `ready`, a cooperating client buffers microphone audio and sends

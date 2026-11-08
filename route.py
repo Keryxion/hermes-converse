@@ -320,6 +320,10 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                     if frame.get("type") == "cancel":
                         session.cancel(frame.get("turn_id"))
                     if frame.get("type") == "wake":
+                        claim_id, wake_word = frame.get("claim_id"), frame.get("wake_word")
+                        if (isinstance(claim_id, str) and claim_id.strip()
+                                and isinstance(wake_word, str) and wake_word.strip()):
+                            session.note_wake(wake_word, name=name)
                         # Do not block PCM, cancel, stop, or a new claim while an election runs.
                         task = asyncio.create_task(_reply_wake(frame))
                         wake_tasks.add(task)

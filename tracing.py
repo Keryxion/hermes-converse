@@ -22,6 +22,9 @@ appends the agent/TTS phases via :meth:`TurnTrace.add_phase`, sets ``outcome`` (
 :meth:`TurnTrace.end`. An utterance discarded after a sign-off turn is handed to
 :func:`emit_turn_trace` with ``outcome="discarded_after_signoff"``.
 
+A wake-only capture is emitted without opening a turn, with ``outcome="wake_only"``
+and ``wake.suppressed=True``. Its capture phase already records the effective endpoint mode.
+
 If :attr:`TurnTrace.traceparent` returns a W3C traceparent, the loop forwards it on the
 ``transcript`` and ``speaking`` frames so a client can nest its own spans under the turn.
 """
