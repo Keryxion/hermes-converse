@@ -181,18 +181,18 @@ class BargeDetector:
         self.playing_prev = playing
         self.blocks_since_playback = 0 if playing else self.blocks_since_playback + 1
 
-    def feed(self, rms_value: float, playing: bool) -> Optional[str]:
-        """Consume one block; return the phase name when speech trips, else None."""
+    def feed(self, rms_value: float, playing: bool, *, interrupting: bool = False) -> Optional[str]:
+        """Consume a block; active-turn interruption uses stricter energy than idle onset."""
         self.block_idx += 1
         if not self.floor_locked and not self._calibrate(rms_value, playing):
             return None
         self._track_playback(playing)
         # Trigger: quiet baseline x multiplier, phase-dependent.
-        #  • Playback (barge-in): quiet_floor*mult, floored at PLAYBACK_MIN_TRIGGER and capped at
+        #  • Active-turn interruption: quiet_floor*mult, floored at PLAYBACK_MIN_TRIGGER and capped at
         #    TRIGGER_CEILING so a noisy room never trips on speaker bleed.
-        #  • Onset (not playing): quiet_floor*onset_mult, floored at ONSET_TRIGGER_MIN and capped
+        #  • Ordinary onset: quiet_floor*onset_mult, floored at ONSET_TRIGGER_MIN and capped
         #    at onset_ceiling IF one is set (the converse profile sets none).
-        if playing:
+        if playing or interrupting:
             trigger = min(max(self.quiet_floor * self.mult, PLAYBACK_MIN_TRIGGER), TRIGGER_CEILING)
         else:
             trigger = max(self.quiet_floor * self._onset_mult, ONSET_TRIGGER_MIN)

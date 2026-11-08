@@ -260,7 +260,7 @@ def test_active_turn_speech_interrupts_without_stt_and_is_evaluated_once(monkeyp
                         lambda target, **kw: threading.Thread(target=target, daemon=True))
     session.start()
     try:
-        session.stream.feed(np.full(30*480, 1000, np.int16).tobytes())
+        session.stream.feed(np.full(30*480, 5000, np.int16).tobytes())
         assert interrupted.wait(timeout=2)
     finally:
         session.stop()
@@ -278,3 +278,41 @@ def test_download_failure_cleans_temporary_file(tmp_path, monkeypatch):
     with pytest.raises(TimeoutError):
         sv._ensure_model()
     assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize('playing', [False, True], ids=['thinking', 'speaker-or-tail'])
+@pytest.mark.parametrize('recorded', [False, True], ids=['public-speech', 'recorded-room'])
+def test_real_quiet_speech_is_valid_input_but_not_an_interruption(real_model, playing, recorded):
+    if recorded:
+        path = os.environ.get('HERMES_TEST_BARGE_AUDIO')
+        if not path:
+            pytest.skip('set HERMES_TEST_BARGE_AUDIO to a reviewed local 16 kHz mono PCM16 recording')
+        with wave.open(path, 'rb') as wav:
+            assert wav.getnchannels() == 1 and wav.getsampwidth() == 2 and wav.getframerate() == 16000
+            original = np.frombuffer(wav.readframes(wav.getnframes()), np.int16).astype(np.float64)
+    else:
+        original = speech_fixture().astype(np.float64)
+    block_peak = max(vad.rms(np, original[i:i + 480]) for i in range(0, original.size, 480))
+    assert block_peak > 0
+    quiet_speech = np.round(original * (900 / block_peak)).astype(np.int16)
+    silence = np.zeros(480, np.int16)
+
+    def blocks(audio):
+        for start in range(0, audio.size, 480):
+            yield np.pad(audio[start:start + 480], (0, max(0, start + 480 - audio.size)))
+
+    # Do not solve false interruptions by making quiet voices inaudible at idle.
+    idle = sd.SpeechDetector(np)
+    for _ in range(40):
+        idle.feed(silence, False)
+    assert any(idle.feed(block, False) == 'generation' for block in blocks(quiet_speech))
+
+    active = sd.SpeechDetector(np)
+    for _ in range(40):
+        assert active.feed(silence, playing, interrupting=True) is None
+    assert all(active.feed(block, playing, interrupting=True) is None for block in blocks(quiet_speech))
+    for _ in range(40):
+        assert active.feed(silence, playing, interrupting=True) is None
+    # The same human voice at ordinary volume must still interrupt.
+    assert any(active.feed(block, playing, interrupting=True) is not None
+               for block in blocks(original.astype(np.int16)))

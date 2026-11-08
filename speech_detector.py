@@ -66,9 +66,9 @@ class SpeechDetector:
                         self._energy.quiet_floor * vad.CONVERSE_ENDPOINT_FLOOR_MULT)
         return vad.rms(self._np, block) < threshold
 
-    def feed(self, block: Any, playing: bool) -> Optional[str]:
-        """Process an onset/control block once; playing includes client playback drain."""
-        energy_phase = self._energy.feed(vad.rms(self._np, block), playing)
+    def feed(self, block: Any, playing: bool, *, interrupting: bool = False) -> Optional[str]:
+        """Process once; interrupting selects active-turn sensitivity, even before playback."""
+        energy_phase = self._energy.feed(vad.rms(self._np, block), playing, interrupting=interrupting)
         probability = self._probability(block)
         self.quiet = self._energy_quiet(block) if probability is None else probability < SPEECH_OFF
         if probability is None:
@@ -89,6 +89,12 @@ class SpeechDetector:
         self._in_speech = voiced
         self._speech_ms = self._speech_ms + block.size * 1000 / self._input_rate if voiced else 0.0
         if self._speech_ms < MIN_SPEECH_MS:
+            return None
+        # Silero answers "is this speech?", not "is this a sustained, audible
+        # interruption?" Require the warm energy detector's sustained threshold
+        # during an active turn. A loud click followed by quiet mumbling must
+        # not borrow the click's rolling RMS to cancel the reply.
+        if (playing or interrupting) and energy_phase is None:
             return None
         self._in_speech, self._speech_ms = False, 0.0
         return "playback" if playing else "generation"

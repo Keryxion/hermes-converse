@@ -364,7 +364,7 @@ class ConverseSession:
                         continue  # samples received before the last drain/reset
                     busy = self._turn_active.is_set() or self._pending_turn.is_set() or self._tail_active
                     playing = self.playing() or self._tail_active
-                    phase = self._detector.feed(data, playing)
+                    phase = self._detector.feed(data, playing, interrupting=busy)
                     if busy or self._discard_until_quiet:
                         # Never put active-turn speech (or its pre-roll) through ordinary STT.
                         self._pre_roll.clear()
