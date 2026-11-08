@@ -51,7 +51,7 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 | `output_rate` | sample rate of PCM the server sends back (default 24000) |
 | `quiet_interval` | session mode: seconds of silence between turns (0 = off) |
 | `conversation` | Optional Hermes conversation title, used with negotiated conversation-v1; defaults to `Arya: <device name>` (section 11). |
-| `name` | the assistant's name — set this to "Arya" (not "Hey Arya"). Arya uses her name in the voice prompt so she knows she's being addressed and doesn't get confused about why she's being called that name |
+| `name` | What you call the assistant, such as `Arya` or `Alexa`, without “Hey”. Used in the voice system prompt; separate from the device label, such as `Den Echo`. |
 
 For a wake-word client, detect the wake word locally, buffer microphone
 PCM while awaiting arbitration for up to **1000 ms**, and start streaming
@@ -580,12 +580,15 @@ These proposed extensions do not change the current wire protocol by themselves.
 
 ## 11. Named Aryas and conversations
 
-Every Arya has a name, usually the room it is in: `Kitchen`, `Bedroom`, or
-`Office`. Names must be unique in your household. Configure the name when
-setting up the device. Renaming a device preserves its conversations and timers.
+A device has a label such as `Den Echo`, `Kitchen`, or `Bedroom`. Device labels
+must be unique in your household; configure them during device setup. They are
+separate from what you call the assistant: many devices can answer to `Arya`
+or `Alexa` while having different device labels.
 
-The assistant's `start.name` is separate from the device name. Choosing another
-conversation does not rename the Arya or change where its timers ring.
+`start.name` tells the assistant its name in the voice system prompt. It is
+related to the wake name, not the device label. The detected wake phrase is
+still sent separately in `wake.wake_word` (section 8). Renaming a device or
+choosing another conversation does not change what you call the assistant.
 
 ### Start and ready
 
@@ -593,8 +596,8 @@ Send the device's attachment credential and optionally a conversation name in
 `start`. If `conversation` is omitted, use `Arya: <device name>`.
 
 ```json
-{"type":"start","key":"<API_SERVER_KEY>","input_rate":16000,"output_rate":24000,
- "conversation":"Arya: Kitchen",
+{"type":"start","key":"<API_SERVER_KEY>","input_rate":16000,"output_rate":24000,"name":"Arya",
+ "conversation":"Arya: Den Echo",
  "extensions":{"arya-v1":{"attachment_token":"<device credential>"},"conversation-v1":{}}}
 ```
 
@@ -606,9 +609,13 @@ Wait for `ready` before streaming audio. It reports the device identity and
 the conversation name actually opened:
 
 ```json
-{"type":"ready","session_id":"socket-9","conversation":"Arya: Kitchen",
- "extensions":{"arya-v1":{"recipient_id":"arya-kitchen","name":"Kitchen","attachment_id":"attachment-9"},"conversation-v1":{}}}
+{"type":"ready","session_id":"socket-9","conversation":"Arya: Den Echo",
+ "extensions":{"arya-v1":{"recipient_id":"device-7","name":"Den Echo","attachment_id":"attachment-9"},"conversation-v1":{}}}
 ```
+
+`ready.extensions.arya-v1.name` is the device label (`Den Echo` here), not
+the assistant name supplied in `start.name` (`Arya` here). The default
+conversation uses the device label: `Arya: Den Echo`.
 
 `session_id` identifies this socket for diagnostics. `recipient_id` identifies
 the Arya across reconnects and renames. `attachment_id` identifies its current
