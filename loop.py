@@ -40,6 +40,10 @@ logger = logging.getLogger(__name__)
 # finished; a "hold" keeps listening for another window. Cap consecutive holds so a user who
 # genuinely stopped mid-phrase is committed after ~3 windows, not at the utterance cap.
 MAX_ENDPOINT_HOLDS = 3
+# How long a capture may wait for audio with nothing arriving before it is abandoned and dropped,
+# rather than left open so a much-later stream can complete it and merge two unrelated utterances.
+# Zero disables the timeout (capture blocks for audio as today).
+CAPTURE_NO_DATA_SECONDS = 5.0
 # Reply speech: poll for deltas every 0.5 s; after 4 empty polls (~2 s) speak the buffered tail.
 IDLE_POLL_SECONDS = 0.5
 IDLE_POLLS_TO_FLUSH = 4
@@ -74,10 +78,17 @@ class NetworkMicStream:
         self._carry = np.zeros(0, dtype=np.int16)
         self._byte_carry = b""
         self._feed_lock = threading.Lock()
+        # Wall clock of the last ``feed``; used by read() to abandon a capture that is starved of
+        # audio instead of blocking until a much-later stream completes it (issue #7).
+        self._last_feed = time.monotonic()
+        # True when the most recent read() returned early because no audio arrived for
+        # ``no_data_seconds``; capture callers use it to drop the partial capture.
+        self.no_data_return = False
 
     def feed(self, pcm_bytes: bytes) -> None:
         if not pcm_bytes:
             return
+        self._last_feed = time.monotonic()
         with self._feed_lock:
             buf = self._byte_carry + pcm_bytes
             if len(buf) % 2:
@@ -92,11 +103,16 @@ class NetworkMicStream:
         self._stop.set()
         self._chunks.put(None)
 
-    def read(self, block: int) -> tuple[Any, bool]:
+    def read(self, block: int, *, no_data_seconds: Optional[float] = None) -> tuple[Any, bool]:
         """Exactly *block* int16 samples as ``(np.ndarray, overflow=False)``. Blocks until enough
         samples arrive or the stop event is set; on stop, returns what is buffered zero-padded so
-        the endpointer drains and exits cleanly instead of raising."""
+        the endpointer drains and exits cleanly instead of raising.
+
+        When *no_data_seconds* is given and no audio has been fed for that long of wall-clock time,
+        the read returns early with what is buffered zero-padded and sets ``no_data_return`` so a
+        capture caller can abandon the partial capture instead of transcribing it."""
         np = self._np
+        self.no_data_return = False
         while len(self._carry) < block:
             if self._stop.is_set():
                 self._drain_pending()
@@ -109,11 +125,21 @@ class NetworkMicStream:
             try:
                 chunk = self._chunks.get(timeout=self._poll_seconds)
             except queue.Empty:
+                if (
+                    no_data_seconds is not None
+                    and time.monotonic() - self._last_feed > no_data_seconds
+                ):
+                    self.no_data_return = True
+                    break
                 continue
             if chunk is None:  # close() sentinel
                 continue
             self._carry = np.concatenate([self._carry, chunk])
         out, self._carry = self._carry[:block], self._carry[block:]
+        if len(out) < block:
+            pad = np.zeros(block - len(out), dtype=np.int16)
+            out = np.concatenate([out, pad])
+            self._carry = np.zeros(0, dtype=np.int16)
         return out, False
 
     def _drain_pending(self) -> None:
@@ -175,12 +201,16 @@ class ConverseSession:
         self, np: Any, *, input_rate: int = DEFAULT_INPUT_RATE, quiet_interval: float = 0.0,
         transcribe: Optional[Callable[[str], str]] = None, barge_multiplier: Optional[float] = None,
         endpoint_model: bool = False, endpoint_threshold: float = SMART_TURN_DEFAULT_THRESHOLD,
+        capture_no_data_seconds: float = CAPTURE_NO_DATA_SECONDS,
     ) -> None:
         self._np = np
         self.session_id = uuid.uuid4().hex  # echoed in `ready`, joinable across client/server traces
         self._transcribe = transcribe or _default_transcribe
         # Whisper resamples internally, so STT works at any capture rate; 30 ms blocks at that rate.
         self._input_rate = int(input_rate)
+        # How long a capture may wait for audio with nothing arriving before it is abandoned and
+        # dropped rather than merged with a much-later stream. Zero disables the timeout.
+        self._capture_no_data_seconds = float(capture_no_data_seconds)
         # Session mode: quiet is measured in RECEIVED-audio silence, NOT wall clock. When no audio
         # arrives the worker parks in stream.read() and this clock does not advance, so a client
         # holding the socket open (streaming only after a wake word) never accrues phantom quiet.
@@ -360,11 +390,18 @@ class ConverseSession:
         self._interrupted.set()
 
     def _capture_and_transcribe(self, recorder: Optional[PhaseRecorder] = None) -> str:
-        """Endpoint the utterance from the pre-roll and return its transcript."""
+        """Endpoint the utterance from the pre-roll and return its transcript.
+
+        If the capture is starved of audio for ``_capture_no_data_seconds`` of wall-clock time
+        (the client stopped streaming mid-utterance), the partial capture is dropped instead of
+        transcribed — otherwise a much-later stream can complete it and merge two unrelated
+        utterances into one transcript (issue #7).
+        """
         np = self._np
         recorder = recorder or PhaseRecorder()
         silence_rms = max(float(vad.SILENCE_RMS_THRESHOLD),
                           self._detector.quiet_floor * vad.CONVERSE_ENDPOINT_FLOOR_MULT)
+        no_data = self._capture_no_data_seconds > 0
         with recorder.phase("voice.capture") as cap:
             if self._turn_detector is not None:
                 cap.set(**{"endpoint.mode": "smart_turn"})
@@ -374,8 +411,12 @@ class ConverseSession:
                 wav_path = vad.capture_until_quiet(
                     self.stream, np, self._block, self._pre_roll,
                     endpoint_blocks=self._endpoint_blocks, max_blocks=self._max_blocks,
-                    sample_rate=self._input_rate, silence_rms=silence_rms)
+                    sample_rate=self._input_rate, silence_rms=silence_rms,
+                    no_data_seconds=self._capture_no_data_seconds if no_data else None)
         self._pre_roll.clear()  # capture drained the pre-roll into the WAV
+        if self.stream.no_data_return:
+            vad.unlink_quietly(wav_path)
+            return ""
         with recorder.phase("voice.stt") as stt:
             try:
                 transcript = str(self._transcribe(wav_path) or "").strip()
@@ -396,7 +437,13 @@ class ConverseSession:
         quiet = 0
         holds = 0
         for _ in range(self._max_blocks):
-            data, _ = self.stream.read(self._block)
+            data, _ = self.stream.read(self._block,
+                                       no_data_seconds=self._capture_no_data_seconds
+                                       if self._capture_no_data_seconds > 0 else None)
+            if self.stream.no_data_return:
+                # The client stopped streaming mid-utterance: abandon the capture rather than let a
+                # much-later stream complete it and merge two unrelated utterances.
+                break
             if self._stop.is_set():
                 break
             frames.append(data.copy())

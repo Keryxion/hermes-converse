@@ -26,6 +26,9 @@ DEFAULT_TAIL_FALLBACK = 45.0
 # brevity prompt, a tool result read aloud) can't play for minutes.
 DEFAULT_MAX_TTS_CHARS = 1500
 DEFAULT_ENDPOINT_THRESHOLD = 0.5
+# How long a capture may wait for audio with nothing arriving before it is abandoned and dropped,
+# rather than left open so a much-later stream can complete it and merge two unrelated utterances.
+DEFAULT_CAPTURE_NO_DATA_SECONDS = 5.0
 APPROVAL_CHOICES = ("deny", "once")
 
 Getter = Callable[..., Any]
@@ -43,6 +46,7 @@ class Settings:
     end_phrases: tuple[str, ...] = DEFAULT_END_PHRASES
     endpoint_model: bool = False
     endpoint_threshold: float = DEFAULT_ENDPOINT_THRESHOLD
+    capture_no_data_seconds: float = DEFAULT_CAPTURE_NO_DATA_SECONDS
     approval_choice: str = "deny"
     api_base_url: str = ""
 
@@ -79,6 +83,8 @@ def load_settings(get: Getter) -> Settings:
         endpoint_model=_model_enabled(get("endpoint_model", "")),
         endpoint_threshold=min(1.0, max(0.0, _number(get("endpoint_threshold", DEFAULT_ENDPOINT_THRESHOLD),
                                                       DEFAULT_ENDPOINT_THRESHOLD))),
+        capture_no_data_seconds=_number(get("capture_no_data_seconds", DEFAULT_CAPTURE_NO_DATA_SECONDS),
+                                        DEFAULT_CAPTURE_NO_DATA_SECONDS),
         approval_choice=approval if approval in APPROVAL_CHOICES else "deny",
         api_base_url=str(get("api_base_url", "") or "").strip().rstrip("/"),
     )

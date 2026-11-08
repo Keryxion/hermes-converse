@@ -63,6 +63,10 @@ config_schema:
     type: float
     default: 0.5
     description: "P(turn complete) at or above which Smart Turn commits the utterance."
+  capture_no_data_seconds:
+    type: float
+    default: 5
+    description: "Seconds of wall-clock silence in a capture before the capture is abandoned and dropped, rather than left open for a later stream to complete and merge two unrelated utterances."
   approval_choice:
     type: str
     choices: [deny, once]

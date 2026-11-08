@@ -20,7 +20,7 @@ from hermes_converse.loop import (
     drive_converse_turns, parse_start_config, voice_system_prompt)
 from hermes_converse.synth import decode_audio_file_to_pcm16, resample_synth, resolve_synthesizer
 
-from tests.support.converse_audio import calibration, silence, speech_like
+from tests.support.converse_audio import RMS_NORMAL_SPEECH, calibration, silence, speech_like
 
 
 # ── Smart Turn adaptive endpoint ──
@@ -111,6 +111,103 @@ def test_transcribe_failure_is_nothing_heard():
     session = _adaptive_session(_ScriptedDetector([0.9]), transcribe=_boom)
     _feed_silence(session, session._endpoint_blocks + 4)
     assert session._capture_and_transcribe() == ""
+
+
+# ── NetworkMicStream no-data timeout (issue #7) ──
+
+
+def test_stream_read_times_out_on_no_data():
+    """read() with no_data_seconds returns early and sets no_data_return when nothing is fed."""
+    stop = threading.Event()
+    block = int(16000 * vad.BLOCK_MS / 1000)
+    stream = cl.NetworkMicStream(np, stop=stop)
+    try:
+        # feed nothing: read should time out after no_data_seconds
+        data, _ = stream.read(block, no_data_seconds=0.05)
+        assert stream.no_data_return is True
+        assert len(data) == block  # zero-padded to a full block
+    finally:
+        stream.close()
+
+
+def test_stream_read_with_data_keeps_no_data_return_false():
+    """A read that gets real data leaves no_data_return False (no spurious timeout)."""
+    stop = threading.Event()
+    block = int(16000 * vad.BLOCK_MS / 1000)
+    stream = cl.NetworkMicStream(np, stop=stop)
+    try:
+        stream.feed(np.zeros(block, dtype=np.int16).tobytes())
+        data, _ = stream.read(block, no_data_seconds=None)
+        assert stream.no_data_return is False
+        assert len(data) == block
+    finally:
+        stream.close()
+
+
+def test_capture_until_quiet_ends_early_on_no_data():
+    """capture_until_quiet breaks out of its read loop when audio starves."""
+    stop = threading.Event()
+    block = int(16000 * vad.BLOCK_MS / 1000)
+    stream = cl.NetworkMicStream(np, stop=stop)
+    try:
+        path = vad.capture_until_quiet(
+            stream, np, block, [np.zeros(block, dtype=np.int16)],
+            endpoint_blocks=2, max_blocks=10_000, sample_rate=16000,
+            silence_rms=float(vad.SILENCE_RMS_THRESHOLD), no_data_seconds=0.05)
+        assert stream.no_data_return is True
+        vad.unlink_quietly(path)
+    finally:
+        stream.close()
+
+
+def test_capture_starved_of_audio_is_dropped_not_merged():
+    """A capture whose audio stops mid-utterance is dropped, not transcribed, so a later stream
+    cannot complete it and merge two unrelated utterances into one transcript (issue #7)."""
+    heard = []
+
+    def _transcribe(path):
+        heard.append(path)
+        return "heard"
+
+    session = ConverseSession(np, capture_no_data_seconds=0.3, transcribe=_transcribe)
+    session.start()
+    try:
+        session.stream.feed(calibration().tobytes())
+        # One short speech burst trips VAD and starts a capture.
+        session.stream.feed(speech_like(RMS_NORMAL_SPEECH, seed=7).tobytes())
+        # Then nothing: the capture starves and must be dropped (nothing put on the queue).
+        with pytest.raises(_queue.Empty):
+            session.transcripts.get(timeout=2.0)
+        assert heard == []  # the starved capture was never transcribed
+    finally:
+        session.stop()
+
+
+def test_capture_resumes_as_a_separate_turn_after_starvation():
+    """After a starved capture is dropped, the next utterance is its own transcript (not merged)."""
+    transcripts = []
+
+    def _transcribe(path):
+        return "heard"
+
+    session = ConverseSession(np, capture_no_data_seconds=0.3, transcribe=_transcribe)
+    session.start()
+    try:
+        session.stream.feed(calibration().tobytes())
+        # First utterance: speech then starve -> dropped.
+        session.stream.feed(speech_like(RMS_NORMAL_SPEECH, seed=11).tobytes())
+        try:
+            session.transcripts.get(timeout=2.0)
+        except _queue.Empty:
+            pass  # expected: starved capture dropped
+        # Second utterance: fresh speech -> its own transcript.
+        session.stream.feed(silence(seconds=0.3).tobytes())
+        session.stream.feed(speech_like(RMS_NORMAL_SPEECH, seed=22).tobytes())
+        session.stream.feed(silence(seconds=1.0).tobytes())
+        got = session.transcripts.get(timeout=4.0)
+        assert isinstance(got, str) and got  # a real transcript for the second utterance
+    finally:
+        session.stop()
 
 
 # ── ConverseSession barge-in / playing flag ──

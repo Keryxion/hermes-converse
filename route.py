@@ -173,7 +173,8 @@ def _resolve_session(settings: Settings, input_rate: int, output_rate: int, quie
 
     session = ConverseSession(
         np, input_rate=input_rate, quiet_interval=quiet_interval, transcribe=_transcribe,
-        endpoint_model=settings.endpoint_model, endpoint_threshold=settings.endpoint_threshold)
+        endpoint_model=settings.endpoint_model, endpoint_threshold=settings.endpoint_threshold,
+        capture_no_data_seconds=settings.capture_no_data_seconds)
     return synth, cap, session
 
 

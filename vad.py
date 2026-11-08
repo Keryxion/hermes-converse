@@ -100,14 +100,22 @@ def unlink_quietly(path: Optional[str]) -> None:
 
 def capture_until_quiet(stream: Any, np: Any, block: int, pre_roll: Any, *, endpoint_blocks: int,
                         max_blocks: int, sample_rate: int = SAMPLE_RATE,
-                        silence_rms: float = SILENCE_RMS_THRESHOLD) -> str:
+                        silence_rms: float = SILENCE_RMS_THRESHOLD,
+                        no_data_seconds: Optional[float] = None) -> str:
     """After a trip, read until *endpoint_blocks* of quiet (or *max_blocks*) and write pre-roll +
     capture to a WAV at *sample_rate*. *silence_rms* is the end-of-utterance threshold: raised above
-    the absolute 200 so an utterance ends when the level returns to a NOISY ambient floor."""
+    the absolute 200 so an utterance ends when the level returns to a NOISY ambient floor.
+
+    When *no_data_seconds* is given and no audio arrives for that long of wall-clock time, the
+    capture ends early rather than blocking so a much-later stream can complete it and merge two
+    unrelated utterances into one transcript (issue #7). Callers detect this via
+    ``stream.no_data_return`` and should drop the partial capture."""
     frames: list[Any] = list(pre_roll)
     quiet = 0
     for _ in range(max_blocks):
-        data, _ = stream.read(block)
+        data, _ = stream.read(block, no_data_seconds=no_data_seconds)
+        if stream.no_data_return:
+            break
         frames.append(data.copy())
         quiet = quiet + 1 if rms(np, data) < silence_rms else 0
         if quiet >= endpoint_blocks:
