@@ -50,6 +50,7 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 | `input_rate` | sample rate of the PCM you'll send (8000–48000, default 16000) |
 | `output_rate` | sample rate of PCM the server sends back (default 24000) |
 | `quiet_interval` | session mode: seconds of silence between turns (0 = off) |
+| `conversation` | Optional Hermes conversation title, used with negotiated conversation-v1; defaults to `Arya: <device name>` (section 11). |
 | `name` | the assistant's name — set this to "Arya" (not "Hey Arya"). Arya uses her name in the voice prompt so she knows she's being addressed and doesn't get confused about why she's being called that name |
 
 For a wake-word client, detect the wake word locally, buffer microphone
@@ -74,7 +75,6 @@ All are JSON text frames:
 | `{"type": "cancel", "turn_id": "..."}` | Cancels the **current** turn — stops TTS and the agent — but keeps the socket, session, and history alive. |
 | `{"type": "wake", "claim_id": "...", "wake_word": "Hey Arya"}` | request an advisory wake decision while buffering the new activation locally; see section 8. |
 | `{"type": "drained", "turn_id": "..."}` | Tells the server the reply's last audio has left the speaker, so the server won't transcribe its own echo as a new turn. |
-| `conversation_select` | Conversation-v1 selection, only after negotiation (section 11). |
 
 **`cancel` vs `stop`:** `stop` tears down the session; `cancel` only kills the
 current turn. Use `cancel` when the user hits the action button or says the
@@ -96,7 +96,6 @@ wake word again mid-turn and you want to keep the conversation going.
 | `quiet` | session mode: the stream has been silent for another `quiet_interval` seconds |
 | `stop_word` | session mode: you said a stop phrase; no turn ran |
 | `error` | the turn failed (spoken-safe text) |
-| `conversation` | Conversation-v1 selection acknowledgement (section 11). |
 
 ### Microphone streaming and barge-in
 
@@ -579,225 +578,85 @@ recipient attachment, and playback signalling remain implementation work.
 These proposed extensions do not change the current wire protocol by themselves.
 
 
-## 11. Named Aryas and Hermes conversation attachment
+## 11. Named Aryas and conversations
 
-This section defines `arya-v1` and `conversation-v1`. Section 10's timer
-delivery uses this same named-device attachment. Clients that do not negotiate
-these extensions use a separate conversation per socket.
+Every Arya has a name, usually the room it is in: `Kitchen`, `Bedroom`, or
+`Office`. Names must be unique in your household. Configure the name when
+setting up the device. Renaming a device preserves its conversations and timers.
 
-### Named Aryas and shared device attachment
+The assistant's `start.name` is separate from the device name. Choosing another
+conversation does not rename the Arya or change where its timers ring.
 
-Every provisioned Arya has a required human-readable name, usually its room:
-`Kitchen`, `Bedroom`, or `Office`. Persist a stable `recipient_id`, household,
-serving profile, name, optional room and aliases, permissions, and a revocable
-device-bound attachment credential. The recipient identifies the physical
-Arya across reconnects; it is not a conversation or the transient arbitration
-candidate. The existing `start.name` still names the assistant for its voice
-prompt; it does not name or register the physical Arya. Internal IDs are opaque strings; their wire format need not be a
-GUID. Users identify Aryas by name.
+### Start and ready
 
-Within one household/profile, require unique names after Unicode NFKC
-normalization, whitespace collapse, and case folding. Names are plain text,
-1–64 Unicode characters after normalization, without control characters.
-Normalize aliases and room lookups the same way. An exact canonical name takes
-precedence over an alias or room match; multiple alias/room matches require
-clarification. Never silently pick the first match. Directory results expose
-only destinations the caller is authorized to use. Setup and authenticated
-administration own provisioning, permissions, and rename; a `start` frame
-cannot register, rename, or claim an Arya by supplying a name or ID.
-
-For example, "set a timer" targets the requesting Arya. "Set a timer on
-Bedroom" or "in the bedroom" resolves an authorized named destination before
-creating the timer (section 10). Changing a conversation never changes which
-physical Arya a credential identifies.
-
-Negotiate all extensions using the same `extensions` object. For example:
+Send the device's attachment credential and optionally a conversation name in
+`start`. If `conversation` is omitted, use `Arya: <device name>`.
 
 ```json
 {"type":"start","key":"<API_SERVER_KEY>","input_rate":16000,"output_rate":24000,
- "extensions":{"arya-v1":{"attachment_token":"<device-bound token>"},
- "conversation-v1":{"mode":"default"}}}
+ "conversation":"Arya: Kitchen",
+ "extensions":{"arya-v1":{"attachment_token":"<device credential>"},"conversation-v1":{}}}
 ```
 
-The server authenticates the normal API credential and device token, which
-bind a principal, household, profile, and recipient. A shared API key or a
-client-supplied name/device ID alone is not device identity. Provision tokens
-out of band, redact them from logs, and use encrypted transport or a secured
-tunnel. Token storage, rotation, and revocation are server administration.
+For a task-specific conversation, send a name such as
+`"conversation":"Dinner planning"`. The server opens that conversation,
+creating it if needed. An existing conversation keeps its history.
+
+Wait for `ready` before streaming audio. It reports the device identity and
+the conversation name actually opened:
 
 ```json
-{"type":"ready","session_id":"socket-9","extensions":{
- "arya-v1":{"recipient_id":"arya-kitchen","name":"Kitchen","attachment_id":"attachment-9"},
- "conversation-v1":{"hermes_session_id":"api_1794142800_a1b2c3d4",
- "title":"Arya: Kitchen","status":"resumed"}}}
+{"type":"ready","session_id":"socket-9","conversation":"Arya: Kitchen",
+ "extensions":{"arya-v1":{"recipient_id":"arya-kitchen","name":"Kitchen","attachment_id":"attachment-9"},"conversation-v1":{}}}
 ```
 
-`session_id` keeps its existing socket/tracing meaning. `attachment_id` is
-fresh per connection. One authenticated replacement attachment fences the old
-one and closes it with `4409 attachment_replaced`; stale commands and receipts
-are rejected. Atomically fence new admissions and stop/settle any old in-flight
-run before admitting new user work on its Hermes session. If settlement is
-pending, return `conversation_busy` instead of starting competing runs. A
-partitioned old speaker may still sound until its bounded playback stops;
-fencing is not proof of physical silence. Section 10 uses the same attachment,
-not a second timer-specific token, recipient registry, or lease.
+`session_id` identifies this socket for diagnostics. `recipient_id` identifies
+the Arya across reconnects and renames. `attachment_id` identifies its current
+connection and is used by timer operations (section 10). Treat these IDs as
+opaque; clients do not generate them or infer names from them.
 
-Unknown extensions are omitted from `ready`. `conversation-v1` requires
-`arya-v1`; accept dependent extensions together or omit them. A client must
-check acknowledgement before using new frames or claiming context was restored.
-If unavailable, show that state and explicitly fall back to legacy behavior
-or disconnect. Malformed extension fields close with `4402 bad_extension`;
-invalid device credentials close with `4403 forbidden_attachment`. A non-start
-first frame retains `4400 bad_start`, and ordinary API auth retains 4401.
+Check that `ready.extensions` acknowledges both requested extensions. If either
+is missing, the named-conversation contract is unavailable. Show that state and
+fall back explicitly or disconnect; do not claim the conversation was restored.
+A conversation name is a nonempty string. The server rejects invalid or
+inaccessible names rather than silently opening a different conversation.
 
-### Reuse Hermes sessions and titles
+### Reconnect and change conversations
 
-Hermes already owns persisted session IDs, titles, history, title conflict
-rules, and continuation resolution after compression. Use those resources:
-[session API](https://github.com/NousResearch/hermes-agent/blob/main/gateway/platforms/api_server.py),
-[title handling](https://github.com/NousResearch/hermes-agent/blob/main/hermes_state_titles.py),
-and [Runs continuation resolution](https://github.com/NousResearch/hermes-agent/blob/main/gateway/platforms/api_server_runs.py).
-The implementation must check the installed Hermes version for these features
-and fail explicitly when required support is missing.
+Remember the chosen name and send it again in `start` after reconnecting.
+To change conversations, reconnect with a different name. To start fresh, choose
+a new name. There is no separate conversation-selection frame or mode.
+Omitting the name always opens the device's default conversation.
 
-Each Arya defaults to a Hermes conversation titled **`Arya: <name>`**:
+Inactivity, standby, sign-off, cancellation, and socket closure do not reset
+conversation history. Reconnecting restores context; it does not replay audio
+or retry an interrupted request. Do not automatically resend an utterance whose
+outcome is unknown, since its actions may already have happened.
 
-| Arya | Default Hermes title |
+One connection serves an Arya at a time. A replacement connection closes the
+old one with `4409 attachment_replaced`. Stop sending on the old connection and
+use the new `attachment_id` for subsequent operations.
+
+| failure | client behavior |
 |---|---|
-| Kitchen | Arya: Kitchen |
-| Bedroom | Arya: Bedroom |
-| Office | Arya: Office |
+| `4402 bad_extension` | Fix invalid extension fields or an invalid conversation value before retrying. |
+| `4403 forbidden_attachment` | Check the device credential; a name alone does not identify a device. |
+| `4404 conversation_unavailable` | Show the error; do not claim context was restored. |
+| `conversation_busy` before ready | Retry connection later; an earlier request is still stopping. |
 
-Persist only the recipient's default/current Hermes session references and
-attachment metadata. Do not create another conversation-ID namespace, copy
-session titles/history into an independent conversation database, or invent
-separate title uniqueness rules. Use Hermes list/get/create/rename operations
-and pass the selected Hermes session ID to `/v1/runs`. Keep title/display state
-fresh from Hermes and follow its canonical continuation when sessions compress.
+Normal API authentication and first-frame errors remain as defined in section 1.
 
-On first setup, resolve the exact default title in the authorized serving
-profile. Adopt an existing compatible session only after Hermes access and
-ownership checks; otherwise create it with that title. A title collision with
-an inaccessible/incompatible session is an explicit setup conflict, not grounds
-to adopt it, append a random suffix, or mint repeated orphan sessions. Resolve
-concurrent creators through Hermes's title-conflict behavior and re-read the
-winning authorized session. Persist its reference before reporting success.
+### Timers on named Aryas
 
-After setup, resume by saved Hermes reference; names are for people and lookup,
-not a replacement for stable binding. If the saved session was deleted or
-becomes inaccessible, report `conversation_unavailable` and require explicit
-selection or new-conversation recovery. Storage failure must not silently
-create empty context. Pre-ready selection failures send `error` with
-`error: "conversation_unavailable"` and close with `4404 conversation_unavailable`.
-Live selection failures echo `request_id`, keep the socket open, and preserve
-the prior selection; use the same generic unavailable error for missing or
-unauthorized sessions. Follow Hermes ownership/admission rules for sessions used
-by another surface; selecting a session does not authorize taking over its run.
+"Set a timer" defaults to the requesting Arya. "Set a timer on Bedroom" targets
+Bedroom, even when the request comes from Kitchen. Ask for clarification if a
+room/name matches several devices. Report an unavailable destination before
+confirming audible delivery there. Timer operations are defined in section 10.
 
-There is **no Converse inactivity expiry** for the default or an explicitly
-selected saved conversation. Reconnect, standby, sign-off, stop phrases,
-`cancel`, barge-in, and socket closure retain the selection. Hermes owns context
-compression and retention. Resume restores history, not interrupted audio or a
-run; never automatically replay an unacknowledged utterance or promise exactly
-once execution of its tools.
-
-### Selection, rename, and trusted turn context
-
-`conversation-v1.mode` supports the following start-time selection. Omitted
-mode means `default`; reject unknown modes and incompatible fields.
-
-| mode | fields and behavior |
-|---|---|
-| `default` | No session ID/title fields; select the Arya's saved default session, resolving/creating it only on first setup. |
-| `resume` | Require `hermes_session_id`; select that existing authorized Hermes session, regardless of age. |
-| `new` | Require nonempty `title` and unique `request_id`, forbid session ID; explicitly create/select a Hermes session with that title under Hermes validation/conflict rules. |
-
-The selected session becomes current for that attachment. Persist it so a
-reconnect can send `resume`; a `default` request deliberately returns to the
-Arya's saved default. If `conversation-v1` is negotiated by an empty object,
-select `default`. `ready` reports `created` or `resumed` and the actual Hermes
-session ID/title. It does not change the Arya's identity or timer destination.
-
-For selection on an open socket, pause microphone upload and send:
-
-```json
-{"type":"conversation_select","attachment_id":"attachment-9","request_id":"select-8",
- "mode":"resume","hermes_session_id":"api_1794142800_a1b2c3d4"}
-```
-
-Use the same mode/field rules as `start`. Accept only when no capture, queued
-utterance, run, or playback drain is active. Otherwise return a correlated
-`error` with `error: "conversation_busy"` and leave selection unchanged.
-On success acknowledge before new audio or runs:
-
-```json
-{"type":"conversation","request_id":"select-8","hermes_session_id":"api_1794142800_a1b2c3d4",
- "title":"Arya: Kitchen","reason":"selected"}
-```
-
-Deduplicate selection/new requests durably by authenticated recipient +
-`request_id` for at least 7 days; changed payload returns `request_conflict`.
-A retry of `new` must not create another session after a crash between Hermes
-creation and local acknowledgement: persist the intended Hermes create ID and
-operation before creation, then recover by that same ID. Use Hermes's normal
-ID generation/validation convention rather than a second conversation ID.
-A cached acknowledgement describes the historical operation; after a later
-selection, return `selection_superseded` rather than applying it again.
-Retain only current/default references plus bounded operation receipts; expire
-receipts after the advertised 7-day retry window. Never retry expired operations
-blindly. Clients resync current selection by reconnecting before new intent.
-
-An explicit "start fresh" action creates/selects a newly titled Hermes session
-through `new`; it does not clear the old history. Offer Hermes's valid next
-lineage title, such as `Arya: Kitchen #2`, for user acceptance. On success make
-that session the Arya's saved default as well, so reconnecting with `default`
-continues the fresh history. `resume` of another saved session changes current
-selection only. Model-generated text alone cannot reset or select context.
-
-Renaming an Arya preserves its recipient ID, default Hermes history, and all
-timers. Rename its default Hermes title through Hermes to `Arya: <new name>`;
-for a fresh lineage retain Hermes's suffix (e.g. `Arya: Downstairs Kitchen #2`).
-Do not rename another explicitly selected task conversation. Preflight name
-and Hermes-title conflicts. Make the administrative rename a durable,
-recoverable operation; announce success only after directory and Hermes agree.
-Until recovery settles a partial failure, block affected new name resolutions
-and report rename pending, never claim a completed rename with divergent names.
-
-Provide trusted server turn context containing source recipient ID, current
-Arya name, and selected Hermes session ID to the agent/tool runtime. For example,
-"This request came from Arya: Kitchen." Resolve it from the authenticated
-attachment each turn, not transcript text or model-supplied identity. Keep it
-request-scoped when conversations are shared. All negotiated user-turn frames
-with `turn_id` also carry `hermes_session_id`; pin that reference through turn
-completion/drain. Changing selection or receiving old output never rebinds an
-in-flight turn. Restore local sign-off bookkeeping from appropriate Hermes
-history or replace that dependency; an empty plugin reply list is not evidence
-of an empty conversation.
-
-### Timer and outbound boundaries; acceptance criteria
-
-A timer records the originating Hermes session, requesting Arya, and target
-Arya separately. "Kitchen, set a timer on Bedroom" stays in `Arya: Kitchen`
-while Bedroom rings. Timers survive session selection, fresh history, rename,
-and disconnect. Delivery uses the stored target recipient, never whichever
-session/name is current at expiry. Outbound events retain their origin without
-switching the receiving device's selected conversation. General conversation
-subscriptions still require the explicit authorization described in section 9.
-
-Before implementation, verify these scenarios:
-
-- Kitchen/Bedroom/Office each have a required unique name and default Hermes
-  title using a colon. Duplicate names, ambiguous rooms, and unauthorized
-  destinations fail or clarify without creating sessions/timers.
-- First setup reuses a compatible named Hermes session; concurrent setup,
-  reconnect, restart, and compression do not fork or lose history.
-- Rename preserves identity, history and timer routing; conflicts and partial
-  failures recover without presenting inconsistent successful state.
-- Idle time never resets context; explicit selection/fresh history uses Hermes
-  resources, respects title/ownership rules, and is safe under retries/crashes.
-- Replacement attachments fence old admissions/receipts; old runs settle before
-  new admission, and active capture/playback cannot switch session midway.
-- Trusted source context stays correct with another selected conversation;
-  a remote timer rings on its named target and preserves its source session.
-- Unsupported extensions and Hermes versions fail explicitly; legacy behavior
-  remains unchanged.
+The requesting device receives the confirmation; the destination device rings.
+Changing conversation or renaming either device does not move an existing timer.
+A timer received while another conversation is open does not switch that
+conversation. Renaming Kitchen changes its default conversation's display name
+to `Arya: <new name>` while retaining its history; custom conversation names are
+unchanged. After a rename, use the new name from `ready`, or omit `conversation`
+to open the renamed default.
