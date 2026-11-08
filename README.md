@@ -114,7 +114,7 @@ plugin settings form):
 | `arbitrate_enabled` | `false` | enable advisory wake selection for cooperating clients |
 | `arbitrate_policy` | `wake_signal` | rank wake claims with `wake_signal` |
 | `arbitrate_device_id` | `""` | optional label prefix for server-generated unique socket identifiers |
-| `arbitrate_wake_window_seconds` | `0.25` | how long the arbitrator collects concurrent wake claims for the same wake word before electing the primary device |
+| `arbitrate_wake_window_seconds` | `0.75` | how long the arbitrator collects concurrent wake claims for the same wake word before electing the primary device |
 
 STT and TTS come from your normal Hermes `stt.*` and `tts.*` configuration.
 
@@ -122,9 +122,24 @@ STT and TTS come from your normal Hermes `stt.*` and `tts.*` configuration.
 `wake_signal` policy, devices send a `wake` frame with a client-generated `claim_id`,
 the exact detected `wake_word` phrase, and optional `confidence` (0–1), normalized
 RMS `volume` (0–1), and `heard_at` (Unix milliseconds). Reports for the same phrase
-within a 250 ms window compete: highest confidence, then highest volume, then
+within a 750 ms window compete: highest confidence, then highest volume, then
 earliest detection time, then arrival order. The server echoes the request ID
-in `wake_grant` or `wake_deny`.
+in `wake_grant` or `wake_deny`. Different phrases and claims arriving after the
+window elect independently; the larger window mitigates detector skew without
+making selection exclusive.
+
+The **1000 ms** client timeout starts when each client sends its own claim. A
+750 ms collection leaves a nominal 250 ms for transit and scheduling for the
+earliest claimant. Measure decision latency on the deployed network before
+assuming that margin is sufficient. Existing explicit `0.25` settings must be
+changed to `0.75` to use the larger window; changing the default does not override
+saved configuration.
+
+At INFO level, arbitration logs include claim receipt timestamps, election IDs,
+claim/device IDs, election age, winners, and decision wait times, without audio,
+wake phrases, or transcripts. Use election IDs to distinguish a shared election
+from a late claim opening a second one. After deployment, verify that only one
+physical device responds and the loser silently resumes wake detection.
 
 Clients buffer audio while waiting for up to **1000 ms** and ignore late decisions. On a grant,
 send the complete buffer before live audio so the beginning of the utterance is preserved.

@@ -180,3 +180,42 @@ async def test_pending_wake_does_not_block_control_frames(monkeypatch):
         await ws.send_json({'type': 'drained'})
         await asyncio.wait_for(asyncio.gather(*(e.wait() for e in seen.values())), timeout=1)
         await ws.close()
+
+
+@pytest.mark.parametrize('spacing,second_phrase,expected', [
+    (0.35, 'Hey Arya', ['wake_deny', 'wake_grant']),
+    (0.70, 'Hey Arya', ['wake_deny', 'wake_grant']),
+    (0.35, 'Different assistant', ['wake_grant', 'wake_grant']),
+    (0.85, 'Hey Arya', ['wake_grant', 'wake_grant']),
+])
+@pytest.mark.asyncio
+async def test_default_window_over_websockets(monkeypatch, spacing, second_phrase, expected, record_property):
+    """Audio-free diagnostic: each deadline starts at that client's own send."""
+    fake = _patch(monkeypatch)
+    async with Harness(fake, settings={'arbitrate_enabled': True}) as client:
+        first, second = await _connect(client), await _connect(client)
+        clock = asyncio.get_running_loop().time
+
+        async def claim(ws, claim_id, phrase, confidence):
+            sent = clock()
+            async with asyncio.timeout_at(sent + 1.0):
+                await ws.send_json({'type': 'wake', 'claim_id': claim_id, 'wake_word': phrase,
+                                    'confidence': confidence})
+                reply = await ws.receive_json()
+            return reply, clock() - sent
+
+        first_task = asyncio.create_task(claim(first, 'first', 'Hey Arya', 0.5))
+        try:
+            await asyncio.sleep(spacing)
+            results = await asyncio.gather(first_task, claim(second, 'second', second_phrase, 1))
+            assert [r['type'] for r, _ in results] == expected
+            assert [r['claim_id'] for r, _ in results] == ['first', 'second']
+            assert [r['wake_word'] for r, _ in results] == ['Hey Arya', second_phrase]
+            for index, (_, latency) in enumerate(results):
+                record_property(f'claim_{index}_latency_ms', round(latency * 1000, 1))
+            assert not fake.runs  # No audio, agent run, or TTS needed to reproduce the election.
+        finally:
+            first_task.cancel()
+            await asyncio.gather(first_task, return_exceptions=True)
+            await first.close()
+            await second.close()

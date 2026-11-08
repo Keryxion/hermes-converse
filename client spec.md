@@ -308,7 +308,7 @@ The server sends one decision for each valid wake request.
 
 With cooperative selection enabled, the first claim for an exact wake phrase
 opens a collection window, configured by `arbitrate_wake_window_seconds`
-(default **0.25 seconds**). Claims for that phrase received within the window
+(default **0.75 seconds**). Claims for that phrase received within the window
 compete together. A claim after the window closes opens a new election;
 different phrases elect independently. This groups reports by server arrival
 time, not by transcript or client timestamp.
@@ -342,7 +342,13 @@ Start a **1000 ms** local monotonic deadline when sending `wake`. Buffer
 microphone PCM throughout this wait, including speech after the wake word.
 This is a maximum decision wait, not a mandatory extra second after a grant:
 act as soon as the matching decision arrives. The server's collection window
-(default 250 ms) is distinct from the client's one-second timeout.
+(default 750 ms) is distinct from the client's one-second timeout. This leaves
+only a nominal 250 ms for request/response transit and scheduling for the earliest
+claimant; measure actual deployment latency. A larger collection window reduces
+detector skew failures but claims arriving after it still open independent
+elections. Keep the client deadline at 1000 ms and fail closed on timeout.
+Explicit saved server values such as `0.25` require a configuration update to
+`0.75`; the new default does not replace them.
 
 | outcome | client action |
 |---|---|
