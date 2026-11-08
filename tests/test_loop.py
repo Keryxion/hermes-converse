@@ -350,7 +350,9 @@ def _types(sent):
 
 
 def _turn_done_frame(sent):
-    return next(f for f in sent if isinstance(f, dict) and f.get("type") == "turn_done")
+    frame = next(f for f in sent if isinstance(f, dict) and f.get("type") == "turn_done")
+    assert set(frame) == {"type", "turn_id", "next_action"}
+    return frame
 
 
 def _spoken_bytes(sent):
@@ -514,7 +516,7 @@ def test_drive_converse_turns_flushes_queue_on_signoff():
     transcripts = [f["text"] for f in sent if isinstance(f, dict) and f.get("type") == "transcript"]
     assert transcripts == ["are we done?"]
     turn_dones = [f for f in sent if isinstance(f, dict) and f.get("type") == "turn_done"]
-    assert len(turn_dones) == 1 and turn_dones[0].get("expects_more") is False
+    assert len(turn_dones) == 1 and turn_dones[0]["next_action"] == "standby"
 
 
 def test_driver_hands_each_turn_its_own_recorder(monkeypatch):
@@ -561,9 +563,8 @@ def test_driver_tail_barge_emits_interrupted_not_a_turn():
     assert sent == [{"type": "interrupted", "turn_id": "turn-x"}] and session.turns_begun == 0
 
 
-def test_drive_converse_turns_signoff_sets_expects_more_false():
+def test_drive_converse_turns_signoff_requests_standby():
     sent = _run_driver(_FakeConverseSession(["are we done?"]), [], ["All set. Over and out."], quiet_interval=1.0)
-    assert _turn_done_frame(sent).get("expects_more") is False
     assert _turn_done_frame(sent)["next_action"] == "standby"
 
 
@@ -571,7 +572,6 @@ def test_drive_converse_turns_signoff_is_not_spoken_but_still_flags():
     sent = _run_driver(_FakeConverseSession(["bye"]), [], ["See you later. Over and out."], quiet_interval=1.0)
     spoken = _spoken_bytes(sent).lower()
     assert b"see you later" in spoken and b"over and out" not in spoken
-    assert _turn_done_frame(sent).get("expects_more") is False
     assert _turn_done_frame(sent)["next_action"] == "standby"
 
 
@@ -580,22 +580,19 @@ def test_drive_converse_turns_signoff_spoken_in_continuous_mode():
     assert b"over and out" in _spoken_bytes(sent).lower()
 
 
-def test_drive_converse_turns_question_sets_expects_more_true():
+def test_drive_converse_turns_question_requests_listen():
     sent = _run_driver(_FakeConverseSession(["set a timer"]), [], ["Sure — for how long?"], quiet_interval=1.0)
-    assert _turn_done_frame(sent).get("expects_more") is True
     assert _turn_done_frame(sent)["next_action"] == "listen"
 
 
-def test_drive_converse_turns_plain_reply_has_no_expects_more():
+def test_drive_converse_turns_plain_reply_requests_listen():
     sent = _run_driver(_FakeConverseSession(["what's the weather?"]), [], ["It's sunny and 72."], quiet_interval=1.0)
-    assert "expects_more" not in _turn_done_frame(sent)
     assert _turn_done_frame(sent)["next_action"] == "listen"
 
 
-def test_drive_converse_turns_continuous_mode_never_sets_expects_more():
+def test_drive_converse_turns_continuous_mode_requests_listen():
     for reply in ("All set. Over and out.", "For how long?"):
         sent = _run_driver(_FakeConverseSession(["hi"]), [], [reply], quiet_interval=0.0)
-        assert "expects_more" not in _turn_done_frame(sent)
         assert _turn_done_frame(sent)["next_action"] == "listen"
 
 
@@ -735,7 +732,6 @@ def test_incomplete_signoff_keeps_listening_and_does_not_drop_queued_input(inter
     completions = [frame for frame in sent if isinstance(frame, dict) and frame.get("type") == "turn_done"]
     assert len(completions) == 2  # the partial sign-off must not flush the next request
     assert all(frame["next_action"] == "listen" for frame in completions)
-    assert all(frame.get("expects_more") is not False for frame in completions)
 
 
 def test_standby_preserves_playback_tail_until_matching_drain():

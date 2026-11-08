@@ -46,7 +46,7 @@ IDLE_POLLS_TO_FLUSH = 4
 SMART_TURN_DEFAULT_THRESHOLD = 0.5
 # Bound on the per-connection conversation history kept in memory (~20 user+assistant turns): a
 # simple tail-cap so a long-lived socket can't grow it without limit. The Runs API owns the real
-# transcript (the socket's session_id continues it); this copy backs the sign-off / expects_more
+# transcript (the socket's session_id continues it); this copy backs the sign-off / next_action
 # decisions and the latency log.
 HISTORY_MAX_MESSAGES = 40
 QUIET_INTERVAL_MAX = 3600.0
@@ -731,18 +731,14 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
     # Only a completed reply may sign off. Partial output from a failed or interrupted
     # run is not a decision to put the client in standby.
     completed = not (barged or turn_err or turn.timed_out)
-    expects_more = _expects_more(reply, d.quiet_interval, d.end_phrases) if completed else None
     next_action = (
         "standby" if completed and d.quiet_interval > 0 and is_end_phrase(reply, d.end_phrases)
         else "listen"
     )
     turn_done: dict[str, Any] = {"type": "turn_done", "turn_id": turn.turn_id,
                                 "next_action": next_action}
-    if expects_more is not None:
-        turn_done["expects_more"] = expects_more
     await d.send_json(turn_done)
-    _finish_trace(tt, turn, reply, err=turn_err, barged=barged, expects_more=expects_more,
-                  next_action=next_action)
+    _finish_trace(tt, turn, reply, err=turn_err, barged=barged, next_action=next_action)
     session.end_turn()
     # Standby takes effect at speaker drain, not when the server finishes sending.
     # Keep playback-tail monitoring alive even after a successful sign-off.
@@ -869,17 +865,8 @@ def _record_history(history: list[dict[str, str]], turn: _Turn) -> str:
     return reply
 
 
-def _expects_more(reply: str, quiet_interval: float, end_phrases: tuple[str, ...]) -> Optional[bool]:
-    """Legacy field: False for session sign-off, True for a session question, absent otherwise."""
-    if quiet_interval <= 0:
-        return None
-    if is_end_phrase(reply, end_phrases):
-        return False
-    return True if reply.rstrip().endswith("?") else None
-
-
 def _finish_trace(tt: Any, turn: _Turn, reply: str, *, err: bool, barged: bool,
-                  expects_more: Optional[bool], next_action: str) -> None:
+                  next_action: str) -> None:
     tt.add_phase("voice.agent", turn.ns["turn_start"], turn.ns.get("agent_end"),
                  **{"llm.ttft_ms": turn.ms("first_delta"), "reply.chars": len(reply),
                     "llm.deltas": len(turn.reply_parts), "error": err, "llm.timed_out": turn.timed_out})
@@ -887,7 +874,7 @@ def _finish_trace(tt: Any, turn: _Turn, reply: str, *, err: bool, barged: bool,
                  **{"tts.pcm_chunks": turn.pcm_chunks,
                     "tts.first_pcm_ms": turn.ms("first_pcm", since="first_sentence")})
     outcome = ("timeout" if turn.timed_out else "interrupted" if barged else "error" if err else "ok")
-    tt.set(outcome=outcome, interrupted=barged, expects_more=expects_more, next_action=next_action)
+    tt.set(outcome=outcome, interrupted=barged, next_action=next_action)
     tt.end()
 
 

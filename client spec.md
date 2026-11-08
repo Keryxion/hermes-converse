@@ -206,13 +206,6 @@ sign-off in session mode; non-session/continuous mode returns `listen`.
 The server decides the action. Clients must not inspect reply text, detect
 sign-off phrases, or interpret whether the agent expects a follow-up.
 
-**Migration:** `expects_more` is deprecated but retained for older clients:
-a successful sign-off still sends `false`, a successful question still sends
-`true`, and other replies omit it. New clients use a recognized `next_action`
-in preference to `expects_more`. For an older server with no recognized
-`next_action`, fall back to `expects_more = false` → `standby`, otherwise
-`listen`. No new negotiation is required for this additive field.
-
 ## 5. Session mode (`quiet_interval > 0`)
 
 For wake-word devices. The server reports quiet in **received** audio (never
@@ -336,9 +329,7 @@ are `arbitrate_enabled` (default `false`), `arbitrate_policy`, and
 `arbitrate_wake_window_seconds`. The default policy is `wake_signal`, which
 performs this ranked selection.
 When arbitration is disabled, immediately send `wake_grant`, still echoing the
-client's `claim_id` and `wake_word`. The legacy `first_to_endpoint` policy is not
-a ranked election; it grants every wake request immediately, without a later
-transcript election.
+client's `claim_id` and `wake_word`.
 
 `start.device_id`, `start.area`, and `start.person` are not supported selection
 inputs. The existing `arbitrate_device_id` is an optional server-configured label prefix;
