@@ -166,16 +166,31 @@ async def test_failed_lookup_does_not_create_history(tmp_path, monkeypatch, stat
 
 
 @pytest.mark.asyncio
-async def test_deleted_saved_history_is_not_replaced(tmp_path, monkeypatch):
+async def test_deleted_saved_history_reconnects_with_new_id_and_same_device(tmp_path, monkeypatch):
     fake = _patch(monkeypatch)
     path = tmp_path/'devices.db'
     async with Harness(fake, device_store=DeviceStore(path)) as client:
-        ws, _ = await connect(client)
+        ws, first = await connect(client)
+        old = next(iter(fake.sessions))
         await ws.close()
     fake.sessions.clear()
+    # Hermes retires deleted IDs; recreating the old ID is not a supported recovery.
+    create = fake.create_session
+    async def refuse_retired(request):
+        assert (await request.json())['id'] != old
+        return await create(request)
+    fake.create_session = refuse_retired
     async with Harness(fake, device_store=DeviceStore(path)) as client:
-        ws, error = await connect(client)
-        assert error['error'] == 'conversation_unavailable' and fake.sessions == {}
+        ws, ready = await connect(client)
+        assert ready['type'] == 'ready' and ready['recipient_id'] == first['recipient_id']
+        assert len(fake.sessions) == 1 and old not in fake.sessions
+        await _audio_turn(ws)
+        new = next(iter(fake.sessions))
+        assert next(iter(fake.runs.values()))['body']['session_id'] == new
+        await ws.close()
+    async with Harness(fake, device_store=DeviceStore(path)) as client:
+        ws, ready = await connect(client)
+        assert ready['type'] == 'ready' and list(fake.sessions) == [new]
         await ws.close()
 
 
@@ -404,3 +419,61 @@ async def test_title_lookup_adopts_lineage_root_from_projected_tip(tmp_path, mon
         await _audio_turn(ws)
         assert next(iter(fake.runs.values()))['body']['session_id'] == 'root'
         await ws.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('status', [401, 403, 500, 200])
+async def test_saved_session_lookup_failure_preserves_reference(tmp_path, monkeypatch, status):
+    fake = _patch(monkeypatch)
+    store = DeviceStore(tmp_path/'devices.db')
+    device = store.reserve('Arya', 'Den Echo')
+    store.remember(device, 'saved')
+    async def failed(request):
+        return web.json_response({'error': 'unavailable'}, status=status)
+    fake.get_session = failed
+    async with Harness(fake, device_store=store) as client:
+        ws, error = await connect(client)
+        assert error['error'] == 'conversation_unavailable'
+        assert fake.sessions == {}
+        assert store.reserve('Arya', 'Den Echo').session_id == 'saved'
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_deleted_session_recovery_reuses_title_after_lost_create_response(tmp_path, monkeypatch):
+    from hermes_converse.named import NamedSessions
+    fake = _patch(monkeypatch)
+    store = DeviceStore(tmp_path/'devices.db')
+    device = store.reserve('Arya', 'Den Echo')
+    store.remember(device, 'deleted')
+    request = NamedSessions.request
+    creates = []
+    async def lost(self, method, path, **kwargs):
+        result = await request(self, method, path, **kwargs)
+        if method == 'POST' and path == '/api/sessions':
+            creates.append(kwargs['json']['id'])
+            raise NamedError()  # accepted create, response lost before the reference is updated
+        return result
+    monkeypatch.setattr(NamedSessions, 'request', lost)
+    async with Harness(fake, device_store=store) as client:
+        ws, error = await connect(client)
+        assert error['error'] == 'conversation_unavailable'
+        assert len(fake.sessions) == 1 and store.reserve('Arya', 'Den Echo').session_id == 'deleted'
+        await ws.close()
+        ws, ready = await connect(client)
+        assert ready['type'] == 'ready'
+        assert store.reserve('Arya', 'Den Echo').session_id == creates[0]
+        assert len(creates) == len(fake.sessions) == 1
+        await ws.close()
+
+
+def test_stale_recovery_cannot_overwrite_a_different_saved_session(tmp_path):
+    store = DeviceStore(tmp_path/'devices.db')
+    device = store.reserve('Arya', 'Den Echo')
+    store.remember(device, 'old')
+    stale = store.reserve('Arya', 'Den Echo')
+    store.remember(stale, 'recovered')
+    store.remember(stale, 'recovered')  # another resolver found the same title winner
+    with pytest.raises(NamedError):
+        store.remember(stale, 'different')
+    assert store.reserve('Arya', 'Den Echo').session_id == 'recovered'

@@ -134,8 +134,15 @@ field rather than silently accepting it.
 Use Hermes's existing session APIs for title lookup, creation, history,
 and compression continuation. Reuse an authorized compatible named session or
 create it when confirmed absent; on concurrent creation conflict, re-read the
-winner. A failed lookup or inaccessible title must not silently create another
-history. Save the session reference for reconnect; do not build a
+winner. When the saved session returns an authenticated `404`, look up the
+exact conversation title again. Reuse a compatible existing conversation or,
+when the title lookup confirms none exists, create a fresh session with a new
+ID and update the saved reference. Preserve the device's routing identity.
+Use a new session ID because deleted IDs may be retired by Hermes. A lost create
+response must recover the already-created conversation through title lookup.
+Authentication failures, timeouts, malformed responses, ambiguous titles, and
+server errors must not create or replace history. Save the session reference
+for reconnect; do not build a
 parallel conversation store or expose Hermes session mechanics to clients.
 
 Use the authenticated socket for named-device and timer behavior. A
@@ -164,7 +171,8 @@ attachments without duplicate history or competing work. Include the case
 The implementation stores only routing metadata in the profile's
 `plugin-data/hermes-converse/devices.db`. It uses authenticated exact-title lookup and the
 public messages resource to resolve compression continuations, and refuses unsupported API
-responses or missing saved history. It does not create a replacement history on lookup failure.
+responses. A confirmed missing session recovers through exact-title lookup;
+other lookup failures leave the existing reference unchanged.
 The prompt supplies both names and the routing identity, explains proactive output without
 another wake word, and requires successful scheduling receipts before confirming timers.
 Heartbeat 2's current API-session restriction still requires an integration change; a prompt
