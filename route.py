@@ -26,7 +26,7 @@ Protocol (unchanged from the in-core proposal):
            ``{"type":"drained","turn_id":?}`` when the reply's last audio has left the speaker,
            ``{"type":"wake","claim_id":"...","wake_word":"...", ...}`` requests an
            advisory wake recommendation; see ``client spec.md``. Audio is always processed normally.
-  server → ``ready`` (rates, ``session_id``, clock-skew timestamps), ``transcript``, ``thinking``,
+  server → ``ready`` (rates, ``session_id``, clock-skew timestamps), ``transcript``, ``thinking``, ``working``,
            ``speaking`` + binary PCM, ``interrupted``, ``turn_done`` (``next_action``), ``quiet``, ``stop_word``, ``error``.
 """
 
@@ -48,6 +48,7 @@ from .arbitrate import Arbitrator
 from .auth import offered_key_protocol, verify_api_key
 from .loop import ConverseSession, drive_converse_turns, parse_start_config, voice_system_prompt
 from .settings import Settings, load_settings
+from .tracing import force_flush
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +120,7 @@ class ConverseRoute:
                            "register %s", ROUTE_PATH)
             return False
         app.router.add_get(ROUTE_PATH, self.handle)
+        app.on_cleanup.append(_flush_tracing)
         return True
 
     def _settings(self) -> Settings:
@@ -381,6 +383,11 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
             await client.stop()  # a socket that drops mid-turn must not orphan the run
         with contextlib.suppress(Exception):
             await ws.close()
+
+
+async def _flush_tracing(app: web.Application) -> None:
+    # Batch exporters may block; keep their bounded shutdown drain off the event loop.
+    await asyncio.to_thread(force_flush)
 
 
 def make_platform_factory(ctx: Any) -> Callable[[Any, Any], None]:

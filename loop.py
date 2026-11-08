@@ -43,6 +43,8 @@ MAX_ENDPOINT_HOLDS = 3
 # Reply speech: poll for deltas every 0.5 s; after 4 empty polls (~2 s) speak the buffered tail.
 IDLE_POLL_SECONDS = 0.5
 IDLE_POLLS_TO_FLUSH = 4
+# Keep clients with shorter inactivity deadlines alive during agent/TTS waits.
+WORKING_FRAME_INTERVAL = 15.0
 SMART_TURN_DEFAULT_THRESHOLD = 0.5
 # Bound on the per-connection conversation history kept in memory (~20 user+assistant turns): a
 # simple tail-cap so a long-lived socket can't grow it without limit. The Runs API owns the real
@@ -321,9 +323,14 @@ class ConverseSession:
                 # A cancelled capture is discarded: no turn runs on it, the session stays alive.
                 if self._cancelled.is_set():
                     self._cancelled.clear()
+                    recorder.set(outcome="cancelled")
+                    emit_turn_trace(recorder)
                     continue
                 if transcript:
                     self.transcripts.put(Utterance(transcript, recorder))
+                else:
+                    recorder.set(outcome="empty")
+                    emit_turn_trace(recorder)
         except Exception:
             logger.warning("converse VAD loop failed", exc_info=True)
         finally:
@@ -415,7 +422,7 @@ class ConverseSession:
         with recorder.phase("voice.capture") as cap:
             if self._turn_detector is not None:
                 cap.set(**{"endpoint.mode": "smart_turn"})
-                wav_path, volume = self._capture_adaptive(silence_rms)
+                wav_path, volume = self._capture_adaptive(silence_rms, phase=cap)
             else:
                 cap.set(**{"endpoint.mode": "fixed"})
                 wav_path, volume = vad.capture_until_quiet(
@@ -431,10 +438,10 @@ class ConverseSession:
                 transcript = ""
             finally:
                 vad.unlink_quietly(wav_path)
-            stt.set(**{"stt.transcript_chars": len(transcript)})
+            stt.set(**{"stt.transcript_chars": len(transcript), "stt.success": bool(transcript)})
         return transcript, volume
 
-    def _capture_adaptive(self, silence_rms: float) -> tuple[str, float]:
+    def _capture_adaptive(self, silence_rms: float, *, phase: Any = None) -> tuple[str, float]:
         """Semantic endpoint: mirror the fixed-silence capture, but on reaching a candidate pause ask
         Smart Turn whether the utterance *sounds* finished; hold (keep listening) when it doesn't,
         bounded by ``MAX_ENDPOINT_HOLDS`` and the utterance cap. Returns ``(wav_path, volume)``."""
@@ -458,7 +465,17 @@ class ConverseSession:
                 prob = self._turn_detector.turn_complete_probability(self._frames_to_f32_16k(frames))
             except Exception:
                 logger.debug("smart-turn inference failed; committing on silence", exc_info=True)
+                if phase is not None:
+                    phase.event("endpoint.decision", **{"endpoint.decision": "commit",
+                                "endpoint.reason": "inference_error"})
                 break
+            decision = "commit" if prob >= self._endpoint_threshold or holds + 1 >= MAX_ENDPOINT_HOLDS else "hold"
+            if phase is not None:
+                phase.event("endpoint.decision", **{"endpoint.probability": prob,
+                            "endpoint.threshold": self._endpoint_threshold, "endpoint.decision": decision,
+                            "endpoint.holds": holds,
+                            "endpoint.reason": "threshold" if prob >= self._endpoint_threshold else "hold_budget"
+                            if decision == "commit" else "incomplete"})
             if prob >= self._endpoint_threshold:
                 vad.vad_log(f"smart-turn: p={prob:.3f} >= {self._endpoint_threshold:.2f} -> commit")
                 break
@@ -666,15 +683,23 @@ async def drive_converse_turns(
         meta: dict[str, Any] = {"turn_id": turn_id}
         if tt.traceparent:
             meta["traceparent"] = tt.traceparent
-        await send_json({"type": "transcript", "text": transcript, **meta})
-        # Session mode: a spoken stop phrase ends the exchange — tell the client, skip the agent.
-        if quiet_interval > 0 and is_stop_phrase(transcript, d.stop_phrases):
-            await send_json({"type": "stop_word", "text": transcript, "turn_id": turn_id})
-            tt.set(outcome="stop_word")
+        try:
+            await send_json({"type": "transcript", "text": transcript, **meta})
+            # Session mode: a spoken stop phrase ends the exchange — skip the agent.
+            if quiet_interval > 0 and is_stop_phrase(transcript, d.stop_phrases):
+                await send_json({"type": "stop_word", "text": transcript, "turn_id": turn_id})
+                tt.set(outcome="stop_word")
+                continue
+            if await _run_turn(d, _Turn(transcript, turn_id, meta), tt) == "standby":
+                _discard_after_signoff(session)
+        except asyncio.CancelledError:
+            tt.set(outcome="interrupted", interrupted=True)
+            raise
+        except Exception:
+            tt.set(outcome="error")
+            raise
+        finally:
             tt.end()
-            continue
-        if await _run_turn(d, _Turn(transcript, turn_id, meta), tt) == "standby":
-            _discard_after_signoff(session)
 
 
 async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
@@ -686,6 +711,7 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
     turn_task = asyncio.ensure_future(_run_agent(d, turn, interrupted_in))
     # TTS reads provider credentials through the profile scope: carry the driver's contextvars.
     speech.spawn_context_thread(_produce_speech, name="converse-tts", args=(d, turn)).start()
+    progress_task = asyncio.create_task(_report_working(d, turn))
     try:
         await _stream_reply(d, turn, turn_task)
 
@@ -720,6 +746,11 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
             with contextlib.suppress(BaseException):
                 await turn_task
         raise
+    finally:
+        # Join before terminal frames, including cancellation/disconnect paths: no stale
+        # keepalives may extend a client's next turn or outlive this driver.
+        progress_task.cancel()
+        await asyncio.gather(progress_task, return_exceptions=True)
 
     reply = _record_history(d.history, turn)
     barged = bool(session.take_interrupted() or turn.tts_stop.is_set()) and not turn.timed_out
@@ -745,6 +776,15 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
     if d.quiet_interval > 0 and not turn.timed_out:
         session.begin_playback_tail(turn.turn_id, d.tail_fallback)
     return next_action
+
+
+async def _report_working(d: _Driver, turn: _Turn) -> None:
+    """Turn liveness, not proof of model/tool progress; never extends the server deadline."""
+    while True:
+        await asyncio.sleep(WORKING_FRAME_INTERVAL)
+        if turn.tts_stop.is_set() or d.session.stopped:
+            return
+        await d.send_json({"type": "working", **turn.meta})
 
 
 async def _run_agent(d: _Driver, turn: _Turn, interrupted: bool) -> None:

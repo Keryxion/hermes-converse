@@ -50,6 +50,7 @@ A non-wake client may stream after `ready`. The server answers:
 | `ready` | rates, the socket's `session_id`, and two server timestamps for clock-skew estimation |
 | `transcript` | what it heard; carries a `turn_id` every later frame of the turn repeats |
 | `thinking` | the agent turn is running (show "thinking", not "listening") |
+| `working` | active-turn keepalive every 15 seconds; refresh the matching turn’s inactivity timer |
 | `speaking` + binary frames | the reply as PCM16 at `output_rate` |
 | `interrupted` | you spoke over the reply: stop playing, the turn is cancelled |
 | `error` | the turn failed (the message is spoken-safe text) |
@@ -65,6 +66,13 @@ user turns; limited recognition of "cancel" or similar controls is allowed. Arm 
 deadline if it is not already running; do not restart it. This frame reports lifecycle status,
 not reasoning text. The current worker still needs the interruption-only input mode; see
 [the client spec](client%20spec.md#handling-thinking) for the frame format and tracing behavior.
+
+During a long agent/TTS turn, `working` frames carry the same `turn_id` (and
+`traceparent` when available) every 15 seconds. Clients can refresh that turn's
+inactivity timer without changing thinking/speaking state. Ignore stale IDs and
+keep any absolute turn limit; keepalives do not extend the server's 120-second
+default turn timeout. They stop before terminal frames and on disconnect. See
+[client spec.md](client%20spec.md) for the full deadline contract.
 
 Client control frames: `{"stop": true}` ends the session, `{"commit": true}` forces the current
 utterance to endpoint, `{"type": "cancel", "turn_id": "..."}` cancels the current turn while
@@ -177,6 +185,29 @@ unavailable weights all retain the fixed silence endpoint and log the reason onc
 Doctor leaves the model untouched when Smart Turn is off. A successful doctor check confirms
 model loading, not the quality of endpointing on real speech; tune the threshold with real audio.
 
+**Voice tracing** (optional): when the host registers a global OpenTelemetry tracer provider,
+the plugin emits a `voice.turn` span with `voice.capture`, `voice.stt`, `voice.agent`, and
+`voice.tts` children through that provider. It uses the host's sampling and exporter settings,
+including OTLP, and adds no plugin tracing settings or required OTEL dependencies. Install
+Hermes's `otlp` extra for its OTEL SDK/exporter support. Importing this plugin does not import
+OTEL; missing packages or an unconfigured global provider keep tracing inert. Provider
+initialization after the plugin loads is supported.
+
+The host must register its configured provider with `opentelemetry.trace.set_tracer_provider`.
+Hermes's `monitoring.export.otlp` exporter currently owns a private provider: enabling that
+export alone does **not** register a global provider or enable these voice spans. Configure
+the global provider in the host's tracing bootstrap; this plugin never creates an exporter,
+changes sampling, reads collector credentials, or shuts down the shared provider.
+
+Capture/STT timestamps survive the worker-thread handoff and remain children of the right
+turn, even when turns queue. Smart Turn decisions appear as `endpoint.decision` events with
+probabilities, thresholds, and hold/commit reasons. Spans carry only allowlisted metadata
+such as timings, counts, outcome, session/turn IDs, and endpoint mode; audio, transcripts,
+reply text, and exception messages are excluded. A valid W3C `traceparent` is forwarded on
+the existing transcript/thinking/speaking frames, preserving the host's sampling flags.
+Disconnected turns are closed, and app cleanup attempts a bounded five-second flush in a
+worker thread. Tracing failures do not interrupt voice operation.
+
 **Browser clients and CORS.** The API server's origin guard runs before any route. A browser or
 Electron client (which sends `Origin: null`) must have its origin listed in
 `platforms.api_server.cors_origins` (or `API_SERVER_CORS_ORIGINS`), the same as for any other
@@ -195,7 +226,7 @@ API-server client.
 | `synth.py` | one `text → int16 PCM` seam over streaming or one-shot TTS, plus resampling |
 | `speech.py` | the only module that imports Hermes core speech helpers |
 | `phrases.py`, `settings.py` | stop/end phrase policy and the settings schema |
-| `turn_detector.py`, `tracing.py` | the optional Smart Turn endpointer and the no-op tracing seam |
+| `turn_detector.py`, `tracing.py` | the optional Smart Turn endpointer and global OTEL tracing backend |
 
 `speech.py` imports a handful of core helpers that are not yet on Hermes's public plugin API
 (`transcribe_audio`, `resolve_streaming_provider`, `text_to_speech_tool` and the sentence chunker);
@@ -219,6 +250,9 @@ HERMES_AGENT_ROOT=/path/to/hermes-agent python -m pytest
 hermes plugins validate .
 ```
 
+Tracing SDK/exporter tests run when `opentelemetry-sdk` is installed (included in Hermes's
+`otlp` extra); otherwise those cases skip while the missing-OTEL fallback test still runs.
+
 The suite drives the real VAD, endpointer, capture, resampler, Runs client and route against a
 scripted in-process stand-in for the Runs API; only STT, the TTS provider and the model are faked.
 
@@ -228,8 +262,9 @@ The plugin opens one authenticated route on the API server you already run. Micr
 transcribed by your configured STT provider and replies are synthesized by your configured TTS
 provider; neither leaves the host unless those providers are cloud services. Turns run as API
 sessions in the serving profile with its full toolset. Command approvals raised during a voice turn
-are answered with `approval_choice` (deny by default); clarifying questions are cancelled. No
-telemetry, no third-party network calls of its own, no self-update.
+are answered with `approval_choice` (deny by default); clarifying questions are cancelled. When a global OTEL provider is configured, voice timing metadata follows its exporter settings.
+No third-party network calls of its own beyond the configured providers and optional model downloads;
+no self-update.
 
 ## License
 
