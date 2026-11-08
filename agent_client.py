@@ -375,5 +375,6 @@ class RunsClient:
             if asyncio.get_running_loop().time() >= deadline:
                 if not self._stop_requested:
                     await self._post_stop(run_id)
+                self.unsettled_run_ids.discard(run_id)
                 return TurnResult("", None if self._stop_requested else reason, "interrupted", run_id)
             await asyncio.sleep(POLL_INTERVAL)

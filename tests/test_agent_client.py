@@ -170,13 +170,28 @@ async def test_cancel_during_admission_waits_for_id_and_stops_accepted_run():
 async def test_next_request_waits_for_previous_run_to_settle():
     fake = FakeRunsAPI(API_KEY)
     async with TestClient(TestServer(fake.app())) as tc:
-        client, http = await _client_for(tc.server, settle_timeout=0)
+        client, http = await _client_for(tc.server, settle_timeout=5.0)
         async with http:
             fake.runs['old'] = {'status': 'running', 'output': '', 'stopped': asyncio.Event()}
             client.unsettled_run_ids.add('old')
+
+            async def _settle_old():
+                await asyncio.sleep(0.1)
+                fake.runs['old']['status'] = 'cancelled'
+
+            asyncio.ensure_future(_settle_old())
             result = await client.run_turn(text='and make it warm white', session_id='s', on_delta=lambda _: None)
-            assert result.error and len(fake.runs) == 1  # no overlapping admission
-            fake.runs['old']['status'] = 'cancelled'
-            result = await client.run_turn(text='and make it warm white', session_id='s', on_delta=lambda _: None)
-            assert not result.error and len(fake.runs) == 2
+            assert not result.error and len(fake.runs) == 2  # admitted only once 'old' actually settled
             assert client.unsettled_run_ids == set()
+
+
+@pytest.mark.asyncio
+async def test_a_run_that_never_settles_does_not_poison_future_turns():
+    fake = FakeRunsAPI(API_KEY)
+    async with TestClient(TestServer(fake.app())) as tc:
+        client, http = await _client_for(tc.server, settle_timeout=0)
+        async with http:
+            client.unsettled_run_ids.add('stuck')  # never reaches a terminal status within settle_timeout
+            result = await client.run_turn(text='and make it warm white', session_id='s', on_delta=lambda _: None)
+            assert client.unsettled_run_ids == set()  # the stuck run is dropped, not left poisoning the client
+            assert not result.error and len(fake.runs) == 1  # this turn still gets to run
