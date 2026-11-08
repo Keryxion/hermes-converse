@@ -52,9 +52,13 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 | `quiet_interval` | session mode: seconds of silence between turns (0 = off) |
 | `name` | the assistant's name — set this to "Arya" (not "Hey Arya"). Arya uses her name in the voice prompt so she knows she's being addressed and doesn't get confused about why she's being called that name |
 
-After `ready`, continuously stream binary PCM16 mono frames at `input_rate`.
-30 ms blocks are ideal (e.g. 480 samples at 16 kHz). Cooperative wake
-selection (section 8) runs alongside this stream; it does not gate audio.
+For a wake-word client, detect the wake word locally, buffer microphone
+PCM while awaiting arbitration for up to **1000 ms**, and start streaming
+only on a matching grant. Send the buffered audio first, in capture order,
+then live binary PCM16 mono at `input_rate` without a gap or duplication.
+30 ms blocks are ideal (e.g. 480 samples at 16 kHz). Keep streaming throughout
+the granted activation, including thinking and playback (sections 4 and 8).
+A client that does not use wake detection may start streaming after `ready`.
 
 The server replies with `ready`, which includes the socket's `session_id`
 and clock-skew timestamps.
@@ -68,7 +72,7 @@ All are JSON text frames:
 | `{"stop": true}` | Ends the whole session and closes the socket. History is lost. |
 | `{"commit": true}` | Forces the current utterance to endpoint now (runs a turn on it). |
 | `{"type": "cancel", "turn_id": "..."}` | Cancels the **current** turn — stops TTS and the agent — but keeps the socket, session, and history alive. |
-| `{"type": "wake", "claim_id": "...", "wake_word": "Hey Arya"}` | request an advisory wake decision without pausing microphone audio; see section 8. |
+| `{"type": "wake", "claim_id": "...", "wake_word": "Hey Arya"}` | request an advisory wake decision while buffering the new activation locally; see section 8. |
 | `{"type": "drained", "turn_id": "..."}` | Tells the server the reply's last audio has left the speaker, so the server won't transcribe its own echo as a new turn. |
 
 **`cancel` vs `stop`:** `stop` tears down the session; `cancel` only kills the
@@ -93,32 +97,59 @@ wake word again mid-turn and you want to keep the conversation going.
 
 ### Microphone streaming and barge-in
 
-Once `ready` arrives, send live microphone PCM continuously until the user
-explicitly mutes the microphone or ends the connection. Include silence;
-the server owns VAD, endpointing, and barge-in detection. Resume live audio
-on unmute; do not replay audio accumulated while muted.
+Wake-word detection is **client-side**. Before a wake activation, keep the
+microphone local; an open socket and `ready` do not start upstream audio.
+On detection, send `wake` and buffer all microphone audio while waiting up
+to **1000 ms** for the matching decision. Retain the detector's available
+pre-roll and every sample during the wait so the start of the utterance is
+not lost. On a grant, send that buffer once, in capture order, then stream
+live PCM continuously for the rest of the activation. Include silence.
 
-| client state or event | microphone transport |
+| client state or event | microphone transport and server use |
 |---|---|
-| Idle / waiting for a wake word | Keep sending live PCM. |
-| Waiting for `wake_grant`, denied, or wake decision timed out | Keep sending live PCM; wake selection is advisory. |
-| `transcript` or `thinking` | Keep sending live PCM while the agent runs. |
-| `speaking`, binary reply audio, or queued speaker playback | Keep sending live PCM so server-side barge-in can work. |
-| `interrupted`, `error`, or `turn_done` | Keep sending live PCM; these events do not mute the microphone. |
-| Explicit user mute or closed session | Stop sending PCM. Server-side barge-in is unavailable while muted or disconnected. |
+| Idle / waiting for a local wake word | Local wake detection only; no upstream PCM. |
+| Awaiting matching wake decision (up to 1000 ms) | Buffer locally; no upstream PCM for this activation yet. |
+| Matching `wake_grant` | Flush buffered PCM in order, then continue with live PCM. Server VAD/endpointer captures the request for transcription. |
+| Matching `wake_deny` or timeout | Discard the activation buffer and resume local wake detection; do not stream this activation. |
+| `transcript` / `thinking` after request endpoint | Keep sending live PCM for interruption/control detection only; do not create another ordinary transcript or queue a user turn. |
+| `speaking` and queued speaker playback | Keep sending live PCM for server-side barge-in/control detection, not a queued ordinary transcript. |
+| Turn ended and playback drained, activation still open | Keep streaming; server may capture the next user utterance normally. |
+| Activation ends / returns to wake detection | Stop upstream PCM and resume local wake detection; keep the socket available for outbound conversation events. |
+| Explicit user mute or closed session | Stop sending PCM; server-side barge-in is unavailable. |
 
-Do not use an `agentTurn`, thinking, or playback flag to suppress upstream
-audio. Play incoming PCM and send microphone PCM concurrently. Local echo
-cancellation may clean the microphone signal, but must preserve the user's
-speech during playback. Do not replace the stream with synthetic silence
-while the assistant speaks.
+After VAD endpoints the request, the server must switch input from ordinary
+transcription to **interruption/control detection** for the active turn,
+including thinking, speaking, and the playback tail. Audio received in this
+mode must not become a new `transcript`, enter conversation history, or
+start or queue another agent run. Limited recognition of controls such as
+"cancel" or "stop" is allowed to interrupt the current turn; it must not
+submit those words as an ordinary user message. This differs from stop
+phrases spoken while waiting for a normal follow-up utterance (section 5).
+
+After cancellation/interruption and playback drain, resume normal utterance
+capture only if the activation remains open. Do not replay the control-
+detection audio into that capture. A fresh user utterance can then start a
+new turn. Keep explicit `cancel` separate from `stop`, which closes the socket.
+
+Do not use an `agentTurn`, thinking, or playback flag to suppress PCM during
+an activation. Play incoming PCM and send microphone PCM concurrently.
+Local echo cancellation may clean the signal, but must preserve user speech.
+Do not replace microphone audio with synthetic silence during playback.
+On unmute, resume live audio only if the activation is still open; never
+replay audio accumulated while muted.
 
 On `interrupted`, stop and discard queued reply audio for that turn. Send
-`drained` when its final queued audio has actually left the speaker (or
-has been discarded). `turn_done` means the server has finished sending,
-not that playback has drained; neither event stops microphone streaming.
-The existing server uses playback-aware detection to distinguish speech
-from speaker bleed; this requires real incoming microphone audio.
+`drained` after its audio has actually left the speaker or been discarded.
+`turn_done` means the server finished sending, not that playback drained.
+For `expects_more = false` or a local decision to end the activation, finish
+playback/drain handling and then stop upstream audio and return to wake
+detection; do not cut off barge-in monitoring during the playback tail.
+
+**Implementation gap:** the current worker has playback-aware barge-in, but
+still captures/transcribes detected speech and can queue it as a new turn.
+Its active-turn flag currently suppresses quiet accounting, not ordinary
+transcription. The interruption-only input mode above requires a server
+change; continuous streaming alone does not implement that restriction.
 
 ### Handling `thinking`
 
@@ -131,8 +162,10 @@ For example:
 
 Treat it as a turn boundary even if the client has not received a
 `transcript` for that turn. Mark the agent turn active and show "thinking".
-Keep sending microphone PCM: the server needs it to detect speech and
-barge-in. The UI state and the microphone transport are independent.
+During an active activation, keep sending microphone PCM for interruption/
+control detection; do not transcribe it as a new user request. The UI state
+and microphone transport are independent. See section 9 for outbound turns
+that start while the client is otherwise idle.
 
 If the client uses a turn deadline, arm it on `thinking` when `transcript`
 has not already armed it; do not restart an existing deadline. Record the
@@ -154,13 +187,16 @@ false`.
 
 ## 6. Typical flow
 
-1. Open `ws://<host>:<port>/v1/audio/converse`
-2. Send `start`
-3. Receive `ready`
-4. Start continuously streaming microphone PCM
-5. While continuing to send PCM, receive `transcript` → `thinking` → `speaking` + PCM → `turn_done`
-6. Keep the same microphone stream running across turns; `cancel` cancels a
-   turn, while `stop` ends the session
+1. Open `ws://<host>:<port>/v1/audio/converse`, send `start`, and receive `ready`.
+2. Detect the wake word locally; send `wake` and buffer PCM while awaiting
+   the matching grant for up to 1000 ms. On denial/timeout, discard the buffer.
+3. On grant, flush the buffered PCM and continue with live PCM. Server VAD
+   endpoints the user request, then emits `transcript` → `thinking`.
+4. Keep sending live PCM during thinking, `speaking` + reply PCM, and queued
+   playback. The server uses it only for interruption/control detection.
+5. Receive `turn_done`; send `drained` after actual speaker drain/discard.
+6. If the activation remains open, keep streaming for a follow-up request.
+   Otherwise stop upstream audio and return to local wake detection.
 
 This is the typical sequence, not a prerequisite for handling `thinking`:
 the client must enter the active-turn state even without a preceding
@@ -199,8 +235,9 @@ when cancellation or session termination is actually wanted.
 
 ### Wake request and decision frames
 
-After `start` / `ready`, a cooperating client keeps streaming microphone audio
-and sends this JSON text frame as soon as its local wake detector fires:
+After `start` / `ready`, a cooperating client sends this JSON text frame as
+soon as its local wake detector fires and buffers microphone PCM while
+waiting for the matching decision. Do not stream this activation yet:
 
 ```json
 {"type":"wake","claim_id":"activation-42","wake_word":"Hey Arya","confidence":0.93,"volume":0.098,"heard_at":1794142800123}
@@ -272,26 +309,29 @@ remains separate from the exact detected `wake_word` phrase.
 
 ### Cooperating client flows
 
-Start a **1000 ms** local monotonic deadline when sending `wake`. Keep
-streaming live audio while awaiting the decision; do not buffer it for later
-release on a grant. This deadline bounds the wait for a recommendation, not
-the microphone stream.
+Start a **1000 ms** local monotonic deadline when sending `wake`. Buffer
+microphone PCM throughout this wait, including speech after the wake word.
+This is a maximum decision wait, not a mandatory extra second after a grant:
+act as soon as the matching decision arrives. The server's collection window
+(default 250 ms) is distinct from the client's one-second timeout.
 
 | outcome | client action |
 |---|---|
-| Matching `wake_grant` before the deadline | Handle this activation and follow-up turns as the recommended device. Continue live PCM. |
-| Matching `wake_deny` before the deadline | Stand down in the wake-selection UI and resume wake detection. Continue live PCM. |
-| No matching decision within 1000 ms | Assume loss of the recommendation and resume wake detection. Continue live PCM; no extra cancel or stop frame is needed. |
-| Late decision or decision for another `claim_id` | Ignore it. Never reactivate a timed-out or completed claim. |
+| Matching `wake_grant` before the deadline | Flush buffered audio once, oldest first, then live PCM without dropping, duplicating, or reordering samples. Stream continuously through the activation, including thinking and playback. |
+| Matching `wake_deny` before the deadline | Discard the activation buffer and resume local wake detection; do not stream it. |
+| No matching decision within 1000 ms | Assume loss, discard the activation buffer, and resume local wake detection. No cancel or stop frame is needed. |
+| Late decision or decision for another `claim_id` | Ignore it; never release an abandoned buffer or reactivate a completed claim. |
 
-A later detection always gets a new `claim_id`. Abandoning an activation
-requires no reservation release and does not stop the microphone stream.
+Allocate enough buffer for the full one-second wait plus detector pre-roll,
+including on ESP32. At 16 kHz PCM16 mono, the wait alone is 32,000 bytes.
+If buffering fails, abandon the activation rather than silently dropping its
+beginning. A later detection always gets a new `claim_id`. A grant reserves
+nothing server-side; if the activation is abandoned, no release is needed.
 
-The current server processes audio independently of wake decisions. Continuous
-streaming from several devices can therefore produce duplicate answers even
-when they follow wake recommendations. Wake selection alone does not provide
-exclusive response routing; that needs a separate server-side implementation.
-Do not work around this limitation by cutting audio needed for barge-in.
+Cooperating clients prevent duplicate requests by streaming only after a
+grant. The server still accepts audio from noncooperating clients after a
+denial or without a wake claim; it does not enforce that client-side gate.
+This does not justify streaming from losing or idle wake-word clients.
 
 
 ## 9. Conversation output without user input (proposed extension)
@@ -301,7 +341,8 @@ can produce output without a new user utterance, microphone transcript,
 wake detection, or wake grant. A reminder, scheduled follow-up, or server
 event can start an outbound turn while the attached client is idle. Wake
 selection concerns user activations; it must not authorize or gate outbound
-conversation output. Clients keep sending microphone audio as in section 4.
+conversation output. The client need not stream ambient audio while idle
+in order to receive outbound events.
 
 The server must subscribe to outbound conversation events, including turns
 started by other producers, rather than only the events of a run started
@@ -319,7 +360,11 @@ No synthetic user `transcript` or wake event is sent. Both `thinking` and
 A client waiting for a wake word must accept and play that output. After it
 finishes, return to the previous idle state unless follow-up listening was
 explicitly requested; do not open a user activation merely because the
-server spoke. Microphone transport continues in either state.
+server spoke. For a targeted outbound turn while idle, temporarily enable
+microphone streaming for interruption/control detection when `thinking` or
+`speaking` arrives, subject to explicit user mute. This requires no local
+wake or arbitration. After the turn and playback drain, stop that temporary
+stream and restore local wake detection unless an activation is now open.
 
 Serialize outbound audio on each socket: never interleave the untagged
 binary PCM of two turns. Queue an announcement behind an active turn and
@@ -384,7 +429,10 @@ cancellation frames must be defined before implementation so the server can
 reschedule or report partial delivery. Group playback is best effort, not
 an atomic or sample-accurate guarantee across independent audio devices.
 
-Keep microphone PCM flowing while buffering and playing. Mark the full
+During scheduled buffering, preserve the existing microphone state. When
+announcement playback begins, temporarily stream PCM for interruption/control
+detection even if previously idle, unless explicitly muted. Stop the temporary
+stream after drain if no user activation is open. Mark the full
 chime-and-speech interval as playback for server echo/barge-in handling,
 acknowledge `drained` only after actual playback or discard, and keep the
 scheduled wait separate from the agent-run timeout. User barge-in or cancel
@@ -432,7 +480,9 @@ alarm-sound support needs a server-rendered audio fallback using the normal
 `speaking` + PCM path. Negotiate support explicitly before sending new frame
 types; these fields are not supported by the current `start` / `ready`.
 
-Keep the microphone stream running during the alarm so the user can speak.
+During the alarm, stream microphone PCM for interruption/control detection,
+even if previously idle, unless explicitly muted. Restore the previous idle
+state after dismissal/drain if no user activation is open.
 Treat its local sound as playback for echo handling. Specify playback-start
 notification to the server, stop/dismiss acknowledgement, bounded ringing,
 and `drained` coordination before implementation; an unannounced local

@@ -39,9 +39,11 @@ A browser client can put the key in the WebSocket subprotocols instead (`hermes-
 Either way the key is verified against the API server itself, so your existing key is the only
 secret.
 
-After `ready`, continuously stream binary PCM16 mono frames at `input_rate` (30 ms blocks are
-ideal), including while idle, thinking, and playing reply audio. The server needs live microphone
-audio for VAD and barge-in. Only explicit user mute or session closure stops the stream. The server answers:
+For wake-word clients, detect the wake word locally, send `wake`, and buffer all microphone
+PCM while awaiting arbitration for up to **1000 ms**. Only a matching grant starts streaming:
+flush the buffered audio in capture order, then continue live PCM16 mono at `input_rate`
+(30 ms blocks are ideal). Denial or timeout discards the buffer and returns to local wake detection.
+A non-wake client may stream after `ready`. The server answers:
 
 | frame | meaning |
 |---|---|
@@ -56,8 +58,12 @@ audio for VAD and barge-in. Only explicit user mute or session closure stops the
 | `stop_word` | session mode: you said a stop phrase; no turn ran |
 
 Handle `thinking` as an explicit turn boundary even without a preceding `transcript`:
-mark the agent turn active and show "thinking" while continuing to send microphone PCM. Arm
-the client's turn deadline if it is not already running; do not restart it. This frame reports lifecycle status, not reasoning text. See
+mark the agent turn active and show "thinking". During the granted activation, keep sending
+microphone PCM through thinking, speaking, and playback drain for server-side interruption/control
+detection. After request endpointing, that audio must not produce ordinary transcripts or queued
+user turns; limited recognition of "cancel" or similar controls is allowed. Arm the client's turn
+deadline if it is not already running; do not restart it. This frame reports lifecycle status,
+not reasoning text. The current worker still needs the interruption-only input mode; see
 [the client spec](client%20spec.md#handling-thinking) for the frame format and tracing behavior.
 
 Client control frames: `{"stop": true}` ends the session, `{"commit": true}` forces the current
@@ -66,12 +72,14 @@ keeping the socket, session and history alive, `{"type": "drained", "turn_id": "
 reply's last audio has left the speaker (or queued audio was discarded), ending the server's
 playback-tail tracking; keep sending microphone audio throughout playback,
 `{"type": "wake", "claim_id": "...", "wake_word": "..."}` requests an advisory wake decision
-(see below) — send it when the detector fires without pausing the microphone stream.
+(see below) — send it when the local detector fires, then buffer audio until a matching grant.
 
 **Session mode** (`quiet_interval` > 0) is for wake-word devices: the server reports quiet in
 *received* audio (never wall-clock, so a held-open socket never accrues phantom quiet), ends the
 exchange on a stop phrase, and lets the agent sign off by ending a reply with an end phrase
-("over and out"), which arrives as `turn_done.expects_more = false`.
+("over and out"), which arrives as `turn_done.expects_more = false`. Keep streaming through
+playback drain, then stop upstream audio and return to local wake detection when the activation
+ends. An open socket does not require sending idle ambient audio.
 
 Conversation output should also reach attached clients without a wake word or user utterance.
 [Client spec sections 9–10](client%20spec.md#9-conversation-output-without-user-input-proposed-extension)
@@ -112,12 +120,13 @@ within a 250 ms window compete: highest confidence, then highest volume, then
 earliest detection time, then arrival order. The server echoes the request ID
 in `wake_grant` or `wake_deny`.
 
-Clients keep streaming live audio while waiting, assume loss after **1000 ms**, and ignore
-late decisions. A recommendation covers the activation and its follow-up
-conversation. It is advisory: audio streamed after a denial, or without any wake
-request, is processed normally. The server does not elect from transcripts.
-With continuous audio from several devices, duplicate answers remain possible;
-wake recommendations do not yet enforce exclusive response routing on the server.
+Clients buffer audio while waiting for up to **1000 ms** and ignore late decisions. On a grant,
+send the complete buffer before live audio so the beginning of the utterance is preserved.
+On denial or timeout, discard the buffer without streaming. The grant covers the activation
+and its follow-up conversation, including uninterrupted upstream audio during thinking and
+playback for barge-in/control detection. The server's selection is advisory: it still accepts
+audio sent by noncooperating clients after a denial or without a claim. Cooperating clients
+must follow the gate; idle and losing devices do not stream their ambient audio.
 With arbitration disabled, requests receive immediate grants. The legacy
 `first_to_endpoint` setting also grants immediately; unknown policies fall back
 to `wake_signal`. See [client spec.md](client%20spec.md) for the full protocol,
