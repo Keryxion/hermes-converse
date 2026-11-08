@@ -13,7 +13,7 @@ from typing import Any, Callable, Optional
 from .phrases import normalize_phrases
 from .arbitrate import DEFAULT_WAKE_WINDOW, POLICY_FIRST_TO_ENDPOINT, POLICY_WAKE_SIGNAL
 
-DEFAULT_NAME = "Sakura"
+DEFAULT_NAME = "Arya"
 DEFAULT_STOP_PHRASES = ("stop", "cancel")
 DEFAULT_END_PHRASES = ("over and out",)
 # ── cross-device voice arbitration ────────────────────────────────────────────────────────

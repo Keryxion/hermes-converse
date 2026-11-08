@@ -76,7 +76,7 @@ class TestNormalizePhrases:
 class TestSettings:
     def test_defaults_without_any_config(self):
         s = load_settings(lambda key, default=None: default)
-        assert s.name == "Sakura" and s.model is None and s.provider is None
+        assert s.name == "Arya" and s.model is None and s.provider is None
         assert s.turn_timeout == 120.0 and s.tail_fallback == 45.0 and s.max_tts_chars == 1500
         assert s.stop_phrases == ("stop", "cancel") and s.end_phrases == ("over and out",)
         assert s.endpoint_model is False and s.endpoint_threshold == 0.5

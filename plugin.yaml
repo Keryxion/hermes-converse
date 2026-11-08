@@ -29,7 +29,7 @@ provides_hooks: [post_llm_call]
 config_schema:
   name:
     type: str
-    default: "Sakura"
+    default: "Arya"
     label: "Assistant name"
     description: "Name the voice prompt uses when a client's start frame carries none."
   voice_model:
@@ -59,7 +59,7 @@ config_schema:
   end_phrases:
     type: list
     default: ["over and out"]
-    description: "Session mode: a reply ending with one of these signs off (turn_done.expects_more=false)."
+    description: "Session mode: a reply ending with one of these signs off (turn_done.next_action=standby)."
   endpoint_model:
     type: str
     default: ""

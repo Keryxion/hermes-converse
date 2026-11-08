@@ -40,14 +40,16 @@ import math
 import re
 import time
 import uuid
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
-from aiohttp import ClientSession, ClientTimeout, web
+from aiohttp import ClientError, ClientSession, ClientTimeout, web
 
 from .agent_client import RunsClient
 from .arbitrate import Arbitrator
 from .auth import offered_key_protocol, verify_api_key
 from .conversation import ConversationHub
+from .named import DeviceStore, NamedError, NamedSessions, parse_names
 from .loop import ConverseSession, drive_converse_turns, parse_start_config, voice_system_prompt
 from .settings import Settings, load_settings
 from .tracing import force_flush
@@ -62,6 +64,15 @@ DEFAULT_LOOPBACK = "http://127.0.0.1:8642"
 # Loopback HTTP: no total deadline (the SSE stream lives as long as a turn), bounded connect, and a
 # read gap well past the server's 10 s SSE keepalive.
 HTTP_TIMEOUT = ClientTimeout(total=None, connect=5, sock_read=90)
+REPLACEMENT_TIMEOUT = 12.0
+
+
+@dataclass
+class _NamedConnection:
+    done: asyncio.Event = field(default_factory=asyncio.Event)
+    replaced: asyncio.Event = field(default_factory=asyncio.Event)
+    session: Any = None
+    client: Any = None
 
 
 def loopback_base_url(adapter: Any, override: str = "") -> str:
@@ -88,13 +99,17 @@ class ConverseRoute:
     """
 
     def __init__(self, *, settings_getter: Callable[..., Any], base_url_resolver: Callable[[], str],
-                 profile_name: str = "default", hub: Optional[ConversationHub] = None) -> None:
+                 profile_name: str = "default", hub: Optional[ConversationHub] = None,
+                 device_store: Optional[DeviceStore] = None) -> None:
         self._settings_getter = settings_getter
         self._base_url = base_url_resolver
         self._profile_name = profile_name
         self.hub = hub or ConversationHub()
         self._arbitrator: Optional[Arbitrator] = None
         self._arbitrator_lock = asyncio.Lock()
+        self._devices = device_store or DeviceStore()
+        self._named_lock = asyncio.Lock()
+        self._named_connections: dict[str, _NamedConnection] = {}
 
     async def _arbitrator_for_settings(self, settings: Settings) -> Optional[Arbitrator]:
         """Lazily create the shared arbitrator when arbitration is enabled."""
@@ -124,6 +139,9 @@ class ConverseRoute:
             return False
         app.router.add_get(ROUTE_PATH, self.handle)
         app.on_cleanup.append(_flush_tracing)
+        async def close_devices(app):
+            await asyncio.to_thread(self._devices.close)
+        app.on_cleanup.append(close_devices)
         app.router.add_post("/v1/audio/conversations/{conversation_id}/output", self.output)
         return True
 
@@ -162,6 +180,14 @@ class ConverseRoute:
                 api_key = str(frame.get("key") or "")
             server_recv_unix_ms = int(time.time() * 1000)
             settings = self._settings()
+            try:
+                names = parse_names(frame)
+            except NamedError as exc:
+                await _fail(ws, exc.error, exc.code)
+                return ws
+            if names is not None:
+                return await self._named_handle(ws, frame, names, api_key, http, base_url,
+                                                settings, server_recv_unix_ms)
             input_rate, output_rate, quiet_interval, name, profile = parse_start_config(
                 frame, default_name=settings.name)
             if not self._profile_allowed(profile):
@@ -216,9 +242,69 @@ class ConverseRoute:
                 session.stop()
             return ws
 
+    async def _named_handle(self, ws, frame, names, api_key, http, base_url, settings, recv_ms):
+        connection = _NamedConnection()
+        device = None
+        attachment = None
+        try:
+            async with self._named_lock:
+                device = await asyncio.to_thread(self._devices.reserve, *names)
+                sessions = NamedSessions(base_url, api_key, http)
+                old = self._named_connections.get(device.recipient_id)
+                if old is not None:
+                    if not old.done.is_set():
+                        # Fence before closing: no further PCM/control can enter the old session.
+                        if old.session is not None:
+                            old.session.stop()
+                        old.replaced.set()
+                        try:
+                            await asyncio.wait_for(old.done.wait(), REPLACEMENT_TIMEOUT)
+                        except TimeoutError:
+                            raise NamedError('conversation_busy', 4404) from None
+                    pending = old.client.unsettled_run_ids if old.client is not None else set()
+                    if old.client is not None and old.client.admission_uncertain:
+                        raise NamedError('conversation_busy', 4404)
+                    if not await sessions.settled(pending):
+                        raise NamedError('conversation_busy', 4404)
+                conversation_id, live_id, history = await sessions.resolve(device, self._devices)
+                input_rate, output_rate, quiet_interval, _, profile = parse_start_config(frame)
+                if not self._profile_allowed(profile):
+                    raise NamedError('profile_unsupported', 4400)
+                synth, cap, session = await asyncio.to_thread(
+                    _resolve_session, settings, input_rate, output_rate, quiet_interval)
+                connection.session = session
+                attachment = self.hub.attach(conversation_id, session)
+                self.hub.alias(live_id, attachment)
+                self._named_connections[device.recipient_id] = connection
+            await self._connected(ws, session, api_key, http, base_url, synth, cap, names[0],
+                                  quiet_interval, settings, attachment, recv_ms, input_rate, output_rate,
+                                  named=(device, connection, history))
+        except NamedError as exc:
+            await _fail(ws, exc.error, exc.code)
+        except (ClientError, TimeoutError, ValueError):
+            await _fail(ws, 'conversation_unavailable', 4404)
+        except asyncio.CancelledError:
+            # Replacement owns the close code; cancellation still runs stop/settlement cleanup.
+            pass
+        except Exception:
+            logger.exception('named converse setup failed')
+            await _fail(ws, 'conversation_unavailable', 4404)
+        finally:
+            if attachment is not None:
+                self.hub.detach(attachment.conversation_id, attachment)
+            if connection.session is not None:
+                connection.session.stop()
+            connection.done.set()
+            if (device is not None and self._named_connections.get(device.recipient_id) is connection
+                    and (connection.client is None or (not connection.client.unsettled_run_ids
+                                                      and not connection.client.admission_uncertain))):
+                self._named_connections.pop(device.recipient_id, None)
+        return ws
+
     async def _connected(self, ws, session, api_key, http, base_url, synth, cap, name,
-                         quiet_interval, settings, attachment, server_recv_unix_ms, input_rate, output_rate):
-        await ws.send_json({
+                         quiet_interval, settings, attachment, server_recv_unix_ms, input_rate, output_rate,
+                         named=None):
+        ready = {
             "type": "ready",
             "input": {"sample_rate": input_rate, "format": "pcm16", "block_ms": 30},
             "output": {"sample_rate": output_rate, "format": "pcm16"},
@@ -226,16 +312,26 @@ class ConverseRoute:
             "conversation_id": session.session_id,
             "server_recv_unix_ms": server_recv_unix_ms,
             "server_send_unix_ms": int(time.time() * 1000),
-        })
+        }
+        if named is not None:
+            device, connection, history = named
+            ready.pop('conversation_id')
+            ready.update(recipient_id=device.recipient_id, assistant_name=device.assistant_name,
+                         device_name=device.device_name)
+        await ws.send_json(ready)
         arbitrator = await self._arbitrator_for_settings(settings)
         # A configured label is a prefix: each socket needs its own candidate identity.
         device_id = f"{settings.arbitrate_device_id or 'device'}_{uuid.uuid4().hex}"
         if arbitrator is not None:
             await arbitrator.register(device_id)
         client = RunsClient(base_url, api_key, http=http, approval_choice=settings.approval_choice)
+        if named is not None:
+            connection.client = client
         await _serve(ws, session=session, synth=synth, cap=cap, client=client, settings=settings,
                      name=name, quiet_interval=quiet_interval, arbitrator=arbitrator,
-                     device_id=device_id, hub=self.hub, attachment=attachment)
+                     device_id=device_id, hub=self.hub, attachment=attachment,
+                     named_device=named[0] if named else None, history=history if named else None,
+                     named_connection=named[1] if named else None)
 
     async def output(self, request: web.Request) -> web.Response:
         header = request.headers.get("Authorization", "")
@@ -358,14 +454,15 @@ async def _await_start_frame(ws: web.WebSocketResponse, *,
 async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: Any, cap: int,
                  client: RunsClient, settings: Settings, name: str, quiet_interval: float,
                  arbitrator: Optional[Arbitrator] = None,
-                 device_id: str = "", hub=None, attachment=None) -> None:
+                 device_id: str = "", hub=None, attachment=None, named_device=None,
+                 history: Optional[list[dict[str, str]]] = None, named_connection=None) -> None:
     """Run the client pump and the turn driver until the socket ends; always stop the live run."""
     loop = asyncio.get_running_loop()
     session.enable_turn_control()
     session.start()
     # The Runs API continues this conversation across turns by session id; one per socket.
-    session_id = session.session_id
-    history: list[dict[str, str]] = []
+    session_id = attachment.conversation_id if attachment is not None else session.session_id
+    history = [] if history is None else history
     allow_signoff = quiet_interval > 0
     wake_tasks: set[asyncio.Task] = set()
 
@@ -411,7 +508,10 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
         with hub.owned_run(attachment, transcript) if hub is not None else contextlib.nullcontext() as owned:
             result = await client.run_turn(
                 text=transcript, session_id=session_id, on_delta=on_delta,
-                instructions=voice_system_prompt(name, allow_signoff=allow_signoff, end_phrases=settings.end_phrases),
+                instructions=voice_system_prompt(
+                    name, allow_signoff=allow_signoff, end_phrases=settings.end_phrases,
+                    device_name=named_device.device_name if named_device else None,
+                    recipient_id=named_device.recipient_id if named_device else None),
                 model=settings.model, provider=settings.provider,
                 idempotency_key=f"converse-{session_id}-{uuid.uuid4().hex}")
             if owned is not None and result.error is None:
@@ -434,8 +534,10 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
 
     pump = asyncio.ensure_future(_pump_client())
     driver = asyncio.ensure_future(_drive_turns())
+    fence = asyncio.create_task(named_connection.replaced.wait()) if named_connection else None
     try:
-        done, _ = await asyncio.wait({pump, driver}, return_when=asyncio.FIRST_COMPLETED)
+        done, _ = await asyncio.wait({pump, driver, *([fence] if fence else [])},
+                                     return_when=asyncio.FIRST_COMPLETED)
         if driver in done:
             driver.result()  # surface a crash
         else:
@@ -454,14 +556,20 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
         driver.cancel()
         for task in wake_tasks:
             task.cancel()
-        await asyncio.gather(pump, driver, *wake_tasks, return_exceptions=True)
+        if fence is not None:
+            fence.cancel()
+        await asyncio.gather(pump, driver, *wake_tasks, *([fence] if fence else []), return_exceptions=True)
         if arbitrator is not None:
             with contextlib.suppress(Exception):
                 await arbitrator.unregister(device_id)
         with contextlib.suppress(Exception):
             await client.stop()  # a socket that drops mid-turn must not orphan the run
         with contextlib.suppress(Exception):
-            await ws.close()
+            if named_connection is not None and named_connection.replaced.is_set():
+                # Send the close frame, but a peer that is not reading cannot hold up admission.
+                await asyncio.wait_for(ws.close(code=4409, message=b'attachment_replaced'), timeout=1.0)
+            else:
+                await ws.close()
 
 
 async def _flush_tracing(app: web.Application) -> None:

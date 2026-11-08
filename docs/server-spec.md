@@ -1,7 +1,8 @@
 # Server spec
 
 Server responsibilities behind [client spec.md](../client%20spec.md).
-This document does not change runtime behavior.
+Named-device behavior uses `assistant_name` and `device_name` directly in `start`;
+timer/alarm behavior remains separate work.
 
 ## Named Aryas
 
@@ -45,4 +46,13 @@ local sign-off bookkeeping where needed. Never replay an unacknowledged request.
 Verify first setup, concurrent creation, reconnect/restart, failed
 lookup, unauthorized access, compression continuation, and replacement
 attachments without duplicate history or competing work. Include the case
-`assistant_name: Alexa`, `device_name: Den Echo`, title `Alexa: Den Echo`.
+`assistant_name: Arya`, `device_name: Den Echo`, title `Arya: Den Echo`.
+
+The implementation stores only routing metadata in the profile's
+`plugin-data/hermes-converse/devices.db`. It uses authenticated exact-title lookup and the
+public messages resource to resolve compression continuations, and refuses unsupported API
+responses or missing saved history. It does not create a replacement history on lookup failure.
+The prompt supplies both names and the routing identity, explains proactive output without
+another wake word, and requires successful scheduling receipts before confirming timers.
+Heartbeat 2's current API-session restriction still requires an integration change; a prompt
+does not bypass a scheduling tool's refusal.

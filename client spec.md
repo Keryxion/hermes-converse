@@ -15,7 +15,7 @@ turns and reconnects; closing the socket does not end the Hermes conversation.
 Wake selection is cooperative: it recommends an answering device without
 restricting audio processing. Section 8 defines the cooperative wake contract.
 Sections 9–10 define conversation output and timers. Section 11 defines named
-Aryas and attachment to Hermes conversations. Negotiate extensions before use.
+Aryas and attachment to Hermes conversations.
 
 ## 1. Connect and authenticate
 
@@ -51,7 +51,7 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 | `output_rate` | sample rate of PCM the server sends back (default 24000) |
 | `quiet_interval` | session mode: seconds of silence between turns (0 = off) |
 | `device_name` | The configured device label, such as `Den Echo`; required for named-device connections (section 11). |
-| `assistant_name` | What you call the assistant, such as `Arya` or `Alexa`, without “Hey”. Used in the voice system prompt; separate from the device label, such as `Den Echo`. |
+| `assistant_name` | What you call the assistant, normally `Arya`, without “Hey”. Used in the voice system prompt; separate from the device label, such as `Den Echo`. |
 
 **Client profile selection is removed.**
 
@@ -63,7 +63,7 @@ This applies to every client, including macOS, iOS, Echo, and ESP32 clients.
 
 The connection uses the Hermes profile that owns the configured server listener.
 Clients select a server URL and authenticate to it; the `start` frame does not
-select or switch Hermes profiles. `name` only sets the assistant's spoken identity
+select or switch Hermes profiles. `assistant_name` only sets the assistant's spoken identity
 and does not select a profile either. There is no supported profile-prefixed
 converse route in this contract; do not construct `/p/<profile>/` URLs to replace
 the removed field.
@@ -644,39 +644,39 @@ These proposed extensions do not change the current wire protocol by themselves.
 
 ## 11. Named Aryas
 
-Use `assistant_name` for what you call the assistant, such as `Arya` or `Alexa`.
+Use `assistant_name` for what you call the assistant, normally `Arya`.
 Use `device_name` for the device label, such as `Den Echo` or `Kitchen`.
 Device labels must be unique on the server; configure the label in the client.
 Many devices may share the same assistant name. The detected wake phrase is
 sent separately in `wake.wake_word` (section 8).
 
+Names are case-sensitive labels. The server normalizes Unicode to NFC, trims and collapses
+whitespace, and rejects control/format characters, empty names, or a combined title over 100
+characters. Use the same configured names on reconnect. The names are not additional credentials.
+
 Each device uses a persistent conversation titled
-**`<assistant_name>: <device_name>`**, for example `Alexa: Den Echo`.
+**`<assistant_name>: <device_name>`**, for example `Arya: Den Echo`.
 Clients cannot choose or override the conversation.
 
 ### Start and ready
 
-Authenticate with the existing API key as in section 1. Send both names in
-`start` and negotiate `arya-v1`:
+Authenticate with the existing API key as in section 1. Send both names directly in `start`:
 
 ```json
 {"type":"start","key":"<API_SERVER_KEY>","input_rate":16000,"output_rate":24000,
- "assistant_name":"Alexa","device_name":"Den Echo",
- "extensions":{"arya-v1":{}}}
+ "assistant_name":"Arya","device_name":"Den Echo"}
 ```
 
 Wait for `ready` before streaming audio:
 
 ```json
-{"type":"ready","session_id":"socket-9","extensions":{
- "arya-v1":{"recipient_id":"device-7","device_name":"Den Echo"}}}
+{"type":"ready","session_id":"socket-9","recipient_id":"device-7",
+ "assistant_name":"Arya","device_name":"Den Echo"}
 ```
 
 `session_id` identifies the socket for diagnostics. `recipient_id` identifies
-the device for timer routing. Treat these IDs as opaque. If `arya-v1` is missing
-from `ready`,
-named-device behavior is unavailable; show that state rather than claiming
-the conversation was restored.
+the device for timer routing. Treat these IDs as opaque. The returned names identify
+the assistant and physical device for this conversation.
 
 ### Reconnect
 
@@ -686,7 +686,7 @@ Do not automatically resend an utterance whose outcome is unknown: its actions
 may already have happened.
 
 A replacement connection closes the old one with `4409 attachment_replaced`.
-Stop sending on the old connection. Invalid fields return `4402 bad_extension`.
+Stop sending on the old connection. Invalid start fields return `4400 bad_start`.
 If the conversation cannot be opened, show
 `4404 conversation_unavailable` rather than claiming restored context.
 A `conversation_busy` error before ready means retry later while earlier work

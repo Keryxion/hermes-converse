@@ -89,6 +89,9 @@ class RunsClient:
         self._stream_task: Optional[asyncio.Task] = None
         self._stop_requested = False
         self._stops_posted: set[str] = set()
+        # Keep admission/stop uncertainty visible until a public terminal status confirms it.
+        self.unsettled_run_ids: set[str] = set()
+        self.admission_uncertain = False
 
     @property
     def current_run_id(self) -> Optional[str]:
@@ -156,6 +159,7 @@ class RunsClient:
 
     # ── HTTP ──
     async def _post_run(self, body: dict[str, Any], idempotency_key: Optional[str]) -> str:
+        self.admission_uncertain = True
         headers = dict(self._headers)
         if idempotency_key:
             headers["Idempotency-Key"] = idempotency_key
@@ -166,7 +170,12 @@ class RunsClient:
                                            allow_redirects=False) as resp:
                     payload = await self._json(resp)
                     if resp.status in (200, 202) and isinstance(payload, dict) and payload.get("run_id"):
-                        return str(payload["run_id"])
+                        run_id = str(payload["run_id"])
+                        self.unsettled_run_ids.add(run_id)
+                        self.admission_uncertain = False
+                        return run_id
+                    if 400 <= resp.status < 500:
+                        self.admission_uncertain = False
                     raise RunsError(self._error_text(resp.status, payload))
             except aiohttp.ClientConnectionError as exc:
                 last_exc = exc
@@ -314,10 +323,13 @@ class RunsClient:
             await self._answer(run_id, "clarify", event)
             return None
         if name == "run.completed":
+            self.unsettled_run_ids.discard(run_id)
             return TurnResult(str(event.get("output") or ""), None, "completed", run_id)
         if name == "run.failed":
+            self.unsettled_run_ids.discard(run_id)
             return TurnResult("", str(event.get("error") or "agent run failed"), "failed", run_id)
         if name in ("run.cancelled", "run.interrupted"):
+            self.unsettled_run_ids.discard(run_id)
             error = None if self._stop_requested else str(event.get("error") or "agent run was cancelled")
             return TurnResult(str(event.get("output") or ""), error, name.split(".", 1)[1], run_id)
         return None  # message.interim, tool.*, reasoning.*, replay.truncated, run.steered, ...
@@ -325,6 +337,8 @@ class RunsClient:
     def _from_status(self, status: dict[str, Any]) -> TurnResult:
         state = str(status.get("status") or "")
         run_id = status.get("run_id")
+        if state in TERMINAL_STATUSES:
+            self.unsettled_run_ids.discard(run_id)
         if state == "completed":
             return TurnResult(str(status.get("output") or ""), None, state, run_id)
         if state == "failed":
