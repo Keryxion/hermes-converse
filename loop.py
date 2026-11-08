@@ -25,6 +25,7 @@ import queue
 import threading
 import time
 import uuid
+import wave
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Iterator, Optional
 
@@ -396,7 +397,8 @@ class ConverseSession:
                         except Exception:
                             logger.debug("converse on_trip callback failed", exc_info=True)
                     capture_generation = self._generation
-                    recorder = PhaseRecorder(input_rate=self._input_rate, session_mode=self._quiet_interval > 0)
+                    recorder = PhaseRecorder(input_rate=self._input_rate, session_mode=self._quiet_interval > 0,
+                                             **{"session.id": self.session_id})
                     self._capturing = True
                     if self._managed:
                         self._pending_turn.set()
@@ -581,7 +583,9 @@ class ConverseSession:
         recorder = recorder or PhaseRecorder()
         silence_rms = max(float(vad.SILENCE_RMS_THRESHOLD),
                           self._detector.quiet_floor * vad.CONVERSE_ENDPOINT_FLOOR_MULT)
-        with recorder.phase("voice.capture") as cap:
+        with recorder.phase("voice.capture", **{
+                "endpoint.silence_ms": self._endpoint_blocks * self._block * 1000 / self._input_rate,
+        }) as cap:
             if self._turn_detector is not None:
                 cap.set(**{"endpoint.mode": "smart_turn"})
                 wav_path, volume = self._capture_adaptive(silence_rms, phase=cap)
@@ -591,6 +595,11 @@ class ConverseSession:
                     self.stream, np, self._block, self._pre_roll,
                     endpoint_blocks=self._endpoint_blocks, max_blocks=self._max_blocks,
                     sample_rate=self._input_rate, silence_rms=silence_rms)
+            # Audio duration differs from elapsed capture time when activation audio is buffered.
+            # Read only the WAV header; no audio or transcript is exported.
+            with contextlib.suppress(OSError, wave.Error):
+                with wave.open(wav_path, "rb") as wav:
+                    cap.set(**{"input.audio_ms": wav.getnframes() * 1000 / wav.getframerate()})
         self._pre_roll.clear()  # capture drained the pre-roll into the WAV
         if (self._cancelled.is_set() or generation != self._generation
                 or self._turn_active.is_set() or self._tail_active):
@@ -868,7 +877,8 @@ async def drive_converse_turns(
             if item.expires_at <= time.time():
                 continue
             turn_id = uuid.uuid4().hex
-            tt = start_turn(recorder=None, turn_id=turn_id)
+            tt = start_turn(recorder=None, turn_id=turn_id,
+                            **{"session.id": getattr(session, "session_id", None)})
             turn = _Turn("", turn_id, {"turn_id": turn_id, "event_id": item.event_id})
             turn.output = item
             if tt.traceparent:

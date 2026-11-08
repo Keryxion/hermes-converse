@@ -196,14 +196,15 @@ the plugin emits a `voice.turn` span with `voice.capture`, `voice.stt`, `voice.a
 `voice.tts` children through that provider. It uses the host's sampling and exporter settings,
 including OTLP, and adds no plugin tracing settings or required OTEL dependencies. Install
 Hermes's `otlp` extra for its OTEL SDK/exporter support. Importing this plugin does not import
-OTEL; missing packages or an unconfigured global provider keep tracing inert. Provider
+OTEL; missing packages or disabled/unconfigured export keep tracing inert. Provider
 initialization after the plugin loads is supported.
 
-The host must register its configured provider with `opentelemetry.trace.set_tracer_provider`.
-Hermes's `monitoring.export.otlp` exporter currently owns a private provider: enabling that
-export alone does **not** register a global provider or enable these voice spans. Configure
-the global provider in the host's tracing bootstrap; this plugin never creates an exporter,
-changes sampling, reads collector credentials, or shuts down the shared provider.
+A global provider takes priority, including its sampling decisions. Without one, enabling
+Hermes's `monitoring.export.otlp.enabled` with an explicit `endpoint` also enables voice
+spans through a private provider using that destination and its `headers_env` mapping.
+This fallback requires the installed OTLP/HTTP exporter; it never installs dependencies,
+changes the global provider, or writes configuration. It uses `service.name=hermes-gateway`
+and `telemetry.scope=voice`. No plugin-specific collector settings are needed.
 
 Capture/STT timestamps survive the worker-thread handoff and remain children of the right
 turn, even when turns queue. Smart Turn decisions appear as `endpoint.decision` events with
@@ -213,6 +214,8 @@ reply text, and exception messages are excluded. A valid W3C `traceparent` is fo
 the existing transcript/thinking/speaking frames, preserving the host's sampling flags.
 Disconnected turns are closed, and app cleanup attempts a bounded five-second flush in a
 worker thread. Tracing failures do not interrupt voice operation.
+Capture spans include `input.audio_ms` and `endpoint.silence_ms` so buffered audio duration
+can be distinguished from elapsed processing time when investigating early endpoints.
 
 **Browser clients and CORS.** The API server's origin guard runs before any route. A browser or
 Electron client (which sends `Origin: null`) must have its origin listed in
@@ -232,7 +235,7 @@ API-server client.
 | `synth.py` | one `text → int16 PCM` seam over streaming or one-shot TTS, plus resampling |
 | `speech.py` | the only module that imports Hermes core speech helpers |
 | `phrases.py`, `settings.py` | stop/end phrase policy and the settings schema |
-| `turn_detector.py`, `tracing.py` | the optional Smart Turn endpointer and global OTEL tracing backend |
+| `turn_detector.py`, `tracing.py` | the optional Smart Turn endpointer and host-configured OTEL tracing backend |
 
 `speech.py` imports a handful of core helpers that are not yet on Hermes's public plugin API
 (`transcribe_audio`, `resolve_streaming_provider`, `text_to_speech_tool` and the sentence chunker);
@@ -276,7 +279,7 @@ The plugin opens one authenticated route on the API server you already run. Micr
 transcribed by your configured STT provider and replies are synthesized by your configured TTS
 provider; neither leaves the host unless those providers are cloud services. Turns run as API
 sessions in the serving profile with its full toolset. Command approvals raised during a voice turn
-are answered with `approval_choice` (deny by default); clarifying questions are cancelled. When a global OTEL provider is configured, voice timing metadata follows its exporter settings.
+are answered with `approval_choice` (deny by default); clarifying questions are cancelled. Voice timing metadata follows the global OTEL provider or the host's opted-in monitoring OTLP destination.
 No third-party network calls of its own beyond the configured providers and optional model downloads;
 no self-update.
 

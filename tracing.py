@@ -1,28 +1,63 @@
-"""Optional voice spans on the host's global OpenTelemetry provider.
+"""Optional voice spans using the host's OpenTelemetry configuration.
 
 Capture/STT timings travel with their utterance across the worker/driver boundary.
 The driver opens ``voice.turn`` at capture start, exposes its W3C traceparent,
 then materializes phase spans with their original epoch-nanosecond timestamps.
-No exporter, provider, credentials, or plugin tracing settings are created here.
-Missing OTEL, an unconfigured provider, and telemetry failures leave voice working.
+A configured global provider takes priority. Otherwise the host's opted-in monitoring
+OTLP destination gets a private voice provider; the global provider is never replaced.
+Missing OTEL, disabled export, and telemetry failures leave voice working.
 """
 from __future__ import annotations
 
 import logging
 import math
+import os
+import threading
 import time
 from contextlib import contextmanager
 from typing import Any, Iterator, Optional
 
 logger = logging.getLogger(__name__)
 INSTRUMENTATION = "hermes.voice.converse"
+_providers: dict[tuple, Any] = {}
+_provider_lock = threading.Lock()
 # Explicit metadata only: never export audio, transcripts, reply text, or exception messages.
 _ATTRIBUTE_KEYS = frozenset({
     "turn_id", "session.id", "input_rate", "session_mode", "outcome", "interrupted", "next_action",
     "endpoint.mode", "endpoint.probability", "endpoint.threshold", "endpoint.decision", "endpoint.reason",
     "endpoint.holds", "stt.success", "stt.model", "stt.transcript_chars", "llm.ttft_ms", "reply.chars",
+    "input.audio_ms", "endpoint.silence_ms",
     "llm.deltas", "error", "llm.timed_out", "tts.pcm_chunks", "tts.first_pcm_ms",
 })
+
+
+def _monitoring_provider() -> Any:
+    """Reuse the host's explicit OTLP opt-in without depending on its private provider.
+
+    Imports stay lazy and never install packages or write configuration. Exporter secrets
+    come from the same headers_env mapping as Hermes monitoring, and are never logged.
+    """
+    from hermes_cli.config import load_config_readonly
+    config = load_config_readonly()
+    otlp = ((config.get("monitoring") or {}).get("export") or {}).get("otlp") or {}
+    if otlp.get("enabled") is not True or not otlp.get("endpoint"):
+        return None
+    headers = {str(name): os.environ[env] for name, env in (otlp.get("headers_env") or {}).items()
+               if isinstance(env, str) and os.environ.get(env)}
+    key = (str(otlp["endpoint"]), tuple(sorted(headers.items())))
+    with _provider_lock:
+        if key not in _providers:
+            from opentelemetry.sdk.trace import TracerProvider
+            from opentelemetry.sdk.trace.export import BatchSpanProcessor
+            from opentelemetry.sdk.resources import Resource
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+            exporter = OTLPSpanExporter(endpoint=key[0], headers=headers or None)
+            provider = TracerProvider(resource=Resource.create({
+                "service.name": "hermes-gateway", "telemetry.scope": "voice",
+            }))
+            provider.add_span_processor(BatchSpanProcessor(exporter))
+            _providers[key] = provider
+        return _providers[key]
 
 
 def _attributes(attrs: dict[str, Any]) -> dict[str, Any]:
@@ -148,14 +183,17 @@ class TurnTrace:
 
 
 def start_turn(*, recorder: Optional[PhaseRecorder], turn_id: str, **attrs: Any) -> TurnTrace:
-    """Open a live parent without configuring OTEL; try again on later turns if unavailable."""
+    """Open a live parent; try again on later turns if optional tracing is unavailable."""
     recorder = recorder if recorder is not None else PhaseRecorder()
     recorder.set(turn_id=turn_id, **attrs)
     span = None
     try:
         from opentelemetry import trace
 
-        tracer = trace.get_tracer(INSTRUMENTATION)
+        provider = trace.get_tracer_provider()
+        fallback = (_monitoring_provider()
+                    if isinstance(provider, (trace.ProxyTracerProvider, trace.NoOpTracerProvider)) else None)
+        tracer = fallback.get_tracer(INSTRUMENTATION) if fallback is not None else trace.get_tracer(INSTRUMENTATION)
         start_ns = min((p.start_ns for p in recorder.phases), default=time.time_ns())
         span = tracer.start_span("voice.turn", context=recorder.parent_context,
                                  kind=trace.SpanKind.SERVER, start_time=start_ns, attributes=recorder.attrs)
@@ -179,11 +217,16 @@ def emit_turn_trace(recorder: Optional[PhaseRecorder]) -> None:
 
 
 def force_flush(timeout_millis: int = 5000) -> None:
-    """Best-effort bounded flush of the host provider; never shut down a shared provider."""
+    """Best-effort bounded flush; never shut down a shared provider."""
     try:
         from opentelemetry import trace
-        flush = getattr(trace.get_tracer_provider(), "force_flush", None)
-        if flush is not None:
-            flush(timeout_millis=timeout_millis)
+        with _provider_lock:
+            providers = [trace.get_tracer_provider(), *_providers.values()]
+        deadline = time.monotonic() + timeout_millis / 1000
+        for provider in providers:
+            flush = getattr(provider, "force_flush", None)
+            remaining = max(0, math.ceil((deadline - time.monotonic()) * 1000))
+            if flush is not None and remaining:
+                flush(timeout_millis=remaining)
     except Exception:
         logger.debug("voice tracing flush failed", exc_info=True)

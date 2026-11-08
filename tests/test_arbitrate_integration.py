@@ -85,6 +85,21 @@ async def test_disabled_echoes_client_id(monkeypatch):
         await ws.close()
 
 
+@pytest.mark.parametrize('transcript', ['Hey, Aria.', 'Hey Aria, say ready.'])
+@pytest.mark.asyncio
+async def test_wake_report_does_not_filter_or_rewrite_transcript(monkeypatch, transcript):
+    fake = _patch(monkeypatch)
+    monkeypatch.setattr(speech, 'transcribe_wav', lambda *a, **kw: transcript)
+    async with Harness(fake) as client:
+        ws = await _connect(client)
+        await ws.send_json({'type': 'wake', 'claim_id': 'activation', 'wake_word': 'Hey Arya'})
+        assert (await ws.receive_json(timeout=1))['type'] == 'wake_grant'
+        await _audio_turn(ws)
+        assert len(fake.runs) == 1
+        assert next(iter(fake.runs.values()))['body']['input'] == transcript
+        await ws.close()
+
+
 @pytest.mark.parametrize('first_signals,second_signals', [
     ({'confidence': 1, 'volume': 0.5}, {'confidence': 0.5, 'volume': 1}),
     ({'confidence': 0.9, 'volume': 0.8}, {'confidence': 0.9, 'volume': 0.2}),
