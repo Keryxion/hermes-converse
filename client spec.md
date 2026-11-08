@@ -13,8 +13,7 @@ session, and conversation history stay alive across turns unless you close
 them.
 
 Wake selection is cooperative: it recommends an answering device without
-restricting audio processing. Section 8 defines the client/server contract;
-section 9 describes compatibility with earlier versions of this PR.
+restricting audio processing. Section 8 defines the cooperative wake contract.
 
 ## 1. Connect and authenticate
 
@@ -157,6 +156,11 @@ audio for that activation:
 | `volume` | Optional numeric RMS amplitude of the detected wake audio normalized to 0–1, where 1 is full-scale amplitude (PCM16 RMS divided by 32768), not dB; higher wins. Omit it when unavailable. |
 | `heard_at` | Optional numeric Unix timestamp in milliseconds at wake detection, not send time or a monotonic clock; earlier wins. Devices need comparable clocks for this tie-break to be useful. |
 
+A wake request without nonempty string `claim_id` and `wake_word` receives
+`{"type":"error","error":"bad_wake"}` without closing the socket. Invalid
+optional numeric signals (non-numeric, non-finite, negative, or outside 0–1 for
+confidence/volume) are treated as missing; omit unavailable signals.
+
 The server responds on the requesting socket with one of:
 
 ```json
@@ -200,7 +204,7 @@ performs this ranked selection.
 When arbitration is disabled, immediately send `wake_grant`, still echoing the
 client's `claim_id` and `wake_word`. The legacy `first_to_endpoint` policy is not
 a ranked election; it grants every wake request immediately, without a later
-transcript election. See section 9.
+transcript election.
 
 `start.device_id`, `start.area`, and `start.person` are not supported selection
 inputs. The existing `arbitrate_device_id` is an optional server-configured label prefix;
@@ -223,25 +227,3 @@ arya-esp32.
 
 A later detection always gets a new `claim_id`. A grant does not require audio:
 if the activation is abandoned locally, no reservation needs releasing.
-
-## 9. Compatibility and migration
-
-Earlier revisions of PR #15 generated claim IDs on the server, suppressed audio
-after denial, and arbitrated matching transcripts. Those behaviors are removed:
-all streamed audio is processed normally, regardless of wake participation or
-recommendation. There is no turn ownership to release at `turn_done` or socket
-close. Clients own the wake-activation lifecycle and the 1000 ms decision timer.
-
-Clients must generate a new `claim_id` for every wake detection, send the exact
-`wake_word` phrase, and use normalized 0–1 `volume` rather than raw PCM16 RMS.
-A wake request without nonempty string `claim_id` and `wake_word` receives
-`{"type":"error","error":"bad_wake"}` without closing the socket. Invalid
-optional numeric signals (non-numeric, non-finite, negative, or outside 0–1 for
-confidence/volume) are treated as missing; omit unavailable signals.
-
-`arbitrate_enabled` remains off by default. The policy default is now
-`wake_signal`; unknown settings, including the removed `proximity` policy, fall
-back to it. An explicitly configured legacy `first_to_endpoint` grants wake
-requests immediately and does not arbitrate transcripts. Select `wake_signal`
-to enable ranked recommendations. `start.device_id`, `area`, and `person` remain
-unsupported selection inputs.

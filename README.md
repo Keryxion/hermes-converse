@@ -105,7 +105,7 @@ request, is processed normally. The server does not elect from transcripts.
 With arbitration disabled, requests receive immediate grants. The legacy
 `first_to_endpoint` setting also grants immediately; unknown policies fall back
 to `wake_signal`. See [client spec.md](client%20spec.md) for the full protocol,
-examples, and migration details.
+and examples.
 
 **Smart Turn v3** (optional): with `endpoint_model: smart-turn-v3` the fixed silence endpoint
 becomes adaptive — on each candidate pause the model estimates whether the utterance sounds
