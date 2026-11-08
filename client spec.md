@@ -209,14 +209,16 @@ remains separate from the exact detected `wake_word` phrase.
 
 ### Cooperating client flows
 
-Start a **1500 ms** local monotonic deadline when sending `wake`. Buffer audio
+Start a **1000 ms** local monotonic deadline when sending `wake`. Buffer audio
 while awaiting the matching decision so the beginning of the request is kept.
+The one-second limit bounds audio-buffer memory on constrained clients such as
+arya-esp32.
 
 | outcome | client action |
 |---|---|
 | Matching `wake_grant` before the deadline | Stream buffered audio followed by live PCM. Handle ordinary turn frames and follow-up turns on the same socket. |
 | Matching `wake_deny` before the deadline | Discard buffered audio for this activation and resume wake detection. Keep the socket available. |
-| No matching decision within 1500 ms | Assume loss, discard this activation's buffered audio, and resume wake detection. No extra cancel or stop frame is needed. |
+| No matching decision within 1000 ms | Assume loss, discard this activation's buffered audio, and resume wake detection. No extra cancel or stop frame is needed. |
 | Late decision or decision for another `claim_id` | Ignore it. Never reactivate a timed-out or completed claim. |
 
 A later detection always gets a new `claim_id`. A grant does not require audio:
