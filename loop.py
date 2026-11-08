@@ -160,10 +160,7 @@ class CancelTurn:
 
 
 class Utterance(str):
-    """A transcript carrying the :mod:`tracing` recorder of the capture that produced it. It is a
-    ``str``, so everything that reads the queue as plain transcripts keeps working."""
-
-    recorder: Any
+    """A transcript carrying the tracing recorder of its audio capture."""
 
     def __new__(cls, text: str, recorder: Any) -> "Utterance":
         self = super().__new__(cls, text)
@@ -318,7 +315,7 @@ class ConverseSession:
                 self._capturing = True
                 self._cancelled.clear()  # fresh capture: an idle cancel must not poison it
                 try:
-                    transcript = self._capture_and_transcribe(recorder)
+                    transcript, _volume = self._capture_and_transcribe(recorder)
                 finally:
                     self._capturing = False
                 # A cancelled capture is discarded: no turn runs on it, the session stays alive.
@@ -407,8 +404,10 @@ class ConverseSession:
         self._playing.clear()
         self._interrupted.set()
 
-    def _capture_and_transcribe(self, recorder: Optional[PhaseRecorder] = None) -> str:
-        """Endpoint the utterance from the pre-roll and return its transcript."""
+    def _capture_and_transcribe(self, recorder: Optional[PhaseRecorder] = None) -> tuple[str, float]:
+        """Endpoint the utterance from the pre-roll and return ``(transcript, volume)`` — ``volume``
+        is the captured audio's RMS loudness (:func:`vad.utterance_volume`). Wake
+        selection uses only client-reported signals and never gates this capture."""
         np = self._np
         recorder = recorder or PhaseRecorder()
         silence_rms = max(float(vad.SILENCE_RMS_THRESHOLD),
@@ -416,10 +415,10 @@ class ConverseSession:
         with recorder.phase("voice.capture") as cap:
             if self._turn_detector is not None:
                 cap.set(**{"endpoint.mode": "smart_turn"})
-                wav_path = self._capture_adaptive(silence_rms)
+                wav_path, volume = self._capture_adaptive(silence_rms)
             else:
                 cap.set(**{"endpoint.mode": "fixed"})
-                wav_path = vad.capture_until_quiet(
+                wav_path, volume = vad.capture_until_quiet(
                     self.stream, np, self._block, self._pre_roll,
                     endpoint_blocks=self._endpoint_blocks, max_blocks=self._max_blocks,
                     sample_rate=self._input_rate, silence_rms=silence_rms)
@@ -433,12 +432,12 @@ class ConverseSession:
             finally:
                 vad.unlink_quietly(wav_path)
             stt.set(**{"stt.transcript_chars": len(transcript)})
-        return transcript
+        return transcript, volume
 
-    def _capture_adaptive(self, silence_rms: float) -> str:
+    def _capture_adaptive(self, silence_rms: float) -> tuple[str, float]:
         """Semantic endpoint: mirror the fixed-silence capture, but on reaching a candidate pause ask
         Smart Turn whether the utterance *sounds* finished; hold (keep listening) when it doesn't,
-        bounded by ``MAX_ENDPOINT_HOLDS`` and the utterance cap. Returns a WAV path."""
+        bounded by ``MAX_ENDPOINT_HOLDS`` and the utterance cap. Returns ``(wav_path, volume)``."""
         np = self._np
         frames = list(self._pre_roll)
         quiet = 0
@@ -470,7 +469,8 @@ class ConverseSession:
             vad.vad_log(f"smart-turn: p={prob:.3f} < {self._endpoint_threshold:.2f} -> hold "
                         f"(keep listening, {holds}/{MAX_ENDPOINT_HOLDS})")
             quiet = 0  # keep the mic open for another window
-        return vad.write_wav(np, np.concatenate(frames, axis=0), sample_rate=self._input_rate)
+        audio = np.concatenate(frames, axis=0)
+        return vad.write_wav(np, audio, sample_rate=self._input_rate), vad.utterance_volume(np, audio)
 
     def _frames_to_f32_16k(self, frames: list) -> Any:
         """Concatenate int16 capture blocks into a 16 kHz mono float32 array for Smart Turn."""
@@ -634,6 +634,7 @@ async def drive_converse_turns(
     BARGE-IN: a VAD trip while playing stops TTS playback (``session`` sets ``tts_stop``), we emit
     ``interrupted``, and — when the host provides ``interrupt_turn`` — the in-flight agent turn is
     cancelled so it stops generating / firing tools.
+
     """
     d = _Driver(session=session, synth=synth, cap=cap, loop=loop, send_json=send_json,
                 send_bytes=send_bytes, run_turn=run_turn, history=history,

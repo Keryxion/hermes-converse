@@ -56,8 +56,9 @@ def test_adaptive_commits_immediately_when_turn_sounds_complete():
     det = _ScriptedDetector([0.95])
     session = _adaptive_session(det)
     _feed_silence(session, session._endpoint_blocks + 4)
-    wav_path = session._capture_adaptive(silence_rms=float(vad.SILENCE_RMS_THRESHOLD))
+    wav_path, volume = session._capture_adaptive(silence_rms=float(vad.SILENCE_RMS_THRESHOLD))
     assert det.calls == 1
+    assert volume >= 0
     with wave.open(wav_path, "rb") as wf:
         assert wf.getnframes() > 0
     vad.unlink_quietly(wav_path)
@@ -67,7 +68,7 @@ def test_adaptive_holds_then_commits_capturing_more_audio():
     det = _ScriptedDetector([0.1, 0.2, 0.9])
     session = _adaptive_session(det)
     _feed_silence(session, session._endpoint_blocks * 4 + 4)
-    wav_path = session._capture_adaptive(silence_rms=float(vad.SILENCE_RMS_THRESHOLD))
+    wav_path, _volume = session._capture_adaptive(silence_rms=float(vad.SILENCE_RMS_THRESHOLD))
     assert det.calls == 3
     vad.unlink_quietly(wav_path)
 
@@ -76,7 +77,7 @@ def test_adaptive_gives_up_after_max_holds():
     det = _ScriptedDetector([0.0])
     session = _adaptive_session(det, max_blocks=500)
     _feed_silence(session, session._endpoint_blocks * 6 + 4)
-    wav_path = session._capture_adaptive(silence_rms=float(vad.SILENCE_RMS_THRESHOLD))
+    wav_path, _volume = session._capture_adaptive(silence_rms=float(vad.SILENCE_RMS_THRESHOLD))
     assert det.calls == MAX_ENDPOINT_HOLDS
     vad.unlink_quietly(wav_path)
 
@@ -99,7 +100,9 @@ def test_capture_and_transcribe_returns_transcript_and_unlinks_wav(tmp_path):
 
     session = _adaptive_session(_ScriptedDetector([0.9]), transcribe=_transcribe)
     _feed_silence(session, session._endpoint_blocks + 4)
-    assert session._capture_and_transcribe() == "hello there"
+    transcript, volume = session._capture_and_transcribe()
+    assert transcript == "hello there"
+    assert volume >= 0
     import os
     assert not os.path.exists(seen["path"])
 
@@ -110,7 +113,8 @@ def test_transcribe_failure_is_nothing_heard():
 
     session = _adaptive_session(_ScriptedDetector([0.9]), transcribe=_boom)
     _feed_silence(session, session._endpoint_blocks + 4)
-    assert session._capture_and_transcribe() == ""
+    transcript, _volume = session._capture_and_transcribe()
+    assert transcript == ""
 
 
 # ── ConverseSession barge-in / playing flag ──
@@ -657,7 +661,8 @@ def test_session_cancel_discards_captured_transcript():
     # Endpoint immediately with silence so capture returns.
     _feed_silence(session, session._endpoint_blocks + 4)
     # Replicate _run's post-capture discard: cancelled -> transcript not queued.
-    transcript = session._capture_and_transcribe()
+    transcript, volume = session._capture_and_transcribe()
+    assert volume >= 0
     assert transcript == "heard it"  # capture still ran, but ...
     assert session._cancelled.is_set()
     session._cancelled.clear()

@@ -98,12 +98,20 @@ def unlink_quietly(path: Optional[str]) -> None:
             os.unlink(path)
 
 
+def utterance_volume(np: Any, audio: Any) -> float:
+    """The RMS loudness of a captured utterance, same int16-amplitude units as every threshold in
+    this module (a quiet room is ~30-80, normal speech ~3000-8000). This is a local
+    capture measurement, separate from the normalized 0–1 wake volume reported by clients."""
+    return rms(np, audio)
+
+
 def capture_until_quiet(stream: Any, np: Any, block: int, pre_roll: Any, *, endpoint_blocks: int,
                         max_blocks: int, sample_rate: int = SAMPLE_RATE,
-                        silence_rms: float = SILENCE_RMS_THRESHOLD) -> str:
+                        silence_rms: float = SILENCE_RMS_THRESHOLD) -> tuple[str, float]:
     """After a trip, read until *endpoint_blocks* of quiet (or *max_blocks*) and write pre-roll +
     capture to a WAV at *sample_rate*. *silence_rms* is the end-of-utterance threshold: raised above
-    the absolute 200 so an utterance ends when the level returns to a NOISY ambient floor."""
+    the absolute 200 so an utterance ends when the level returns to a NOISY ambient floor. Returns
+    ``(wav_path, volume)`` — see :func:`utterance_volume`."""
     frames: list[Any] = list(pre_roll)
     quiet = 0
     for _ in range(max_blocks):
@@ -112,7 +120,8 @@ def capture_until_quiet(stream: Any, np: Any, block: int, pre_roll: Any, *, endp
         quiet = quiet + 1 if rms(np, data) < silence_rms else 0
         if quiet >= endpoint_blocks:
             break
-    return write_wav(np, np.concatenate(frames, axis=0), sample_rate=sample_rate)
+    audio = np.concatenate(frames, axis=0)
+    return write_wav(np, audio, sample_rate=sample_rate), utterance_volume(np, audio)
 
 
 class BargeDetector:

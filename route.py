@@ -23,7 +23,9 @@ Protocol (unchanged from the in-core proposal):
              "name":?}`` then binary PCM16 mono frames at ``input_rate`` (30 ms blocks preferred),
            ``{"stop": true}`` to end, ``{"commit": true}`` to force an endpoint,
            ``{"type":"cancel","turn_id":?}`` to cancel the current turn and keep the session,
-           ``{"type":"drained","turn_id":?}`` when the reply's last audio has left the speaker
+           ``{"type":"drained","turn_id":?}`` when the reply's last audio has left the speaker,
+           ``{"type":"wake","claim_id":"...","wake_word":"...", ...}`` requests an
+           advisory wake recommendation; see ``client spec.md``. Audio is always processed normally.
   server → ``ready`` (rates, ``session_id``, clock-skew timestamps), ``transcript``, ``thinking``,
            ``speaking`` + binary PCM, ``interrupted``, ``turn_done`` (``expects_more`` in session
            mode), ``quiet``, ``stop_word``, ``error``.
@@ -35,6 +37,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import time
 import uuid
 from typing import Any, Awaitable, Callable, Optional
@@ -42,6 +45,7 @@ from typing import Any, Awaitable, Callable, Optional
 from aiohttp import ClientSession, ClientTimeout, web
 
 from .agent_client import RunsClient
+from .arbitrate import Arbitrator
 from .auth import offered_key_protocol, verify_api_key
 from .loop import ConverseSession, drive_converse_turns, parse_start_config, voice_system_prompt
 from .settings import Settings, load_settings
@@ -75,13 +79,38 @@ def loopback_base_url(adapter: Any, override: str = "") -> str:
 
 
 class ConverseRoute:
-    """The route handler with its two seams: how settings are read and where the API server is."""
+    """The route handler with its two seams: how settings are read and where the API server is.
+
+    When cross-device arbitration is enabled, one :class:`~.arbitrate.Arbitrator` is shared by
+    every connection on this route to recommend a device for each wake activation.
+    """
 
     def __init__(self, *, settings_getter: Callable[..., Any], base_url_resolver: Callable[[], str],
                  profile_name: str = "default") -> None:
         self._settings_getter = settings_getter
         self._base_url = base_url_resolver
         self._profile_name = profile_name
+        self._arbitrator: Optional[Arbitrator] = None
+        self._arbitrator_lock = asyncio.Lock()
+
+    async def _arbitrator_for_settings(self, settings: Settings) -> Optional[Arbitrator]:
+        """Lazily create the shared arbitrator when arbitration is enabled."""
+        if not settings.arbitrate_enabled:
+            return None
+        async with self._arbitrator_lock:
+            if self._arbitrator is None:
+                from .arbitrate import LocalBus
+
+                self._arbitrator = Arbitrator(
+                    bus=LocalBus(),
+                    policy=settings.arbitrate_policy,
+                    wake_window=settings.arbitrate_wake_window_seconds,
+                )
+                logger.info(
+                    "converse: arbitration enabled (policy=%s, wake_window=%.2fs)",
+                    settings.arbitrate_policy, settings.arbitrate_wake_window_seconds,
+                )
+            return self._arbitrator
 
     def wire(self, app: web.Application) -> bool:
         """Add the route; False when the API server's router is already frozen (the plugin was
@@ -148,9 +177,15 @@ class ConverseRoute:
                 "server_recv_unix_ms": server_recv_unix_ms,
                 "server_send_unix_ms": int(time.time() * 1000),
             })
+            arbitrator = await self._arbitrator_for_settings(settings)
+            # A configured label is a prefix: each socket needs its own candidate identity.
+            device_id = f"{settings.arbitrate_device_id or 'device'}_{uuid.uuid4().hex}"
+            if arbitrator is not None:
+                await arbitrator.register(device_id)
             client = RunsClient(base_url, api_key, http=http, approval_choice=settings.approval_choice)
             await _serve(ws, session=session, synth=synth, cap=cap, client=client, settings=settings,
-                         name=name, quiet_interval=quiet_interval)
+                         name=name, quiet_interval=quiet_interval, arbitrator=arbitrator,
+                         device_id=device_id)
         return ws
 
 
@@ -176,6 +211,39 @@ def _resolve_session(settings: Settings, input_rate: int, output_rate: int, quie
         np, input_rate=input_rate, quiet_interval=quiet_interval, transcribe=_transcribe,
         endpoint_model=settings.endpoint_model, endpoint_threshold=settings.endpoint_threshold)
     return synth, cap, session
+
+
+def _wake_number(raw: Any, *, maximum: Optional[float] = None) -> Optional[float]:
+    # Missing or unusable optional signals lose their ranking tier.
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    try:
+        number = float(raw)
+    except (ValueError, OverflowError):
+        return None
+    if not math.isfinite(number) or number < 0 or (maximum is not None and number > maximum):
+        return None
+    return number
+
+
+async def _wake_response(frame: dict, *, arbitrator: Optional[Arbitrator], device_id: str) -> dict:
+    """Answer a cooperative claim without changing any audio/turn state."""
+    claim_id, wake_word = frame.get("claim_id"), frame.get("wake_word")
+    if (not isinstance(claim_id, str) or not claim_id.strip()
+            or not isinstance(wake_word, str) or not wake_word.strip()):
+        return {"type": "error", "error": "bad_wake"}
+    granted, winner = True, None
+    if arbitrator is not None:
+        granted, winner, _ = await arbitrator.claim_wake(
+            device_id, claim_id=claim_id, wake_word=wake_word,
+            confidence=_wake_number(frame.get("confidence"), maximum=1),
+            heard_at=_wake_number(frame.get("heard_at")),
+            volume=_wake_number(frame.get("volume"), maximum=1))
+    reply = {"type": "wake_grant" if granted else "wake_deny",
+             "claim_id": claim_id, "wake_word": wake_word}
+    if not granted and winner is not None:
+        reply["winner_device_id"] = winner
+    return reply
 
 
 async def _fail(ws: web.WebSocketResponse, error: str, code: int) -> None:
@@ -212,7 +280,9 @@ async def _await_start_frame(ws: web.WebSocketResponse, *,
 
 
 async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: Any, cap: int,
-                 client: RunsClient, settings: Settings, name: str, quiet_interval: float) -> None:
+                 client: RunsClient, settings: Settings, name: str, quiet_interval: float,
+                 arbitrator: Optional[Arbitrator] = None,
+                 device_id: str = "") -> None:
     """Run the client pump and the turn driver until the socket ends; always stop the live run."""
     loop = asyncio.get_running_loop()
     session.start()
@@ -220,6 +290,14 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
     session_id = f"voice_{uuid.uuid4().hex}"
     history: list[dict[str, str]] = []
     allow_signoff = quiet_interval > 0
+    wake_tasks: set[asyncio.Task] = set()
+
+    async def _reply_wake(frame: dict) -> None:
+        try:
+            reply = await _wake_response(frame, arbitrator=arbitrator, device_id=device_id)
+            await ws.send_json(reply)
+        except Exception:
+            logger.debug("converse wake reply failed", exc_info=True)
 
     async def _pump_client() -> None:
         try:
@@ -241,6 +319,11 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                         session.notify_drained(frame.get("turn_id"))
                     if frame.get("type") == "cancel":
                         session.cancel(frame.get("turn_id"))
+                    if frame.get("type") == "wake":
+                        # Do not block PCM, cancel, stop, or a new claim while an election runs.
+                        task = asyncio.create_task(_reply_wake(frame))
+                        wake_tasks.add(task)
+                        task.add_done_callback(wake_tasks.discard)
                 elif msg.type in (web.WSMsgType.CLOSE, web.WSMsgType.ERROR):
                     break
         except Exception:
@@ -266,7 +349,8 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
             quiet_interval=quiet_interval, interrupt_turn=_interrupt_turn,
             turn_timeout=settings.turn_timeout, tail_fallback=settings.tail_fallback,
             max_tts_chars=settings.max_tts_chars, stop_phrases=settings.stop_phrases,
-            end_phrases=settings.end_phrases)
+            end_phrases=settings.end_phrases,
+        )
 
     pump = asyncio.ensure_future(_pump_client())
     driver = asyncio.ensure_future(_drive_turns())
@@ -288,6 +372,12 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
         session.stop()
         pump.cancel()
         driver.cancel()
+        for task in wake_tasks:
+            task.cancel()
+        await asyncio.gather(pump, driver, *wake_tasks, return_exceptions=True)
+        if arbitrator is not None:
+            with contextlib.suppress(Exception):
+                await arbitrator.unregister(device_id)
         with contextlib.suppress(Exception):
             await client.stop()  # a socket that drops mid-turn must not orphan the run
         with contextlib.suppress(Exception):

@@ -57,7 +57,9 @@ Client control frames: `{"stop": true}` ends the session, `{"commit": true}` for
 utterance to endpoint, `{"type": "cancel", "turn_id": "..."}` cancels the current turn while
 keeping the socket, session and history alive, `{"type": "drained", "turn_id": "..."}` says the
 reply's last audio has left the speaker (the server holds the VAD until then so its own echo is
-never transcribed).
+never transcribed),
+`{"type": "wake", "claim_id": "...", "wake_word": "..."}` requests an advisory wake decision
+(see below) — send it when the detector fires, then buffer audio while awaiting the decision.
 
 **Session mode** (`quiet_interval` > 0) is for wake-word devices: the server reports quiet in
 *received* audio (never wall-clock, so a held-open socket never accrues phantom quiet), ends the
@@ -81,8 +83,29 @@ plugin settings form):
 | `endpoint_model`, `endpoint_threshold` | off, `0.5` | Smart Turn v3 semantic endpointer (see below) |
 | `approval_choice` | `deny` | what a voice turn answers when the agent asks for a command approval |
 | `api_base_url` | `""` | loopback URL of the API server when it cannot be derived from the listener |
+| `arbitrate_enabled` | `false` | enable advisory wake selection for cooperating clients |
+| `arbitrate_policy` | `wake_signal` | rank wake claims; legacy `first_to_endpoint` grants immediately without selection |
+| `arbitrate_device_id` | `""` | optional label prefix for server-generated unique socket identifiers |
+| `arbitrate_wake_window_seconds` | `0.25` | how long the arbitrator collects concurrent wake claims for the same wake word before electing the primary device |
 
 STT and TTS come from your normal Hermes `stt.*` and `tts.*` configuration.
+
+**Cooperative wake selection.** With `arbitrate_enabled: true` and the default
+`wake_signal` policy, devices send a `wake` frame with a client-generated `claim_id`,
+the exact detected `wake_word` phrase, and optional `confidence` (0–1), normalized
+RMS `volume` (0–1), and `heard_at` (Unix milliseconds). Reports for the same phrase
+within a 250 ms window compete: highest confidence, then highest volume, then
+earliest detection time, then arrival order. The server echoes the request ID
+in `wake_grant` or `wake_deny`.
+
+Clients buffer audio while waiting, assume loss after **1000 ms**, and ignore
+late decisions. A recommendation covers the activation and its follow-up
+conversation. It is advisory: audio streamed after a denial, or without any wake
+request, is processed normally. The server does not elect from transcripts.
+With arbitration disabled, requests receive immediate grants. The legacy
+`first_to_endpoint` setting also grants immediately; unknown policies fall back
+to `wake_signal`. See [client spec.md](client%20spec.md) for the full protocol,
+and examples.
 
 **Smart Turn v3** (optional): with `endpoint_model: smart-turn-v3` the fixed silence endpoint
 becomes adaptive — on each candidate pause the model estimates whether the utterance sounds
@@ -101,6 +124,7 @@ API-server client.
 |---|---|
 | `route.py` | the WebSocket handler, auth flow and the per-connection wiring |
 | `loop.py` | the mic shim, the VAD/STT session worker, the turn driver (sentence-by-sentence TTS, barge-in, session mode) |
+| `arbitrate.py` | advisory selection among wake claims; audio processing is independent |
 | `agent_client.py` | the Runs API client: idempotent run creation, SSE with replay-safe sequence tracking, stop, approval answers |
 | `auth.py` | key verification through the API server's own `/v1/capabilities` |
 | `vad.py` | the barge/onset detector, endpointer and WAV capture |

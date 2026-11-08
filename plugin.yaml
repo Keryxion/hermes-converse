@@ -72,3 +72,20 @@ config_schema:
     type: str
     default: ""
     description: "Loopback base URL of this API server ('' = derived from the listener, e.g. http://127.0.0.1:8642)."
+  arbitrate_enabled:
+    type: bool
+    default: false
+    description: "Enable advisory wake selection for cooperating clients; streamed audio is always processed."
+  arbitrate_policy:
+    type: str
+    choices: [first_to_endpoint, wake_signal]
+    default: wake_signal
+    description: "wake_signal ranks exact-phrase wake claims by confidence, normalized volume, detection time, then arrival order. Legacy first_to_endpoint grants immediately."
+  arbitrate_device_id:
+    type: str
+    default: ""
+    description: "Optional label prefix for unique server-generated socket device ids."
+  arbitrate_wake_window_seconds:
+    type: float
+    default: 0.25
+    description: "How long the arbitrator collects concurrent wake claims for the same wake word before electing the primary device."

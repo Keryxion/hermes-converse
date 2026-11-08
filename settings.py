@@ -6,14 +6,24 @@ the getter rather than the context so tests (and the CLI) can feed it a dict.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from .phrases import normalize_phrases
+from .arbitrate import POLICY_FIRST_TO_ENDPOINT, POLICY_WAKE_SIGNAL
 
 DEFAULT_NAME = "Sakura"
 DEFAULT_STOP_PHRASES = ("stop", "cancel")
 DEFAULT_END_PHRASES = ("over and out",)
+# ── cross-device voice arbitration ────────────────────────────────────────────────────────
+DEFAULT_ARBITRATE_POLICY = POLICY_WAKE_SIGNAL
+DEFAULT_ARBITRATE_DEVICE_ID = None  # ''/None = auto-generate from socket
+DEFAULT_ARBITRATE_ENABLED = False
+# How long the arbitrator collects concurrent wake claims for the same wake word before electing
+# the primary device. Long enough to cover detector jitter across devices, short enough that a
+# client is not left waiting before it starts streaming.
+DEFAULT_ARBITRATE_WAKE_WINDOW_SECONDS = 0.25
 # Hard cap on a single agent turn (LLM think + stream). A turn that produces nothing — an LLM call
 # hung with no request timeout — otherwise never ends: no reply, no turn_done, so the client is stuck
 # "thinking" forever. The driver stops the run at this deadline, sends an error + turn_done, and
@@ -45,6 +55,11 @@ class Settings:
     endpoint_threshold: float = DEFAULT_ENDPOINT_THRESHOLD
     approval_choice: str = "deny"
     api_base_url: str = ""
+    # Cooperative wake recommendations; never suppress streamed audio.
+    arbitrate_enabled: bool = DEFAULT_ARBITRATE_ENABLED
+    arbitrate_policy: str = DEFAULT_ARBITRATE_POLICY
+    arbitrate_device_id: Optional[str] = DEFAULT_ARBITRATE_DEVICE_ID
+    arbitrate_wake_window_seconds: float = DEFAULT_ARBITRATE_WAKE_WINDOW_SECONDS
 
 
 def _number(raw: Any, default: float) -> float:
@@ -64,6 +79,19 @@ def _model_enabled(raw: Any) -> bool:
     return bool(raw) and str(raw).strip().lower() not in ("", "none", "false", "off", "0")
 
 
+def _arbitrate_policy(raw: Any) -> str:
+    """Coerce *raw* to a known arbitrate policy, falling back to the default on anything unknown."""
+    policy = str(raw or DEFAULT_ARBITRATE_POLICY).strip()
+    if policy not in (POLICY_FIRST_TO_ENDPOINT, POLICY_WAKE_SIGNAL):
+        return DEFAULT_ARBITRATE_POLICY
+    return policy
+
+
+def _wake_window(raw: Any) -> float:
+    value = _number(raw, DEFAULT_ARBITRATE_WAKE_WINDOW_SECONDS)
+    return value if math.isfinite(value) and value >= 0 else DEFAULT_ARBITRATE_WAKE_WINDOW_SECONDS
+
+
 def load_settings(get: Getter) -> Settings:
     """Build :class:`Settings` from ``get(key, default)`` (``ctx.get_config`` or a dict's ``.get``)."""
     approval = str(get("approval_choice", "deny") or "deny").strip().lower()
@@ -78,7 +106,12 @@ def load_settings(get: Getter) -> Settings:
         end_phrases=normalize_phrases(get("end_phrases", DEFAULT_END_PHRASES), DEFAULT_END_PHRASES),
         endpoint_model=_model_enabled(get("endpoint_model", "")),
         endpoint_threshold=min(1.0, max(0.0, _number(get("endpoint_threshold", DEFAULT_ENDPOINT_THRESHOLD),
-                                                      DEFAULT_ENDPOINT_THRESHOLD))),
+                                                       DEFAULT_ENDPOINT_THRESHOLD))),
         approval_choice=approval if approval in APPROVAL_CHOICES else "deny",
         api_base_url=str(get("api_base_url", "") or "").strip().rstrip("/"),
+        arbitrate_enabled=_model_enabled(get("arbitrate_enabled", DEFAULT_ARBITRATE_ENABLED)),
+        arbitrate_policy=_arbitrate_policy(get("arbitrate_policy", DEFAULT_ARBITRATE_POLICY)),
+        arbitrate_device_id=_text(get("arbitrate_device_id", DEFAULT_ARBITRATE_DEVICE_ID)),
+        arbitrate_wake_window_seconds=_wake_window(
+            get("arbitrate_wake_window_seconds", DEFAULT_ARBITRATE_WAKE_WINDOW_SECONDS)),
     )
