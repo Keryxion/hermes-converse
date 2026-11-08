@@ -7,7 +7,7 @@ GET /v1/audio/converse
 ```
 
 Each Arya has a name and uses an existing Hermes conversation, titled
-`Arya: <name>` by default. A WebSocket carries microphone PCM to the server,
+`<assistant_name>: <device_name>` by default. A WebSocket carries microphone PCM to the server,
 which handles voice activity detection, endpointing, speech-to-text, and the
 agent turn, then streams reply PCM back. Conversation history persists across
 turns and reconnects; closing the socket does not end the Hermes conversation.
@@ -50,7 +50,7 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 | `input_rate` | sample rate of the PCM you'll send (8000–48000, default 16000) |
 | `output_rate` | sample rate of PCM the server sends back (default 24000) |
 | `quiet_interval` | session mode: seconds of silence between turns (0 = off) |
-| `conversation` | Optional Hermes conversation title, used with negotiated conversation-v1; defaults to `Arya: <device name>` (section 11). |
+| `conversation` | Optional Hermes conversation title, used with negotiated conversation-v1; defaults to `<assistant_name>: <device_name>` (section 11). |
 | `device_name` | The configured device label, such as `Den Echo`; required for named-device connections (section 11). |
 | `assistant_name` | What you call the assistant, such as `Arya` or `Alexa`, without “Hey”. Used in the voice system prompt; separate from the device label, such as `Den Echo`. |
 
@@ -595,7 +595,7 @@ choosing another conversation does not change what you call the assistant.
 
 Send `assistant_name`, `device_name`, the device attachment credential, and
 optionally a conversation name in `start`. `device_name` must match the device
-label configured during setup. If `conversation` is omitted, use `Arya: <device name>`.
+label configured during setup. If `conversation` is omitted, use `<assistant_name>: <device_name>`.
 
 ```json
 {"type":"start","key":"<API_SERVER_KEY>","input_rate":16000,"output_rate":24000,"assistant_name":"Arya","device_name":"Den Echo",
@@ -617,7 +617,8 @@ the conversation name actually opened:
 
 `ready.extensions.arya-v1.device_name` is the device label (`Den Echo` here), not
 the assistant name supplied in `start.assistant_name` (`Arya` here). The default
-conversation uses the device label: `Arya: Den Echo`.
+conversation combines both fields: `Arya: Den Echo` (or `Alexa: Den Echo`
+when `assistant_name` is `Alexa`).
 
 `session_id` identifies this socket for diagnostics. `recipient_id` identifies
 the Arya across reconnects and renames. `attachment_id` identifies its current
@@ -666,6 +667,6 @@ The requesting device receives the confirmation; the destination device rings.
 Changing conversation or renaming either device does not move an existing timer.
 A timer received while another conversation is open does not switch that
 conversation. Renaming Kitchen changes its default conversation's display name
-to `Arya: <new name>` while retaining its history; custom conversation names are
+to `<assistant_name>: <new device_name>` while retaining its history; custom conversation names are
 unchanged. After a rename, use the new name from `ready`, or omit `conversation`
 to open the renamed default.

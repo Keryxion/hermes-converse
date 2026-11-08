@@ -11,7 +11,8 @@ session reference. Names must be unique in a household. Device names identify
 destinations; conversation names select context. Neither is a credential.
 `start.assistant_name` is the assistant's spoken name for the voice system prompt, often
 related to the wake word. It is not the device label and must not be used to
-identify a recipient or choose its default conversation. Several devices may
+identify a recipient. It supplies the assistant part of the default
+conversation title, `<assistant_name>: <device_name>`. Several devices may
 share that assistant name. `start.device_name` is the configured device label;
 check it against the authenticated device record, not against the assistant name. For example, a device labeled `Den Echo` can answer
 to `Arya` and use the default conversation `Arya: Den Echo`.
@@ -29,7 +30,7 @@ Runs; clients only need the conversation name. Do not expose storage or lineage
 mechanics through the client protocol.
 
 At start, resolve the supplied conversation title, defaulting to
-`Arya: <device name>`. Reuse an authorized compatible session with that title;
+`<assistant_name>: <device_name>`. Reuse an authorized compatible session with that title;
 create it only when the lookup confirms it is absent. On a concurrent creation
 conflict, re-read the winner through Hermes. A failed lookup, unavailable store,
 or inaccessible/incompatible title must not silently create another history.
