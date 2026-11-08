@@ -11,6 +11,7 @@ import asyncio
 import logging
 import math
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -19,7 +20,7 @@ logger = logging.getLogger(__name__)
 POLICY_FIRST_TO_ENDPOINT = "first_to_endpoint"  # legacy compatibility: grant immediately
 POLICY_WAKE_SIGNAL = "wake_signal"
 DEFAULT_POLICY = POLICY_WAKE_SIGNAL
-DEFAULT_WAKE_WINDOW = 0.25
+DEFAULT_WAKE_WINDOW = 0.75
 
 
 @dataclass(frozen=True)
@@ -96,6 +97,7 @@ class LocalBus(Bus):
 
 class _WakeElection:
     def __init__(self, wake_word: str, created_at: float) -> None:
+        self.election_id = uuid.uuid4().hex
         self.wake_word = wake_word
         self.created_at = created_at
         self.claims: list[WakeClaim] = []
@@ -153,11 +155,25 @@ class Arbitrator:
                 election = _WakeElection(wake_word, claim.claimed_at)
                 self._wake_open[wake_word] = election
                 asyncio.create_task(self._finalize_wake(election))
+                logger.info("arbitrate: wake election opened election_id=%s window_ms=%.1f",
+                            election.election_id, self.wake_window * 1000)
             election.claims.append(claim)
+            # Correlate timing without recording wake phrases, audio, or transcripts.
+            logger.info(
+                "arbitrate: wake claim received election_id=%s device_id=%r claim_id=%r "
+                "received_unix_ms=%d received_monotonic=%.6f election_age_ms=%.1f",
+                election.election_id, device_id, claim_id, int(time.time() * 1000),
+                claim.claimed_at, (claim.claimed_at - election.created_at) * 1000)
         try:
             await self.bus.publish(claim)
             await election.done.wait()
             winner = election.winner
+            logger.info(
+                "arbitrate: wake decision election_id=%s device_id=%r claim_id=%r "
+                "decision=%s winner_device_id=%r wait_ms=%.1f",
+                election.election_id, device_id, claim_id,
+                "wake_grant" if winner is claim else "wake_deny",
+                winner.device_id if winner else None, (time.monotonic() - claim.claimed_at) * 1000)
             return winner is claim, winner.device_id if winner else None, claim_id
         finally:
             # A disconnected/cancelled requester must not beat live claimants.
@@ -170,6 +186,13 @@ class Arbitrator:
             async with self._lock:
                 if election.claims:
                     election.winner = min(election.claims, key=self._rank_wake_signal)
+                logger.info(
+                    "arbitrate: wake election closed election_id=%s claimants=%d "
+                    "winner_device_id=%r winner_claim_id=%r elapsed_ms=%.1f",
+                    election.election_id, len(election.claims),
+                    election.winner.device_id if election.winner else None,
+                    election.winner.claim_id if election.winner else None,
+                    (time.monotonic() - election.created_at) * 1000)
         finally:
             if self._wake_open.get(election.wake_word) is election:
                 self._wake_open.pop(election.wake_word, None)

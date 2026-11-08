@@ -152,4 +152,37 @@ def test_default_policy_is_ranked_wake_selection(raw):
 
 @pytest.mark.parametrize('raw', [float('nan'), float('inf'), -1, 'invalid'])
 def test_invalid_window_uses_default(raw):
-    assert load_settings({'arbitrate_wake_window_seconds': raw}.get).arbitrate_wake_window_seconds == 0.25
+    assert load_settings({'arbitrate_wake_window_seconds': raw}.get).arbitrate_wake_window_seconds == 0.75
+
+
+def test_default_window_is_shared_by_settings_and_arbitrator():
+    from hermes_converse.settings import Settings
+
+    assert Arbitrator().wake_window == Settings().arbitrate_wake_window_seconds == 0.75
+    assert load_settings({}.get).arbitrate_wake_window_seconds == 0.75
+    assert load_settings({'arbitrate_wake_window_seconds': 0.25}.get).arbitrate_wake_window_seconds == 0.25
+
+
+@pytest.mark.asyncio
+async def test_logs_correlate_claims_elections_and_decisions_without_phrase(caplog):
+    import logging
+
+    caplog.set_level(logging.INFO, logger='hermes_converse.arbitrate')
+    arb = await _arbitrator()
+    await _pair(arb)
+    await arb.claim_wake('d1', claim_id='later', wake_word='Hey Arya')
+    messages = [r.getMessage() for r in caplog.records]
+    opened = [m for m in messages if 'wake election opened' in m]
+    assert len(opened) == 2
+    election_ids = [m.split('election_id=')[1].split()[0] for m in opened]
+    assert election_ids[0] != election_ids[1]
+    for event in ('wake claim received', 'wake decision'):
+        entries = [m for m in messages if event in m]
+        assert len(entries) == 3
+        assert sum(f'election_id={election_ids[0]}' in m for m in entries) == 2
+        assert sum(f'election_id={election_ids[1]}' in m for m in entries) == 1
+    assert sum('wake election closed' in m for m in messages) == 2
+    assert any('received_unix_ms=' in m and 'election_age_ms=' in m for m in messages)
+    assert any('decision=wake_deny' in m and "claim_id='client-2'" in m for m in messages)
+    assert any('decision=wake_grant' in m and 'wait_ms=' in m for m in messages)
+    assert 'Hey Arya' not in caplog.text

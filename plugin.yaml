@@ -87,5 +87,5 @@ config_schema:
     description: "Optional label prefix for unique server-generated socket device ids."
   arbitrate_wake_window_seconds:
     type: float
-    default: 0.25
+    default: 0.75
     description: "How long the arbitrator collects concurrent wake claims for the same wake word before electing the primary device."

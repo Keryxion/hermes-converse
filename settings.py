@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from .phrases import normalize_phrases
-from .arbitrate import POLICY_FIRST_TO_ENDPOINT, POLICY_WAKE_SIGNAL
+from .arbitrate import DEFAULT_WAKE_WINDOW, POLICY_FIRST_TO_ENDPOINT, POLICY_WAKE_SIGNAL
 
 DEFAULT_NAME = "Sakura"
 DEFAULT_STOP_PHRASES = ("stop", "cancel")
@@ -23,7 +23,7 @@ DEFAULT_ARBITRATE_ENABLED = False
 # How long the arbitrator collects concurrent wake claims for the same wake word before electing
 # the primary device. Long enough to cover detector jitter across devices, short enough that a
 # client is not left waiting before it starts streaming.
-DEFAULT_ARBITRATE_WAKE_WINDOW_SECONDS = 0.25
+DEFAULT_ARBITRATE_WAKE_WINDOW_SECONDS = DEFAULT_WAKE_WINDOW
 # Hard cap on a single agent turn (LLM think + stream). A turn that produces nothing — an LLM call
 # hung with no request timeout — otherwise never ends: no reply, no turn_done, so the client is stuck
 # "thinking" forever. The driver stops the run at this deadline, sends an error + turn_done, and
