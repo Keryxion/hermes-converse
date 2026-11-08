@@ -369,12 +369,22 @@ class Arbitrator:
         claim so the client can correlate the response with the wake hit that produced it. A claim
         that arrives after the window closed starts a *new* election — it is a new spoken wake hit,
         not a late member of the old one.
+
+        Only consulted under ``wake_signal`` (see the module docstring). Under
+        ``first_to_endpoint`` this is a no-op that always grants immediately: the real election
+        still happens later at ``claim_turn`` time (first claim wins), exactly as if the device had
+        never sent a wake frame at all.
         """
         async with self._lock:
             device = self._devices.get(device_id)
             if device is None:
                 logger.warning("arbitrate: wake claim from unregistered device %s", device_id)
                 return False, None, ""
+            claim = device.wake_claim(
+                wake_word=wake_word, confidence=confidence, heard_at=heard_at, volume=volume,
+            )
+            if self.policy != POLICY_WAKE_SIGNAL:
+                return True, device_id, claim.claim_id
             now = time.monotonic()
             election = self._wake_open.get(wake_word)
             if election is None or now - election.created_at > self.wake_window:
@@ -383,9 +393,6 @@ class Arbitrator:
                 # Created under the lock; every claim appended below is in the list before the
                 # finalizer can acquire the lock and elect.
                 asyncio.ensure_future(self._finalize_wake(election))
-            claim = device.wake_claim(
-                wake_word=wake_word, confidence=confidence, heard_at=heard_at, volume=volume,
-            )
             election.claims.append(claim)
         await self.bus.publish(claim)
         await election.done.wait()

@@ -388,6 +388,31 @@ async def test_claim_wake_missing_fields_first_claim_wins():
 
 
 @pytest.mark.asyncio
+async def test_claim_wake_under_first_to_endpoint_always_grants_and_defers_to_claim_turn():
+    """Under ``first_to_endpoint`` (the default), ``claim_wake`` must not run the wake_signal
+    confidence/volume/heard_at election: every claimant is granted immediately regardless of its
+    signal strength, and the real election still happens later at ``claim_turn`` time by claim
+    order — not by whoever had the better wake-word hit."""
+    arb = Arbitrator(bus=LocalBus(), policy=POLICY_FIRST_TO_ENDPOINT, wake_window=0.1)
+    await arb.register("d1")
+    await arb.register("d2")
+
+    # d2 has the much stronger wake signal, but that must not matter under first_to_endpoint.
+    g1, w1, c1 = await arb.claim_wake("d1", wake_word="arya", confidence=0.1, heard_at=500.0)
+    g2, w2, c2 = await arb.claim_wake("d2", wake_word="arya", confidence=0.99, heard_at=100.0)
+    assert (g1, w1) == (True, "d1")
+    assert (g2, w2) == (True, "d2")
+    assert c1 and c2  # both still get a claim id to correlate the grant with
+
+    # The real election happens at claim_turn, by claim order: d2 claims first this time and
+    # must win even though it lost on every wake_signal tier above.
+    granted2, winner2 = await arb.claim_turn("d2", "utt-1", "hello")
+    granted1, winner1 = await arb.claim_turn("d1", "utt-1", "hello")
+    assert (granted2, winner2) == (True, "d2")
+    assert (granted1, winner1) == (False, "d2")
+
+
+@pytest.mark.asyncio
 async def test_claim_wake_late_claim_starts_new_election():
     """A claim that arrives after the window closed starts a fresh election for the same wake
     word — it never joins the old one as a late claimant."""
