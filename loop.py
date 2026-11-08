@@ -715,17 +715,14 @@ def parse_start_config(frame: dict[str, Any], *, default_name: str = DEFAULT_NAM
 
 # Voice replies are spoken aloud — keep them short and speakable. Sent as the run's ``instructions``
 # (the ephemeral system prompt) so spoken replies don't balloon to full chat length.
-VOICE_BREVITY_PROMPT = (
+VOICE_PROMPT = (
     "You are in a live, low-latency voice conversation and your reply is spoken aloud. Speed "
     "matters: answer immediately with your first, most direct response — do not deliberate, "
     "plan, weigh options, or think out loud before answering. Keep it concise and conversational "
     "— at most 2-3 short sentences of plain spoken text, with no code blocks, markdown, lists, or "
     "URLs. If the request is unclear or you only caught fragments, ask one short clarifying "
-    "question instead of guessing or rambling."
-)
-
-VOICE_PROACTIVE_PROMPT = (
-    " This is a persistent conversation. It can send a spoken update later without a new user "
+    "question instead of guessing or rambling. "
+    "This is a persistent conversation. It can send a spoken update later without a new user "
     "message or wake word while its voice device is connected. For requested timers, reminders, "
     "follow-ups, or monitoring, use the scheduling tools actually available to you; do not "
     "simulate a timer by waiting in this turn or promise work that has not been scheduled. "
@@ -751,7 +748,7 @@ def voice_system_prompt(name: Optional[str] = None, *, allow_signoff: bool = Fal
     is given, the spoken-brevity rules, and — in session mode — the sign-off instruction (ending a
     reply with the first end phrase tells the server to end the current activation)."""
     name = (str(name).strip() if name is not None else "")
-    prompt = VOICE_BREVITY_PROMPT
+    prompt = VOICE_PROMPT
     if name:
         prompt = (
             f"Your name is {name}. People talk to you by voice and get your attention by saying "
@@ -774,7 +771,6 @@ def voice_system_prompt(name: Optional[str] = None, *, allow_signoff: bool = Fal
             "destination, use a routing-capable tool and clarify ambiguous labels; do not invent "
             "cross-device delivery or claim that it is supported when the tool cannot do it."
         )
-    prompt += VOICE_PROACTIVE_PROMPT
     if allow_signoff and end_phrases and end_phrases[0]:
         who = name or "the assistant"
         prompt += (

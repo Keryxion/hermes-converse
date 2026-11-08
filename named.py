@@ -24,28 +24,22 @@ class NamedError(Exception):
 
 
 def parse_names(frame: dict) -> tuple[str, str] | None:
-    """Negotiate arya-v1 without inventing credentials or a conversation override."""
-    extensions = frame.get('extensions', {})
-    if not isinstance(extensions, dict):
-        raise NamedError('bad_extension', 4402)
+    """Read the ordinary name fields without a conversation override."""
     if 'conversation' in frame:
-        raise NamedError('bad_extension', 4402)
-    if 'arya-v1' not in extensions:
-        if 'device_name' in frame:
-            raise NamedError('bad_extension', 4402)
+        raise NamedError('bad_start', 4400)
+    if 'assistant_name' not in frame and 'device_name' not in frame:
         return None
-    if (not isinstance(extensions['arya-v1'], dict) or extensions['arya-v1']
-            or any(key in frame for key in ('conversation_id', 'profile', 'name'))):
-        raise NamedError('bad_extension', 4402)
+    if any(key in frame for key in ('conversation_id', 'profile', 'name')):
+        raise NamedError('bad_start', 4400)
     names = []
     for key in ('assistant_name', 'device_name'):
         value = frame.get(key)
         if (not isinstance(value, str) or not value.strip() or len(value) > 98
                 or any(unicodedata.category(c).startswith('C') for c in value)):
-            raise NamedError('bad_extension', 4402)
+            raise NamedError('bad_start', 4400)
         names.append(unicodedata.normalize('NFC', ' '.join(value.split())))
     if len(': '.join(names)) > 100:
-        raise NamedError('bad_extension', 4402)
+        raise NamedError('bad_start', 4400)
     return names[0], names[1]
 
 

@@ -31,8 +31,7 @@ Dial `ws://<host>:<port>/v1/audio/converse` and send one `start` frame first:
 
 ```json
 {"type": "start", "key": "<API_SERVER_KEY>", "input_rate": 16000, "output_rate": 24000,
- "quiet_interval": 0, "assistant_name": "Alexa", "device_name": "Den Echo",
- "extensions": {"arya-v1": {}}}
+ "quiet_interval": 0, "assistant_name": "Arya", "device_name": "Den Echo"}
 ```
 
 A browser client can put the key in the WebSocket subprotocols instead (`hermes-voice-v1` plus
@@ -42,10 +41,11 @@ secret.
 
 `assistant_name` is what you call the assistant. `device_name` is the microphone/speaker label,
 unique within this server/profile. The server opens the Hermes conversation titled
-`Alexa: Den Echo`, reusing its history across reconnects and gateway restarts. The voice prompt
+`Arya: Den Echo`, reusing its history across reconnects and gateway restarts. The voice prompt
 explains both names, the default device destination, and proactive output through available
 scheduling tools. Configure the same names on reconnect; changing names does not migrate history.
-Wait for `ready.extensions.arya-v1` before treating named-device behavior as available.
+Wait for `ready` before streaming audio. It returns `assistant_name`, `device_name`, and
+`recipient_id` directly.
 
 For wake-word clients, detect the wake word locally, send `wake`, and buffer all microphone
 PCM while awaiting arbitration for up to **1000 ms**. Only a matching grant starts streaming:
@@ -104,7 +104,7 @@ require sending idle ambient audio. See [the client spec](client%20spec.md#handl
 for the full action contract.
 
 Named clients send names and the API key, without a conversation override or another credential.
-`ready.session_id` identifies this socket; `ready.extensions.arya-v1.recipient_id` identifies the
+`ready.session_id` identifies this socket; `ready.recipient_id` identifies the
 device for routing. A replacement closes the old socket with `4409 attachment_replaced` and
 settles its run before accepting new work. Uncertain admission or unfinished cancellation returns
 `conversation_busy`; retry rather than replaying an utterance whose outcome is unknown.
@@ -132,7 +132,7 @@ plugin settings form):
 
 | key | default | what it does |
 |---|---|---|
-| `name` | `Sakura` | the assistant's name in the voice prompt when the start frame has none |
+| `name` | `Arya` | the assistant's name in the voice prompt when the start frame has none |
 | `voice_model`, `voice_provider` | `""` | a voice-only model override sent with every run |
 | `turn_timeout_seconds` | `120` | a turn with no output for this long is stopped and reported |
 | `playback_tail_timeout_seconds` | `45` | how long to wait for the client's `drained` frame |

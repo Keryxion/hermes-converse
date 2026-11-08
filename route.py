@@ -316,8 +316,8 @@ class ConverseRoute:
         if named is not None:
             device, connection, history = named
             ready.pop('conversation_id')
-            ready['extensions'] = {'arya-v1': {'recipient_id': device.recipient_id,
-                                               'device_name': device.device_name}}
+            ready.update(recipient_id=device.recipient_id, assistant_name=device.assistant_name,
+                         device_name=device.device_name)
         await ws.send_json(ready)
         arbitrator = await self._arbitrator_for_settings(settings)
         # A configured label is a prefix: each socket needs its own candidate identity.

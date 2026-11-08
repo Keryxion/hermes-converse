@@ -11,7 +11,7 @@ from tests.test_route import API_KEY, Harness, _start_msg, _speech_then_silence_
 
 
 def frame(**overrides):
-    return {'assistant_name': 'Alexa', 'device_name': 'Den Echo', 'extensions': {'arya-v1': {}}, **overrides}
+    return {'assistant_name': 'Arya', 'device_name': 'Den Echo', **overrides}
 
 
 async def connect(client, **overrides):
@@ -23,26 +23,32 @@ async def connect(client, **overrides):
 @pytest.mark.parametrize('fields', [
     {'device_name': ''}, {'assistant_name': 42}, {'device_name': 'Den\nEcho'},
     {'device_name': 'x'*99}, {'assistant_name': 'x'*60, 'device_name': 'y'*60},
-    {'extensions': []}, {'extensions': {'arya-v1': {'attachment_token': 'wrong'}}},
-    {'extensions': {'arya-v1': None}}, {'extensions': {'arya-v1': []}},
-    {'extensions': {}, 'device_name': 'Den Echo'}, {'conversation': {}},
+    {'assistant_name': None}, {'device_name': None}, {'conversation': {}},
     {'conversation_id': 'other'}, {'name': 'old'}, {'profile': 'other'},
 ])
 def test_named_start_rejects_malformed_fields_and_overrides(fields):
-    with pytest.raises(NamedError, match='bad_extension'):
+    with pytest.raises(NamedError, match='bad_start'):
         parse_names(frame(**fields))
+
+
+@pytest.mark.parametrize('missing', ['assistant_name', 'device_name'])
+def test_both_names_are_required_together(missing):
+    start = frame()
+    start.pop(missing)
+    with pytest.raises(NamedError, match='bad_start'):
+        parse_names(start)
 
 
 def test_store_keeps_device_identity_and_separate_assistant_references(tmp_path):
     path = tmp_path/'devices.db'
     store = DeviceStore(path)
-    first = store.reserve('Alexa', 'Den Echo')
+    first = store.reserve('Arya', 'Den Echo')
     store.remember(first, 'saved')
     store.close()
     reopened = DeviceStore(path)
-    same = reopened.reserve('Alexa', 'Den Echo')
-    other_assistant = reopened.reserve('Arya', 'Den Echo')
-    other_device = reopened.reserve('Alexa', 'Kitchen')
+    same = reopened.reserve('Arya', 'Den Echo')
+    other_assistant = reopened.reserve('Nova', 'Den Echo')
+    other_device = reopened.reserve('Arya', 'Kitchen')
     assert same.recipient_id == first.recipient_id and same.session_id == 'saved'
     assert other_assistant.recipient_id == first.recipient_id and other_assistant.session_id is None
     assert other_device.recipient_id != first.recipient_id and other_device.session_id is None
@@ -56,18 +62,19 @@ async def test_names_select_title_and_identity_prompt_without_exposing_conversat
     async with Harness(fake, device_store=DeviceStore(tmp_path/'devices.db')) as client:
         ws, ready = await connect(client)
         assert ready['type'] == 'ready'
-        assert 'conversation_id' not in ready
-        recipient = ready['extensions']['arya-v1']
+        assert ready['assistant_name'] == 'Arya'
+        assert 'conversation_id' not in ready and 'extensions' not in ready
+        recipient = ready
         assert recipient['device_name'] == 'Den Echo' and recipient['recipient_id']
         assert len(fake.sessions) == 1
         cid, saved = next(iter(fake.sessions.items()))
-        assert saved['title'] == 'Alexa: Den Echo' and cid != ready['session_id']
+        assert saved['title'] == 'Arya: Den Echo' and cid != ready['session_id']
         await _audio_turn(ws)
         body = next(iter(fake.runs.values()))['body']
         assert body['session_id'] == cid
         prompt = body['instructions']
-        assert 'Your name is Alexa' in prompt
-        assert '"assistant_name": "Alexa"' in prompt and '"device_name": "Den Echo"' in prompt
+        assert 'Your name is Arya' in prompt
+        assert '"assistant_name": "Arya"' in prompt and '"device_name": "Den Echo"' in prompt
         assert 'physical microphone/speaker' in prompt and recipient['recipient_id'] in prompt
         assert 'pulse' in prompt and 'without a new user' in prompt
         await ws.close()
@@ -76,7 +83,7 @@ async def test_names_select_title_and_identity_prompt_without_exposing_conversat
 @pytest.mark.asyncio
 async def test_existing_title_is_reused_and_restart_keeps_same_history(tmp_path, monkeypatch):
     fake = _patch(monkeypatch)
-    fake.sessions['existing'] = {'id': 'existing', 'source': 'api_server', 'title': 'Alexa: Den Echo'}
+    fake.sessions['existing'] = {'id': 'existing', 'source': 'api_server', 'title': 'Arya: Den Echo'}
     fake.messages['existing'] = [{'role': 'user', 'content': 'Remember the blue lamp.'},
                                  {'role': 'assistant', 'content': 'I will.'}]
     path = tmp_path/'devices.db'
@@ -85,7 +92,7 @@ async def test_existing_title_is_reused_and_restart_keeps_same_history(tmp_path,
         async with Harness(fake, device_store=DeviceStore(path)) as client:
             ws, ready = await connect(client)
             assert ready['type'] == 'ready'
-            current = ready['extensions']['arya-v1']['recipient_id']
+            current = ready['recipient_id']
             assert recipient is None or recipient == current
             recipient = current
             await _audio_turn(ws)
@@ -100,8 +107,8 @@ async def test_two_devices_sharing_assistant_keep_separate_conversations(tmp_pat
     async with Harness(fake, device_store=DeviceStore(tmp_path/'devices.db')) as client:
         first, a = await connect(client)
         second, b = await connect(client, device_name='Kitchen')
-        assert a['extensions']['arya-v1']['recipient_id'] != b['extensions']['arya-v1']['recipient_id']
-        assert {s['title'] for s in fake.sessions.values()} == {'Alexa: Den Echo', 'Alexa: Kitchen'}
+        assert a['recipient_id'] != b['recipient_id']
+        assert {s['title'] for s in fake.sessions.values()} == {'Arya: Den Echo', 'Arya: Kitchen'}
         await first.close()
         await second.close()
 
@@ -117,7 +124,7 @@ async def test_replacement_closes_old_socket_before_admitting_new_audio(tmp_path
         assert (await closing).data == 4409
         assert first.close_code == 4409
         assert a['session_id'] != b['session_id']
-        assert a['extensions'] == b['extensions'] and len(fake.sessions) == 1
+        assert a['recipient_id'] == b['recipient_id'] and len(fake.sessions) == 1
         await _audio_turn(second)
         await second.close()
 
@@ -176,10 +183,10 @@ async def test_deleted_saved_history_is_not_replaced(tmp_path, monkeypatch):
 async def test_compressed_conversation_uses_public_continuation_and_routes_background_output(tmp_path, monkeypatch):
     fake = _patch(monkeypatch)
     store = DeviceStore(tmp_path/'devices.db')
-    dev = store.reserve('Alexa', 'Den Echo')
+    dev = store.reserve('Arya', 'Den Echo')
     store.remember(dev, 'root')
     fake.sessions['root'] = {'id': 'root', 'source': 'api_server', 'end_reason': 'compression'}
-    fake.sessions['tip'] = {'id': 'tip', 'source': 'api_server', 'title': 'Alexa: Den Echo', 'parent_session_id': 'root'}
+    fake.sessions['tip'] = {'id': 'tip', 'source': 'api_server', 'title': 'Arya: Den Echo', 'parent_session_id': 'root'}
     fake.continuations['root'] = 'tip'
     harness = Harness(fake, device_store=store)
     async with harness as client:
@@ -199,10 +206,10 @@ async def test_compressed_conversation_uses_public_continuation_and_routes_backg
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('row', [
-    {'id': 'existing', 'source': 'telegram', 'title': 'Alexa: Den Echo'},
-    {'id': 'existing', 'source': 'api_server', 'title': 'Alexa: Den Echo', 'hidden': True},
-    {'id': 'existing', 'source': 'api_server', 'title': 'Alexa: Den Echo', 'archived': True},
-    {'id': 'existing', 'source': 'api_server', 'title': 'Alexa: Den Echo', 'is_internal_child': True},
+    {'id': 'existing', 'source': 'telegram', 'title': 'Arya: Den Echo'},
+    {'id': 'existing', 'source': 'api_server', 'title': 'Arya: Den Echo', 'hidden': True},
+    {'id': 'existing', 'source': 'api_server', 'title': 'Arya: Den Echo', 'archived': True},
+    {'id': 'existing', 'source': 'api_server', 'title': 'Arya: Den Echo', 'is_internal_child': True},
 ])
 async def test_incompatible_title_never_creates_parallel_history(tmp_path, monkeypatch, row):
     fake = _patch(monkeypatch)
@@ -332,8 +339,8 @@ async def test_unknown_admission_does_not_allow_a_second_run(tmp_path, monkeypat
 
 def test_prompt_explains_names_proactivity_and_real_scheduling_receipts():
     from hermes_converse.loop import voice_system_prompt
-    prompt = voice_system_prompt('Alexa', device_name='Den Echo', recipient_id='opaque')
-    assert 'Your name is Alexa' in prompt and 'Your name is Den Echo' not in prompt
+    prompt = voice_system_prompt('Arya', device_name='Den Echo', recipient_id='opaque')
+    assert 'Your name is Arya' in prompt and 'Your name is Den Echo' not in prompt
     assert 'physical microphone/speaker' in prompt and 'default destination is this device' in prompt
     assert 'persistent conversation' in prompt and 'without a new user message or wake word' in prompt
     assert 'pulse tool is available' in prompt and 'tool\'s receipt' in prompt
@@ -357,7 +364,7 @@ async def test_concurrent_first_connections_create_one_conversation(tmp_path, mo
         results = await asyncio.gather(connect(client), connect(client))
         assert all(ready['type'] == 'ready' for _, ready in results)
         assert len(fake.sessions) == 1
-        assert len({r['extensions']['arya-v1']['recipient_id'] for _, r in results}) == 1
+        assert len({r['recipient_id'] for _, r in results}) == 1
         assert len(harness.route.hub._attachments) == 1
         for ws, _ in results:
             await ws.close()
@@ -367,9 +374,9 @@ async def test_concurrent_first_connections_create_one_conversation(tmp_path, mo
 async def test_compression_title_handoff_and_hidden_root_do_not_lose_history(tmp_path, monkeypatch):
     fake = _patch(monkeypatch)
     store = DeviceStore(tmp_path/'devices.db')
-    device = store.reserve('Alexa', 'Den Echo')
+    device = store.reserve('Arya', 'Den Echo')
     store.remember(device, 'root')
-    fake.sessions['root'] = {'id': 'root', 'source': 'api_server', 'title': 'Alexa: Den Echo',
+    fake.sessions['root'] = {'id': 'root', 'source': 'api_server', 'title': 'Arya: Den Echo',
                              'end_reason': 'compression', 'hidden': True, 'archived': True}
     fake.sessions['tip'] = {'id': 'tip', 'source': 'api_server', 'title': None, 'parent_session_id': 'root'}
     fake.continuations['root'] = 'tip'
@@ -385,14 +392,14 @@ async def test_compression_title_handoff_and_hidden_root_do_not_lose_history(tmp
 async def test_title_lookup_adopts_lineage_root_from_projected_tip(tmp_path, monkeypatch):
     fake = _patch(monkeypatch)
     fake.sessions['root'] = {'id': 'root', 'source': 'api_server', 'title': None, 'end_reason': 'compression'}
-    fake.sessions['tip'] = {'id': 'tip', 'source': 'api_server', 'title': 'Alexa: Den Echo',
+    fake.sessions['tip'] = {'id': 'tip', 'source': 'api_server', 'title': 'Arya: Den Echo',
                             '_lineage_root_id': 'root'}
     fake.continuations['root'] = 'tip'
     store = DeviceStore(tmp_path/'devices.db')
     async with Harness(fake, device_store=store) as client:
         ws, ready = await connect(client)
         assert ready['type'] == 'ready'
-        saved = store.reserve('Alexa', 'Den Echo')
+        saved = store.reserve('Arya', 'Den Echo')
         assert saved.session_id == 'root'
         await _audio_turn(ws)
         assert next(iter(fake.runs.values()))['body']['session_id'] == 'root'

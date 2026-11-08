@@ -1,7 +1,8 @@
 # Server spec
 
 Server responsibilities behind [client spec.md](../client%20spec.md).
-Named-device behavior is negotiated with `arya-v1`; timer/alarm extensions remain separate work.
+Named-device behavior uses `assistant_name` and `device_name` directly in `start`;
+timer/alarm behavior remains separate work.
 
 ## Named Aryas
 
@@ -45,7 +46,7 @@ local sign-off bookkeeping where needed. Never replay an unacknowledged request.
 Verify first setup, concurrent creation, reconnect/restart, failed
 lookup, unauthorized access, compression continuation, and replacement
 attachments without duplicate history or competing work. Include the case
-`assistant_name: Alexa`, `device_name: Den Echo`, title `Alexa: Den Echo`.
+`assistant_name: Arya`, `device_name: Den Echo`, title `Arya: Den Echo`.
 
 The implementation stores only routing metadata in the profile's
 `plugin-data/hermes-converse/devices.db`. It uses authenticated exact-title lookup and the

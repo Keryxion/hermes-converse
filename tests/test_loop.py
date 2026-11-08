@@ -169,7 +169,7 @@ def test_playback_tail_suppresses_quiet_until_drained():
 # ── start frame + prompt ──
 
 def test_parse_start_config_defaults_and_clamps():
-    assert parse_start_config({}) == (16000, 24000, 0.0, "Sakura", None)
+    assert parse_start_config({}) == (16000, 24000, 0.0, "Arya", None)
     assert parse_start_config({"input_rate": 100, "output_rate": "99000", "quiet_interval": "15",
                                "name": " Hal ", "profile": "work"}) == (8000, 48000, 15.0, "Hal", "work")
     assert parse_start_config({"name": "  "}, default_name="Nova")[3] == "Nova"
@@ -177,11 +177,11 @@ def test_parse_start_config_defaults_and_clamps():
 
 
 def test_voice_system_prompt_signoff_instruction():
-    with_signoff = voice_system_prompt("Sakura", allow_signoff=True)
+    with_signoff = voice_system_prompt("Arya", allow_signoff=True)
     assert "Over and out" in with_signoff and "server interprets" in with_signoff
-    assert "Over and out" not in voice_system_prompt("Sakura", allow_signoff=False)
-    assert "Over and out" not in voice_system_prompt("Sakura", allow_signoff=True, end_phrases=())
-    assert "Your name is Sakura" in with_signoff and "Your name" not in voice_system_prompt(None)
+    assert "Over and out" not in voice_system_prompt("Arya", allow_signoff=False)
+    assert "Over and out" not in voice_system_prompt("Arya", allow_signoff=True, end_phrases=())
+    assert "Your name is Arya" in with_signoff and "Your name" not in voice_system_prompt(None)
 
 
 # ── converse synthesizer ──
