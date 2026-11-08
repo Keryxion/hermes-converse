@@ -45,7 +45,7 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 | `input_rate` | sample rate of the PCM you'll send (8000–48000, default 16000) |
 | `output_rate` | sample rate of PCM the server sends back (default 24000) |
 | `quiet_interval` | session mode: seconds of silence between turns (0 = off) |
-| `name` | the assistant's name — set this to "Arya" (not "Hey Arya"). Arya uses her name in the voice prompt so she knows she's being addressed and doesn't get confused about why she's being called that name |
+| `name` | the assistant's name — just "Arya", not the full wake phrase. A client can have multiple wake words (e.g. "Hey Arya", "Arya") with a preamble like "Hey", but that doesn't change the name. Arya uses her name in the voice prompt so she knows she's being addressed and doesn't get confused about why she's being called that name |
 
 Then stream binary PCM16 mono frames at `input_rate`. 30 ms blocks are ideal
 (e.g. 480 samples at 16 kHz).
@@ -105,3 +105,55 @@ Every turn gets a `turn_id`. It appears on `transcript`, `thinking`,
 `speaking`, `interrupted`, `error`, and `turn_done` frames of that turn, so
 you can match frames to a turn. `cancel` and `drained` accept an optional
 `turn_id` to target a specific turn.
+
+
+## 8. Multi-device arbitration (opt-in)
+
+When several voice-capable devices can hear the same user (Echoes, browser
+tabs, ESP32s), they can all answer at once — which is noisy and confusing.
+Arbitration lets exactly one device answer each utterance while the others
+stay silent. It is opt-in and off by default; a single-device setup needs
+none of this.
+
+To take part, a client sends identifying info in its `start` frame:
+
+```json
+{"type": "start", "key": "...", "input_rate": 16000,
+ "output_rate": 24000, "device_id": "echo-kitchen",
+ "area": "kitchen", "person": "darrell"}
+```
+
+| start field | what it does |
+|---|---|
+| `device_id` | a stable id for this device/socket; the arbitrator tracks one registration per socket |
+| `area` | the room/area this device is in (used by the proximity policy) |
+| `person` | who is speaking (used by the proximity policy to match area to speaker) |
+
+### How it works
+
+1. Each device hears the wake word, claims the utterance, and the arbitrator elects one winner.
+2. Only the winner runs STT → agent → TTS and speaks aloud.
+3. Losers still transcribe the utterance but skip the agent and TTS entirely.
+4. The winner releases the turn when `turn_done` is sent or its socket closes, so another device can win the next utterance.
+
+### Policies
+
+All settings are off by default and fully backward compatible:
+
+| setting | default | what it does |
+|---|---|---|
+| `arbitrate_enabled` | `false` | turn arbitration on or off for this socket |
+| `arbitrate_policy` | `first_to_endpoint` | `first_to_endpoint`: first device to claim the utterance wins. `proximity`: the device reporting the same `area` as the speaker's `person` wins; ties fall back to first claim. |
+| `arbitrate_device_id` | `""` | override the device id the server registers for this socket |
+
+If you don't have a reliable per-person area feed, stick with the default
+`first_to_endpoint` policy — it doesn't need `area`/`person` at all.
+
+
+## 9. cancel vs stop vs closing
+
+It's worth being explicit since `cancel` was added because `stop` is too destructive:
+
+- **Close the socket** — ends the session; history is lost; cleanup happens on the server's heartbeat timeout, not immediately.
+- **`{"stop": true}`** — same as closing, but explicit: the server cancels any in-flight Runs API run, stops the VAD worker, and closes the socket right away instead of waiting for a timeout. Use it when you're genuinely done with the conversation.
+- **`{"type": "cancel"}`** — aborts only the current turn (stops TTS + agent, discards any in-progress capture) while keeping the socket, session, and history alive. Use it when the user hits the action button or says the wake word again mid-turn and you want to keep the conversation going.
