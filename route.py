@@ -3,16 +3,20 @@
 Wired through ``ctx.register_platform_handler("api_server", ...)``: the factory receives the
 aiohttp application and the adapter and adds the route. The client's FIRST frame is a single
 ``{"type":"start", ...}`` frame carrying auth + all session config; the key is presented one of
-two ways (both verified against the API server itself, see :mod:`auth`):
+three ways (all verified against the API server itself, see :mod:`auth`):
 
-(A) ``Sec-WebSocket-Protocol`` (browser clients): the client offers ``hermes-voice-v1`` plus
-    ``hermes-key.<API_KEY>``. The key is verified BEFORE ``prepare`` and the socket is accepted
-    selecting ONLY the base protocol (the key-bearing one is never echoed). A bad key rejects the
-    upgrade with 401. ``start.key`` is then optional/ignored.
-(B) ``start.key`` (non-browser devices, e.g. an ESP32): no subprotocol is offered, the socket is
-    accepted, and the ``start`` frame's ``key`` authenticates. A non-``start`` first frame →
-    ``{"error":"bad_start"}`` close 4400; a ``start`` with a bad/missing key →
+(A) ``Sec-WebSocket-Protocol`` (browser clients): the client offers ``hermes-voice-v1`` plus either
+    ``hermes-key.<API_KEY>`` or ``hermes-voice-token.<VOICE_TOKEN>``. The credential is verified
+    BEFORE ``prepare`` and the socket is accepted selecting ONLY the base protocol (the
+    credential-bearing one is never echoed). A bad credential rejects the upgrade with 401.
+    ``start.key``/``start.voice_token`` are then optional/ignored.
+(B) ``start.key`` / ``start.voice_token`` (non-browser devices, e.g. an ESP32): no subprotocol is
+    offered, the socket is accepted, and the ``start`` frame authenticates. A non-``start`` first
+    frame → ``{"error":"bad_start"}`` close 4400; a ``start`` with a bad/missing credential →
     ``{"error":"unauthorized"}`` close 4401. No audio frame is processed until a valid start.
+
+A scoped ``voice_token`` authorizes only this voice route: presenting it instead of the full
+``API_SERVER_KEY`` limits what a sniffed credential gives away on plain ``ws://``.
 
 Browser-context clients must also pass the API server's own CORS origin guard (``cors_origins`` /
 ``API_SERVER_CORS_ORIGINS``), which runs before any route; an Electron renderer sends
@@ -41,7 +45,7 @@ from typing import Any, Awaitable, Callable, Optional
 from aiohttp import ClientSession, ClientTimeout, web
 
 from .agent_client import RunsClient
-from .auth import offered_key_protocol, verify_api_key
+from .auth import offered_key_protocol, offered_voice_token_protocol, verify_api_key, verify_voice_token
 from .loop import ConverseSession, drive_converse_turns, parse_start_config, voice_system_prompt
 from .settings import Settings, load_settings
 
@@ -102,31 +106,46 @@ class ConverseRoute:
 
     async def handle(self, request: web.Request) -> web.StreamResponse:
         base_url = self._base_url()
+        settings = self._settings()
         async with ClientSession(timeout=HTTP_TIMEOUT) as http:
-            # (A) Subprotocol key: verified pre-prepare so a bad key rejects the upgrade.
+            # (A) Subprotocol credential: verified pre-prepare so a bad credential rejects the
+            #     upgrade. Either ``hermes-key.<API_SERVER_KEY>`` or the scoped
+            #     ``hermes-voice-token.<voice_token>``.
             offered = offered_key_protocol(request.headers.get("Sec-WebSocket-Protocol", ""))
+            voice_offered = offered_voice_token_protocol(request.headers.get("Sec-WebSocket-Protocol", ""))
+            api_key: Optional[str] = None
+            voice_token: Optional[str] = None
             if offered is not None:
                 if not await verify_api_key(base_url, offered, http=http):
                     raise web.HTTPUnauthorized()
                 ws = web.WebSocketResponse(heartbeat=30.0, protocols=(VOICE_WS_PROTOCOL,))
                 await ws.prepare(request)
                 api_key = offered
-            else:
-                # (B) No subprotocol: accept, then require a start frame whose start.key verifies.
+            elif voice_offered is not None:
+                if not (await verify_api_key(base_url, voice_offered, http=http)
+                        or verify_voice_token(voice_offered, settings.voice_token)):
+                    raise web.HTTPUnauthorized()
                 ws = web.WebSocketResponse(heartbeat=30.0)
                 await ws.prepare(request)
-                api_key = None
+                voice_token = voice_offered
+            else:
+                # (B) No subprotocol: accept, then require a start frame whose start.key or
+                #     start.voice_token verifies.
+                ws = web.WebSocketResponse(heartbeat=30.0)
+                await ws.prepare(request)
 
             async def _verify(candidate: str) -> bool:
-                return await verify_api_key(base_url, candidate, http=http)
+                return (await verify_api_key(base_url, candidate, http=http)
+                        or verify_voice_token(candidate, settings.voice_token))
 
-            frame = await _await_start_frame(ws, verify=None if api_key else _verify)
+            frame = await _await_start_frame(ws, verify=None if (api_key or voice_token) else _verify)
             if frame is None:
                 return ws
             if api_key is None:
                 api_key = str(frame.get("key") or "")
+            if voice_token is None:
+                voice_token = str(frame.get("voice_token") or "")
             server_recv_unix_ms = int(time.time() * 1000)
-            settings = self._settings()
             input_rate, output_rate, quiet_interval, name, profile = parse_start_config(
                 frame, default_name=settings.name)
             if not self._profile_allowed(profile):
@@ -147,7 +166,10 @@ class ConverseRoute:
                 "server_recv_unix_ms": server_recv_unix_ms,
                 "server_send_unix_ms": int(time.time() * 1000),
             })
-            client = RunsClient(base_url, api_key, http=http, approval_choice=settings.approval_choice)
+            # The scoped voice token is preferred when one was presented; it authorizes only this
+            # voice route, so a sniffed token gives away nothing beyond voice turns.
+            credential = voice_token or api_key
+            client = RunsClient(base_url, credential, http=http, approval_choice=settings.approval_choice)
             await _serve(ws, session=session, synth=synth, cap=cap, client=client, settings=settings,
                          name=name, quiet_interval=quiet_interval)
         return ws
@@ -186,8 +208,8 @@ async def _fail(ws: web.WebSocketResponse, error: str, code: int) -> None:
 async def _await_start_frame(ws: web.WebSocketResponse, *,
                              verify: Optional[Callable[[str], Awaitable[bool]]]) -> Optional[dict]:
     """Require ``{"type":"start", ...}`` as the client's FIRST frame within the deadline. With
-    *verify* given (no subprotocol key), ``start.key`` must pass it. On failure sends an error
-    frame, closes (4400 bad_start / 4401 unauthorized) and returns ``None``."""
+    *verify* given (no subprotocol credential), ``start.key`` or ``start.voice_token`` must pass it.
+    On failure sends an error frame, closes (4400 bad_start / 4401 unauthorized) and returns ``None``."""
     try:
         msg = await asyncio.wait_for(ws.receive(), timeout=FIRST_FRAME_TIMEOUT)
     except TimeoutError:
@@ -204,7 +226,7 @@ async def _await_start_frame(ws: web.WebSocketResponse, *,
     if not isinstance(frame, dict) or frame.get("type") != "start":
         await _fail(ws, "bad_start", 4400)
         return None
-    if verify is not None and not await verify(str(frame.get("key") or "")):
+    if verify is not None and not await verify(str(frame.get("key") or "") or str(frame.get("voice_token") or "")):
         await _fail(ws, "unauthorized", 4401)
         return None
     return frame

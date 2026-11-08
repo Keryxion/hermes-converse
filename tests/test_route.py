@@ -611,6 +611,54 @@ def test_loopback_base_url_prefers_the_setting_then_the_listener():
     assert loopback_base_url(object()) == "http://127.0.0.1:8642"
 
 
+VOICE_TOKEN = "-".join(("scoped", "voice", "fixture", "token"))
+
+
+def _voice_token_protocol(token=VOICE_TOKEN):
+    return f"hermes-voice-token.{token}"
+
+
+@pytest.mark.asyncio
+async def test_bad_voice_token_subprotocol_rejects_upgrade_401():
+    async with Harness(FakeRunsAPI(API_KEY)) as client:
+        with pytest.raises(WSServerHandshakeError) as exc:
+            await client.ws_connect("/v1/audio/converse",
+                                    protocols=(VOICE_PROTOCOL, _voice_token_protocol("nope")))
+        assert exc.value.status == 401
+
+
+@pytest.mark.asyncio
+async def test_start_bad_voice_token_closes_unauthorized():
+    async with Harness(FakeRunsAPI(API_KEY)) as client:
+        ws = await client.ws_connect("/v1/audio/converse")
+        try:
+            await ws.send_str(json.dumps({"type": "start", "voice_token": "nope"}))
+            msg = await ws.receive()
+            assert msg.type == web.WSMsgType.TEXT
+            assert json.loads(msg.data) == {"type": "error", "error": "unauthorized"}
+            closing = await ws.receive()
+            assert closing.type in (web.WSMsgType.CLOSE, web.WSMsgType.CLOSED)
+            assert ws.close_code == 4401
+        finally:
+            await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_configured_voice_token_passes_auth_not_unauthorized():
+    """A start frame carrying the configured voice_token must NOT get `unauthorized`; it gets
+    past auth (here failing later at session setup without Hermes, which is also fine)."""
+    async with Harness(FakeRunsAPI(API_KEY), {"voice_token": VOICE_TOKEN}) as client:
+        ws = await client.ws_connect("/v1/audio/converse")
+        try:
+            await ws.send_str(json.dumps({"type": "start", "voice_token": VOICE_TOKEN}))
+            msg = await ws.receive()
+            assert msg.type == web.WSMsgType.TEXT
+            payload = json.loads(msg.data)
+            assert payload.get("error") != "unauthorized"
+        finally:
+            await ws.close()
+
+
 def test_wire_on_a_frozen_router_warns_instead_of_raising(caplog):
     """Enabling the plugin while the gateway runs reaches the factory after AppRunner.setup() froze
     the router: that must be a clear warning (restart to register), never a traceback."""
