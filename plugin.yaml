@@ -78,9 +78,9 @@ config_schema:
     description: "Turn on cross-device voice arbitration so exactly one device answers each utterance."
   arbitrate_policy:
     type: str
-    choices: [first_to_endpoint, proximity]
+    choices: [first_to_endpoint, wake_signal]
     default: first_to_endpoint
-    description: "How the winner is elected: first_to_endpoint (first claim wins) or proximity (same area/person as the speaker)."
+    description: "How the winner is elected: first_to_endpoint (first claim wins) or wake_signal (different wake words don't compete; else highest wake-word confidence, then loudest, then earliest heard)."
   arbitrate_device_id:
     type: str
     default: ""

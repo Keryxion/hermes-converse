@@ -10,13 +10,13 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from .phrases import normalize_phrases
-from .arbitrate import POLICY_FIRST_TO_ENDPOINT, POLICY_PROXIMITY
+from .arbitrate import POLICY_FIRST_TO_ENDPOINT, POLICY_WAKE_SIGNAL
 
 DEFAULT_NAME = "Sakura"
 DEFAULT_STOP_PHRASES = ("stop", "cancel")
 DEFAULT_END_PHRASES = ("over and out",)
 # ── cross-device voice arbitration ────────────────────────────────────────────────────────
-DEFAULT_ARBITRATE_POLICY = "first_to_endpoint"  # first_to_endpoint | proximity
+DEFAULT_ARBITRATE_POLICY = "first_to_endpoint"  # first_to_endpoint | wake_signal
 DEFAULT_ARBITRATE_DEVICE_ID = None  # ''/None = auto-generate from socket
 DEFAULT_ARBITRATE_ENABLED = False
 # Hard cap on a single agent turn (LLM think + stream). A turn that produces nothing — an LLM call
@@ -76,7 +76,7 @@ def _model_enabled(raw: Any) -> bool:
 def _arbitrate_policy(raw: Any) -> str:
     """Coerce *raw* to a known arbitrate policy, falling back to the default on anything unknown."""
     policy = str(raw or DEFAULT_ARBITRATE_POLICY).strip()
-    if policy not in (POLICY_FIRST_TO_ENDPOINT, POLICY_PROXIMITY):
+    if policy not in (POLICY_FIRST_TO_ENDPOINT, POLICY_WAKE_SIGNAL):
         return DEFAULT_ARBITRATE_POLICY
     return policy
 
