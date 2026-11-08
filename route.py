@@ -22,6 +22,7 @@ Protocol (unchanged from the in-core proposal):
   client → ``{"type":"start", "key":?, "input_rate":?, "output_rate":?, "quiet_interval":?,
              "name":?}`` then binary PCM16 mono frames at ``input_rate`` (30 ms blocks preferred),
            ``{"stop": true}`` to end, ``{"commit": true}`` to force an endpoint,
+           ``{"type":"cancel","turn_id":?}`` to cancel the current turn and keep the session,
            ``{"type":"drained","turn_id":?}`` when the reply's last audio has left the speaker
   server → ``ready`` (rates, ``session_id``, clock-skew timestamps), ``transcript``, ``thinking``,
            ``speaking`` + binary PCM, ``interrupted``, ``turn_done`` (``expects_more`` in session
@@ -238,6 +239,8 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                         session.commit()
                     if frame.get("type") == "drained":
                         session.notify_drained(frame.get("turn_id"))
+                    if frame.get("type") == "cancel":
+                        session.cancel(frame.get("turn_id"))
                 elif msg.type in (web.WSMsgType.CLOSE, web.WSMsgType.ERROR):
                     break
         except Exception:

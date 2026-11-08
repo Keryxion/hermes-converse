@@ -616,3 +616,77 @@ def test_drive_converse_turns_reports_turn_error():
     asyncio.run(_main())
     errors = [f for f in sent if isinstance(f, dict) and f.get("type") == "error"]
     assert errors and "409" in errors[0]["error"] and _types(sent)[-1] == "turn_done"
+
+
+# ── per-turn cancel that keeps the session (issue #5) ──
+
+
+def test_session_cancel_stops_playback_and_queues_cancel_turn():
+    session = ConverseSession(np)
+    tts_stop = threading.Event()
+    session.set_playing(True, tts_stop=tts_stop)
+    session._capturing = True  # a capture is in flight, so cancel queues a marker
+    session.cancel("turn-abc")
+    assert session._cancelled.is_set()
+    assert tts_stop.is_set() and session.take_interrupted() is True
+    assert session.playing() is False
+    marker = session.transcripts.get_nowait()
+    assert isinstance(marker, cl.CancelTurn) and marker.turn_id == "turn-abc"
+
+
+def test_session_cancel_idle_does_not_queue_marker():
+    # Nothing playing and nothing capturing: cancel aborts nothing and emits nothing.
+    session = ConverseSession(np)
+    session.cancel()
+    assert session._cancelled.is_set()
+    assert session.transcripts.qsize() == 0
+
+
+def test_session_cancel_discards_captured_transcript():
+    seen = {}
+
+    def _transcribe(path):
+        seen["path"] = path
+        return "heard it"
+
+    session = ConverseSession(np, transcribe=_transcribe)
+    session._cancelled.set()  # cancel arrived mid-capture
+    session._capturing = True
+    # Endpoint immediately with silence so capture returns.
+    _feed_silence(session, session._endpoint_blocks + 4)
+    # Replicate _run's post-capture discard: cancelled -> transcript not queued.
+    transcript = session._capture_and_transcribe()
+    assert transcript == "heard it"  # capture still ran, but ...
+    assert session._cancelled.is_set()
+    session._cancelled.clear()
+    assert session.transcripts.qsize() == 0  # ... it was discarded, no turn ran
+
+
+def test_driver_cancel_turn_emits_interrupted_and_turn_done():
+    session = _FakeConverseSession([])
+    sent = _run_driver(session, [], [], quiet_interval=1.0)
+    # No cancel marker queued -> nothing sent.
+    assert sent == []
+
+
+def test_session_idle_cancel_does_not_poison_next_capture():
+    # Cancel while idle sets _cancelled, but the next capture's transcript must still be queued
+    # (cancel only discards the capture it interrupted).
+    session = ConverseSession(np)
+    session.cancel()  # idle: nothing playing, nothing capturing
+    assert session._cancelled.is_set()
+    # Simulate _run clearing _cancelled at capture start, then capture completes.
+    session._cancelled.clear()
+    session.transcripts.put("a fresh transcript")
+    assert session.transcripts.get_nowait() == "a fresh transcript"
+
+
+def test_driver_cancel_turn_emits_frames():
+    session = _FakeConverseSession([])
+    session.transcripts = _queue.Queue()
+    session.transcripts.put(cl.CancelTurn("turn-9"))
+    session.transcripts.put(None)
+    sent = _run_driver(session, [], [], quiet_interval=1.0)
+    assert _types(sent) == ["interrupted", "turn_done"]
+    assert sent[0]["turn_id"] == "turn-9" and sent[1]["turn_id"] == "turn-9"
+    assert session.turns_begun == 0 and session.turns_ended == 0
