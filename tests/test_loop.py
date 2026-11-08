@@ -661,7 +661,8 @@ def test_session_cancel_discards_captured_transcript():
     # Endpoint immediately with silence so capture returns.
     _feed_silence(session, session._endpoint_blocks + 4)
     # Replicate _run's post-capture discard: cancelled -> transcript not queued.
-    transcript = session._capture_and_transcribe()
+    transcript, volume = session._capture_and_transcribe()
+    assert volume >= 0
     assert transcript == "heard it"  # capture still ran, but ...
     assert session._cancelled.is_set()
     session._cancelled.clear()
