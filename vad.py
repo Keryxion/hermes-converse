@@ -220,7 +220,7 @@ class BargeDetector:
                     f"window={sum(self.recent_above)}/{self.trip_needed} phase={phase}")
         if not (above and sum(self.recent_above) >= self.trip_needed):
             return None
-        vad_log(f"TRIPPED ({phase}): block={self.block_idx} rms={rms_value:.0f} floor={self.quiet_floor:.0f} "
+        vad_log(f"energy candidate ({phase}): block={self.block_idx} rms={rms_value:.0f} floor={self.quiet_floor:.0f} "
                 f"trigger={trigger:.0f} window={sum(self.recent_above)}/{len(self.recent_above)}")
         return phase
 

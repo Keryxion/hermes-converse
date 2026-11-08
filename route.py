@@ -25,7 +25,7 @@ Protocol:
            ``{"type":"cancel","turn_id":?}`` to cancel the current turn and keep the session,
            ``{"type":"drained","turn_id":?}`` when the reply's last audio has left the speaker,
            ``{"type":"wake","claim_id":"...","wake_word":"...", ...}`` requests an
-           advisory wake recommendation; see ``client spec.md``. Busy-turn audio is for interruption detection.
+           advisory wake recommendation; see ``specs/client.md``. Accepted interruptions are captured as continuations.
   server → ``ready`` (rates, ``session_id``, clock-skew timestamps), ``transcript``, ``thinking``, ``working``,
            ``speaking`` + binary PCM, ``interrupted``, ``turn_done`` (``next_action``), ``quiet``, ``stop_word``, ``error``.
 """

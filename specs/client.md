@@ -17,6 +17,8 @@ restricting audio processing. Section 8 defines the cooperative wake contract.
 Sections 9–10 define conversation output and timers. Section 11 defines named
 Aryas and attachment to Hermes conversations.
 
+Server lifecycle and integration details are in [the server spec](server.md).
+
 ## 1. Connect and authenticate
 
 Open the WebSocket. Your first frame must be a `start` frame.
@@ -114,7 +116,7 @@ wake word again mid-turn and you want to keep the conversation going.
 | `interrupted` | the turn was cancelled (you barged in or sent `cancel`); stop playing |
 | `turn_done` | the reply is fully sent; `next_action` tells the client to listen or enter standby after drain |
 | `quiet` | session mode: the stream has been silent for another `quiet_interval` seconds |
-| `stop_word` | session mode: you said a stop phrase; no turn ran |
+| `stop_word` | you said a standalone stop phrase; no turn ran; end this activation |
 | `error` | the turn failed (spoken-safe text) |
 
 ### Microphone streaming and barge-in
@@ -133,25 +135,43 @@ live PCM continuously for the rest of the activation. Include silence.
 | Awaiting matching wake decision (up to 1000 ms) | Buffer locally; no upstream PCM for this activation yet. |
 | Matching `wake_grant` | Flush buffered PCM in order, then continue with live PCM. Server VAD/endpointer captures the request for transcription. |
 | Matching `wake_deny` or timeout | Discard the activation buffer and resume local wake detection; do not stream this activation. |
-| `transcript` / `thinking` after request endpoint | Keep sending live PCM for interruption/control detection only; do not create another ordinary transcript or queue a user turn. |
-| `speaking` and queued speaker playback | Keep sending live PCM for server-side barge-in/control detection, not a queued ordinary transcript. |
+| `transcript` / `thinking` after request endpoint | Keep sending live PCM. Accepted speech interrupts the old reply and becomes a continuation in the same conversation. |
+| `speaking` and queued speaker playback | Keep sending live PCM. The server rejects speaker echo and captures accepted user interruptions as continuations. |
 | Turn ended and playback drained, activation still open | Keep streaming; server may capture the next user utterance normally. |
 | Activation ends / returns to wake detection | Stop upstream PCM and resume local wake detection; keep the socket available for outbound conversation events. |
 | Explicit user mute or closed session | Stop sending PCM; server-side barge-in is unavailable. |
 
-After VAD endpoints the request, the server must switch input from ordinary
-transcription to **interruption/control detection** for the active turn,
-including thinking, speaking, and the playback tail. Audio received in this
-mode must not become a new `transcript`, enter conversation history, or
-start or queue another agent run. Limited recognition of controls such as
-"cancel" or "stop" is allowed to interrupt the current turn; it must not
-submit those words as an ordinary user message. This differs from stop
-phrases spoken while waiting for a normal follow-up utterance (section 5).
+Microphone input remains available after request endpointing. When the server
+accepts further user speech during thinking, speaking, or playback drain, it
+interrupts the old reply, preserves the new utterance, and transcribes it as a
+continuation in the same conversation. The original request remains context.
+Do not require another wake word or make the user repeat the interruption.
+Playback echo rejection remains the server's responsibility; clients should
+provide clean microphone audio without suppressing user speech.
 
-After cancellation/interruption and playback drain, resume normal utterance
-capture only if the activation remains open. Do not replay the control-
-detection audio into that capture. A fresh user utterance can then start a
-new turn. Keep explicit `cancel` separate from `stop`, which closes the socket.
+### Barge-in and cancellation
+
+Barge-in yields the floor to the user. For example, after “turn on the light”,
+the user may add “and make it warm white” while the reply is thinking. Expect
+`interrupted` and `turn_done` with `next_action: "listen"` for the old turn,
+then a new `transcript` and reply turn for the additional instruction. The
+new turn uses the same conversation and includes the original request as context.
+
+Explicit `cancel` stops the matching turn without submitting a user message:
+
+```json
+{"type":"cancel","turn_id":"turn-1"}
+```
+
+A stale targeted cancel cannot stop a newer turn. An untargeted
+`{"type":"cancel"}` also abandons a capture in progress. The connection and
+conversation remain usable. `stop` closes the attachment instead.
+
+A standalone spoken stop phrase (defaults: “stop”, “cancel”) produces
+`transcript` followed by `stop_word`, without an agent run, in either session
+or continuous mode. Stop playback, end this activation, and retain the socket
+for later use. Longer requests such as “cancel the kitchen timer” are ordinary
+conversation; the presence of a cancel word is not itself a cancellation.
 
 Do not use an `agentTurn`, thinking, or playback flag to suppress PCM during
 an activation. Play incoming PCM and send microphone PCM concurrently.
@@ -163,21 +183,18 @@ replay audio accumulated while muted.
 On `interrupted`, stop and discard queued reply audio for that turn. Send
 `drained` after its audio has actually left the speaker or been discarded.
 `turn_done` means the server finished sending, not that playback drained.
+`drained` acknowledges playback completion or discard, not that a person heard
+the reply.
 For `next_action = "standby"` or a local decision to end the activation, finish
 playback/drain handling and then stop upstream audio and return to wake
 detection; do not cut off barge-in monitoring during the playback tail.
 
-The server reserves the request as it hands its transcript to the turn
-driver, binds cancellation before announcing `thinking`, and keeps input in
-control mode through playback drain in both continuous and session modes.
-Speech onset detected by VAD interrupts the active turn without running STT;
-there is no separate keyword recognizer in this mode. If interruption
-arrives during the playback tail after `turn_done`, the server sends
-`interrupted` followed by an updated `turn_done` with `next_action: "listen"`
-for the same turn, replacing its pending standby action before drain. A stale targeted
-`cancel` is ignored. The server discards control-phase buffered audio and
-pre-roll before resuming fresh input. A bounded playback-tail timeout is a
-fallback if the client never sends `drained`.
+The server binds interruption to the old turn before announcing `thinking`.
+If accepted speech interrupts playback after `turn_done`, expect `interrupted`
+followed by an updated `turn_done` with `next_action: "listen"` for the same
+turn, replacing its pending standby action. A continuation receives its own
+turn ID. Send `drained` only for the old playback; it must not discard the
+continuation. A bounded playback-tail timeout handles a missing `drained`.
 
 ### Handling `thinking`
 
@@ -190,8 +207,8 @@ For example:
 
 Treat it as a turn boundary even if the client has not received a
 `transcript` for that turn. Mark the agent turn active and show "thinking".
-During an active activation, keep sending microphone PCM for interruption/
-control detection; do not transcribe it as a new user request. The UI state
+During an active activation, keep sending microphone PCM so the server can
+accept a continuation or recognize a spoken cancellation. The UI state
 and microphone transport are independent. See section 9 for outbound turns
 that start while the client is otherwise idle.
 
@@ -283,7 +300,7 @@ contract.
 3. On grant, flush the buffered PCM and continue with live PCM. Server VAD
    endpoints the user request, then emits `transcript` → `thinking`.
 4. Keep sending live PCM during thinking, `speaking` + reply PCM, and queued
-   playback. The server uses it only for interruption/control detection.
+   playback. The server captures accepted interruptions as continuations.
 5. Receive `turn_done`; send `drained` after actual speaker drain/discard.
 6. If the activation remains open, keep streaming for a follow-up request.
    Otherwise stop upstream audio and return to local wake detection.

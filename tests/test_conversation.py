@@ -159,20 +159,38 @@ async def test_cancel_thinking_stale_id_ignored_and_run_stopped(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_voice_barge_in_while_thinking_never_becomes_another_transcript(monkeypatch):
-    fake = FakeRunsAPI(API_KEY, deltas=(), hang=True)
+@pytest.mark.parametrize('phase', ['thinking', 'speaking'])
+async def test_voice_continuation_restarts_in_same_conversation(monkeypatch, phase):
+    class ContinuationAPI(FakeRunsAPI):
+        async def events(self, request):
+            if request.match_info['run_id'] != 'run_0001':
+                self.hang = False
+                self.deltas = ('Updated.',)
+            return await super().events(request)
+    fake = ContinuationAPI(API_KEY, deltas=() if phase == 'thinking' else ('Working on the original request.',), hang=True)
     seen = _patch_speech(monkeypatch, _FakeStreamer([b'\x01\x02']))
+    def transcribe(path, **kwargs):
+        seen['n'] += 1
+        return 'first request' if seen['n'] == 1 else 'and the continuation'
+    monkeypatch.setattr(speech, 'transcribe_wav', transcribe)
     async with Harness(fake) as client:
         ws, _ = await connect(client)
         for frame in _speech_then_silence_pcm():
             await ws.send_bytes(frame)
         assert (await ws.receive_json(timeout=2))['type'] == 'transcript'
         assert (await ws.receive_json(timeout=2))['type'] == 'thinking'
+        if phase == 'speaking':
+            assert (await ws.receive_json(timeout=2))['type'] == 'speaking'
+            await ws.receive_bytes(timeout=2)
         for frame in _speech_then_silence_pcm():
             await ws.send_bytes(frame)
         frames, _ = await _collect_turn(ws, timeout=3)
         assert [f['type'] for f in frames] == ['interrupted', 'turn_done']
-        assert len(fake.runs) == 1 and seen['n'] == 1 and fake.stop_calls
+        following, pcm = await _collect_turn(ws, timeout=3)
+        assert [f['type'] for f in following] == ['transcript', 'thinking', 'speaking', 'turn_done']
+        assert pcm and len(fake.runs) == 2 and seen['n'] == 2 and fake.stop_calls
+        assert len({run['body']['session_id'] for run in fake.runs.values()}) == 1
+        assert following[0]['text'] == 'and the continuation'
         await ws.close()
 
 
@@ -330,3 +348,73 @@ def test_explicit_cancellation_does_not_revive_matching_hook_output():
     hub.on_response(session_id=session.session_id, turn_id='cancelled-turn',
         user_message='cancelled input', assistant_response='Old response.')
     assert session.transcripts.empty()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('quiet_interval', [0, 15])
+@pytest.mark.parametrize('words, is_cancel', [('CANCEL!', True), ('stop', True),
+                                            ('cancel the kitchen timer', False)])
+async def test_spoken_cancellation_is_distinct_from_continuation(monkeypatch, quiet_interval, words, is_cancel):
+    class CorrectedAPI(FakeRunsAPI):
+        async def events(self, request):
+            if request.match_info['run_id'] != 'run_0001':
+                self.hang = False
+                self.deltas = ('Updated.',)
+            return await super().events(request)
+
+    fake = CorrectedAPI(API_KEY, deltas=(), hang=True)
+    seen = _patch_speech(monkeypatch, _FakeStreamer([b'\x01\x02']))
+
+    def transcribe(path, **kwargs):
+        seen['n'] += 1
+        return 'turn on the light' if seen['n'] == 1 else words
+
+    monkeypatch.setattr(speech, 'transcribe_wav', transcribe)
+    async with Harness(fake) as client:
+        ws, _ = await connect(client, quiet_interval=quiet_interval)
+        for frame in _speech_then_silence_pcm():
+            await ws.send_bytes(frame)
+        assert (await ws.receive_json(timeout=2))['type'] == 'transcript'
+        assert (await ws.receive_json(timeout=2))['type'] == 'thinking'
+        for frame in _speech_then_silence_pcm():
+            await ws.send_bytes(frame)
+        old, _ = await _collect_turn(ws)
+        assert [f['type'] for f in old] == ['interrupted', 'turn_done']
+        if is_cancel:
+            assert (await ws.receive_json(timeout=2))['type'] == 'transcript'
+            assert (await ws.receive_json(timeout=2))['type'] == 'stop_word'
+            assert len(fake.runs) == 1
+        else:
+            following, _ = await _collect_turn(ws)
+            assert following[0]['text'] == words
+            assert len(fake.runs) == 2 and fake.runs['run_0002']['body']['input'] == words
+        assert fake.stop_calls == ['run_0001']
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_tail_barge_captures_continuation_before_old_drain(monkeypatch):
+    fake = FakeRunsAPI(API_KEY)
+    seen = _patch_speech(monkeypatch, _FakeStreamer([b'\x01\x02']))
+
+    def transcribe(path, **kwargs):
+        seen['n'] += 1
+        return 'original request' if seen['n'] == 1 else 'additional idea'
+
+    monkeypatch.setattr(speech, 'transcribe_wav', transcribe)
+    async with Harness(fake) as client:
+        ws, _ = await connect(client)
+        for frame in _speech_then_silence_pcm():
+            await ws.send_bytes(frame)
+        original, _ = await _collect_turn(ws, drain=False)
+        for frame in _speech_then_silence_pcm():
+            await ws.send_bytes(frame)
+        interrupted, _ = await _collect_turn(ws, drain=False)
+        assert [f['type'] for f in interrupted] == ['interrupted', 'turn_done']
+        assert interrupted[-1]['turn_id'] == original[-1]['turn_id']
+        await ws.send_json({'type': 'drained', 'turn_id': original[-1]['turn_id']})
+        following, pcm = await _collect_turn(ws)
+        assert following[0]['text'] == 'additional idea' and pcm
+        assert following[0]['turn_id'] != original[-1]['turn_id']
+        assert len(fake.runs) == 2
+        await ws.close()

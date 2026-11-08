@@ -296,7 +296,7 @@ class _FakeConverseSession:
     def capture_pending(self):
         return False
 
-    def reserve_turn(self, turn_id, tts_stop):
+    def reserve_turn(self, turn_id, tts_stop, utterance=None):
         pass
 
     def release_capture(self):
@@ -449,11 +449,12 @@ def test_drive_converse_turns_stop_word_ends_exchange():
     assert sent[1]["text"] == "Goodbye!" and history == [] and session.turns_begun == 0
 
 
-def test_drive_converse_turns_stop_word_ignored_in_continuous_mode():
+def test_drive_converse_turns_stop_word_cancels_in_continuous_mode():
     history: list = []
     sent = _run_driver(_FakeConverseSession(["goodbye"]), history, ["Bye!"], quiet_interval=0.0,
                        stop_phrases=("goodbye",))
-    assert _types(sent) == ["transcript", "thinking", "speaking", "bytes", "turn_done"]
+    assert _types(sent) == ["transcript", "stop_word"]
+    assert history == []
 
 
 def test_drive_converse_turns_times_out_hung_turn():
@@ -780,10 +781,10 @@ def test_standby_preserves_playback_tail_until_matching_drain():
 
 
 @pytest.mark.parametrize('phase', ['thinking', 'speaking', 'tail'])
-def test_busy_speech_is_control_only_and_never_transcribed(monkeypatch, phase):
+def test_accepted_barge_in_is_captured_in_every_phase(monkeypatch, phase):
     calls = []
     monkeypatch.setattr(speech, 'mark_speech_interrupted', lambda: None)
-    session = ConverseSession(np, transcribe=lambda path: calls.append(path) or 'should never be a message')
+    session = ConverseSession(np, transcribe=lambda path: calls.append(path) or 'continued request')
     stop = threading.Event()
     interrupted = threading.Event()
     session.begin_turn('active', tts_stop=stop, on_interrupt=interrupted.set)
@@ -798,7 +799,8 @@ def test_busy_speech_is_control_only_and_never_transcribed(monkeypatch, phase):
         for pcm in (calibration(), speech_like(5000, seed=23), silence(1.8)):
             session.stream.feed(pcm.tobytes())
         assert interrupted.wait(3)
-        assert not calls and session.transcripts.empty()
+        assert session.transcripts.get(timeout=3) == 'continued request'
+        assert len(calls) == 1
         if phase != 'tail':
             assert stop.is_set()
     finally:
@@ -818,18 +820,18 @@ def test_stale_cancel_does_not_touch_newer_thinking_turn():
     assert interrupted == [True]
 
 
-def test_control_audio_buffer_is_discarded_before_fresh_input():
+def test_thinking_completion_keeps_candidate_input_before_onset():
     session = ConverseSession(np)
     session.begin_turn('turn')
-    session.stream.feed(np.full(960, 99, dtype=np.int16).tobytes())
+    session._pre_roll.append(np.full(480, 11, np.int16))
+    session.stream.feed(np.full(480, 99, np.int16).tobytes())
     session.end_turn()
-    session.stream.feed(np.full(480, 7, dtype=np.int16).tobytes())
     audio, _ = session.stream.read(480)
-    assert np.all(audio == 7)
+    assert np.all(audio == 99)
+    assert np.all(session._pre_roll[0] == 11)
 
 
-
-def test_fresh_input_resumes_after_interruption_without_replaying_control_audio(monkeypatch):
+def test_continuation_and_later_fresh_input_are_both_preserved(monkeypatch):
     monkeypatch.setattr(speech, 'mark_speech_interrupted', lambda: None)
     called = []
     tripped = threading.Event()
@@ -844,7 +846,8 @@ def test_fresh_input_resumes_after_interruption_without_replaying_control_audio(
         for pcm in (silence(2), speech_like(2000, seed=5), silence(2)):
             session.stream.feed(pcm.tobytes())
         assert session.transcripts.get(timeout=3) == 'fresh request'
-        assert len(called) == 1
+        assert session.transcripts.get(timeout=3) == 'fresh request'
+        assert len(called) == 2
     finally:
         session.stop()
 
@@ -883,13 +886,16 @@ def test_managed_input_reserves_transcript_before_driver_can_begin_thinking():
     try:
         for pcm in (calibration(), speech_like(2000, seed=8), silence(1.8)):
             session.stream.feed(pcm.tobytes())
-        assert session.transcripts.get(timeout=3) == 'first request'
+        first = session.transcripts.get(timeout=3)
+        assert first == 'first request'
         assert session.capture_pending()
         for pcm in (speech_like(5000, seed=9), silence(1.8)):
             session.stream.feed(pcm.tobytes())
-        # A second ordinary transcription must not be queued behind the reserved request.
-        with pytest.raises(_queue.Empty):
-            session.transcripts.get(timeout=.2)
+        # Continued speech supersedes a request whose driver has not started yet.
+        assert session.transcripts.get(timeout=3) == 'first request'
+        stop = threading.Event()
+        session.reserve_turn('superseded', stop, first)
+        assert stop.is_set()
     finally:
         session.stop()
 

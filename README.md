@@ -64,23 +64,24 @@ A non-wake client may stream after `ready`. The server answers:
 | `error` | the turn failed (the message is spoken-safe text) |
 | `turn_done` | the reply is fully sent; `next_action` tells the client to listen or enter standby after drain |
 | `quiet` | session mode: the stream has been silent for another `quiet_interval` seconds |
-| `stop_word` | session mode: you said a stop phrase; no turn ran |
+| `stop_word` | you said a standalone stop phrase; no turn ran |
 
 Handle `thinking` as an explicit turn boundary even without a preceding `transcript`:
 mark the agent turn active and show "thinking". During the granted activation, keep sending
 microphone PCM through thinking, speaking, and playback drain for server-side interruption/control
-detection. After request endpointing, that audio does not produce ordinary transcripts or queued
-user turns; VAD speech onset interrupts the active turn without STT. Arm the client's turn
+detection. Accepted speech interrupts obsolete output and is captured as a continuation in the
+same conversation, preserving the original request. Standalone spoken stop phrases cancel without
+starting another agent run. Arm the client's turn
 deadline if it is not already running; do not restart it. This frame reports lifecycle status,
 not reasoning text. See
-[the client spec](client%20spec.md#handling-thinking) for the frame format and tracing behavior.
+[the client spec](specs/client.md#handling-thinking) for the frame format and tracing behavior.
 
 During a long agent/TTS turn, `working` frames carry the same `turn_id` (and
 `traceparent` when available) every 15 seconds. Clients can refresh that turn's
 inactivity timer without changing thinking/speaking state. Ignore stale IDs and
 keep any absolute turn limit; keepalives do not extend the server's 120-second
 default turn timeout. They stop before terminal frames and on disconnect. See
-[client spec.md](client%20spec.md) for the full deadline contract.
+[specs/client.md](specs/client.md) for the full deadline contract.
 
 Client control frames: `{"stop": true}` ends the audio attachment (persisted conversation history remains), `{"commit": true}` forces the current
 utterance to endpoint, `{"type": "cancel", "turn_id": "..."}` cancels the current turn while
@@ -100,7 +101,7 @@ interruptions, and errors return `listen`; only a successful sign-off in session
 **Session mode** (`quiet_interval` > 0) is for wake-word devices: the server reports quiet in
 *received* audio, recognizes stop phrases, and decides when to return the client to standby.
 Keep streaming through playback drain, then follow `next_action`. An open socket does not
-require sending idle ambient audio. See [the client spec](client%20spec.md#handling-turn_donenext_action)
+require sending idle ambient audio. See [the client spec](specs/client.md#handling-turn_donenext_action)
 for the full action contract.
 
 Named clients send names and the API key, without a conversation override or another credential.
@@ -115,7 +116,7 @@ Completed responses for the underlying conversation can play without microphone 
 final-response hook suppresses voice-owned duplicates and `[SILENT]` output; producers outside
 the process can use authenticated `POST /v1/audio/conversations/<id>/output` with `event_id`,
 `text`, and `expires_at_unix_ms`. Delivery is connected-only and waits for prior speaker drain.
-See [client spec section 9](client%20spec.md#9-conversation-output-without-user-input).
+See [client spec section 9](specs/client.md#9-conversation-output-without-user-input).
 
 Announcement/alarm capabilities and playback acknowledgements, server-owned timers, and
 synchronized group announcements remain in [issue #34](https://github.com/Keryxion/hermes-converse/issues/34).
@@ -180,7 +181,7 @@ and its follow-up conversation, including uninterrupted upstream audio during th
 playback for barge-in/control detection. The server's selection is advisory: it still accepts
 audio sent by noncooperating clients after a denial or without a claim. Cooperating clients
 must follow the gate; idle and losing devices do not stream their ambient audio.
-With arbitration disabled, requests receive immediate grants. See [client spec.md](client%20spec.md) for the full protocol,
+With arbitration disabled, requests receive immediate grants. See [specs/client.md](specs/client.md) for the full protocol,
 and examples.
 
 **Speech detection.** Silero VAD is the default for speech onset, barge-in, and
@@ -301,8 +302,10 @@ client-constructed `/p/<profile>/` route replaces profile selection.
 
 Deployed servers may still parse the legacy field and reject it with
 `profile_unsupported` (4400). The parser remains in the current implementation;
-clients must remove the field regardless. See [client spec.md](client%20spec.md)
+clients must remove the field regardless. See [specs/client.md](specs/client.md)
 for the removal contract.
+
+The voice lifecycle and server integration contract are in [specs/server.md](specs/server.md).
 
 ## Develop and test
 

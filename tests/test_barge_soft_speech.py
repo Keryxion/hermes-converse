@@ -35,7 +35,7 @@ def test_soft_mumbling_does_not_cancel_but_deliberate_speech_does(monkeypatch, b
                         lambda target, **kw: threading.Thread(target=target, daemon=True))
     monkeypatch.setattr(speech, 'mark_speech_interrupted', lambda: None)
     session = ConverseSession(np, vad_model='energy',
-                              transcribe=lambda path: pytest.fail('control audio must never reach STT'))
+                              transcribe=lambda path: 'deliberate continuation')
     detector = session._detector
     if backend == 'silero':
         detector._stream = ConfidentSpeech()
@@ -93,8 +93,10 @@ def test_soft_mumbling_does_not_cancel_but_deliberate_speech_does(monkeypatch, b
         assert not cancelled(), f'{backend}/{phase}: a short burst cancelled the reply'
         deliver([4500] * 3 + [900] * 30 + [60] * 30)
         assert not cancelled(), f'{backend}/{phase}: a brief noise over mumbling cancelled the reply'
-        deliver([4500] * 30)
-        assert cancelled(), f'{backend}/{phase}: deliberate sustained speech was ignored'
+        session.stream.feed(np.concatenate([pcm_block(4500)] * 30 + [pcm_block(60)] * 40).tobytes())
+        assert session.transcripts.get(timeout=3) == 'deliberate continuation'
+        if phase != 'pending':
+            assert cancelled(), f'{backend}/{phase}: deliberate sustained speech was ignored'
     finally:
         session.stop()
         session._worker.join(timeout=2)
