@@ -698,3 +698,47 @@ stops. Normal authentication and first-frame errors remain as in section 1.
 Bedroom even when requested from Kitchen. Clarify ambiguous names, and report
 an unavailable destination before confirming audible delivery there (section 10).
 The requesting device receives confirmation; only the destination rings.
+
+## 12. Changing the chat model on an attached voice connection
+
+A client model picker obtains configured choices from the authenticated
+`GET /api/model/options?include_unconfigured=false` inventory. Use its provider
+slugs and model IDs; `/v1/models` can contain virtual agent aliases and is not
+the full picker inventory. No provider credentials belong in a voice frame.
+
+On the existing authenticated socket, send:
+
+```json
+{"type":"set_model","request_id":"model-7","model":"beta","provider":"litellm"}
+```
+
+`request_id` is 1–80 ASCII letters, digits, underscores or hyphens. `model` is a
+nonempty string of at most 256 characters; optional `provider` is a nonempty
+string of at most 80 characters. Neither accepts control characters. Send both
+as `null` to restore this connection's configured `voice_model` / `voice_provider`
+defaults (which can themselves defer to the server's normal model selection).
+
+The server stores the selection for subsequent user turns on this socket and
+acknowledges it without cancelling an in-flight run or changing its TTS/audio:
+
+```json
+{"type":"model_changed","request_id":"model-7","model":"beta","provider":"litellm","uses_default":false,"applies_to":"next_turn"}
+```
+
+Each new run snapshots the current selection at submission. Already-submitted
+runs retain their model. Selection changes preserve the conversation, wake
+activation, microphone stream, current phase, and queued playback. They do not
+create a new voice turn or run another wake election. Outbound supplied-text
+announcements have no LLM selection to change.
+
+`model_changed` confirms the stored request, not that an upstream provider has
+successfully executed it. Model/provider access and execution still use the
+normal authenticated Runs API and its error reporting. No global configuration
+or another device's selection is modified. A client may persist the confirmed
+preference per server and resend it after `ready` on reconnect.
+
+Invalid selection data returns `{"type":"model_error","request_id":"model-7","error":"bad_model_selection"}`
+and keeps the previous choice. An invalid/missing request ID returns
+`model_error` with `error: "bad_request_id"` without echoing untrusted ID data.
+These errors do not end the voice connection. A picker keeps its previous
+confirmed choice on rejection or acknowledgement timeout and exposes a retry.
