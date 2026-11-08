@@ -50,6 +50,7 @@ A non-wake client may stream after `ready`. The server answers:
 | `ready` | rates, the socket's `session_id`, and two server timestamps for clock-skew estimation |
 | `transcript` | what it heard; carries a `turn_id` every later frame of the turn repeats |
 | `thinking` | the agent turn is running (show "thinking", not "listening") |
+| `working` | active-turn keepalive every 15 seconds; refresh the matching turn’s inactivity timer |
 | `speaking` + binary frames | the reply as PCM16 at `output_rate` |
 | `interrupted` | you spoke over the reply: stop playing, the turn is cancelled |
 | `error` | the turn failed (the message is spoken-safe text) |
@@ -65,6 +66,13 @@ user turns; limited recognition of "cancel" or similar controls is allowed. Arm 
 deadline if it is not already running; do not restart it. This frame reports lifecycle status,
 not reasoning text. The current worker still needs the interruption-only input mode; see
 [the client spec](client%20spec.md#handling-thinking) for the frame format and tracing behavior.
+
+During a long agent/TTS turn, `working` frames carry the same `turn_id` (and
+`traceparent` when available) every 15 seconds. Clients can refresh that turn's
+inactivity timer without changing thinking/speaking state. Ignore stale IDs and
+keep any absolute turn limit; keepalives do not extend the server's 120-second
+default turn timeout. They stop before terminal frames and on disconnect. See
+[client spec.md](client%20spec.md) for the full deadline contract.
 
 Client control frames: `{"stop": true}` ends the session, `{"commit": true}` forces the current
 utterance to endpoint, `{"type": "cancel", "turn_id": "..."}` cancels the current turn while

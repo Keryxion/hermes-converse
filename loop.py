@@ -43,6 +43,8 @@ MAX_ENDPOINT_HOLDS = 3
 # Reply speech: poll for deltas every 0.5 s; after 4 empty polls (~2 s) speak the buffered tail.
 IDLE_POLL_SECONDS = 0.5
 IDLE_POLLS_TO_FLUSH = 4
+# Keep clients with shorter inactivity deadlines alive during agent/TTS waits.
+WORKING_FRAME_INTERVAL = 15.0
 SMART_TURN_DEFAULT_THRESHOLD = 0.5
 # Bound on the per-connection conversation history kept in memory (~20 user+assistant turns): a
 # simple tail-cap so a long-lived socket can't grow it without limit. The Runs API owns the real
@@ -709,6 +711,7 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
     turn_task = asyncio.ensure_future(_run_agent(d, turn, interrupted_in))
     # TTS reads provider credentials through the profile scope: carry the driver's contextvars.
     speech.spawn_context_thread(_produce_speech, name="converse-tts", args=(d, turn)).start()
+    progress_task = asyncio.create_task(_report_working(d, turn))
     try:
         await _stream_reply(d, turn, turn_task)
 
@@ -743,6 +746,11 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
             with contextlib.suppress(BaseException):
                 await turn_task
         raise
+    finally:
+        # Join before terminal frames, including cancellation/disconnect paths: no stale
+        # keepalives may extend a client's next turn or outlive this driver.
+        progress_task.cancel()
+        await asyncio.gather(progress_task, return_exceptions=True)
 
     reply = _record_history(d.history, turn)
     barged = bool(session.take_interrupted() or turn.tts_stop.is_set()) and not turn.timed_out
@@ -768,6 +776,15 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
     if d.quiet_interval > 0 and not turn.timed_out:
         session.begin_playback_tail(turn.turn_id, d.tail_fallback)
     return next_action
+
+
+async def _report_working(d: _Driver, turn: _Turn) -> None:
+    """Turn liveness, not proof of model/tool progress; never extends the server deadline."""
+    while True:
+        await asyncio.sleep(WORKING_FRAME_INTERVAL)
+        if turn.tts_stop.is_set() or d.session.stopped:
+            return
+        await d.send_json({"type": "working", **turn.meta})
 
 
 async def _run_agent(d: _Driver, turn: _Turn, interrupted: bool) -> None:
