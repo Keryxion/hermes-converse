@@ -50,6 +50,7 @@ from .arbitrate import Arbitrator
 from .auth import offered_key_protocol, verify_api_key
 from .conversation import ConversationHub
 from .named import DeviceStore, NamedError, NamedSessions, parse_names
+from .model_selection import parse_model_selection, public_model_catalog
 from .loop import ConverseSession, drive_converse_turns, parse_start_config, voice_system_prompt
 from .settings import Settings, load_settings
 from .tracing import force_flush
@@ -304,8 +305,15 @@ class ConverseRoute:
     async def _connected(self, ws, session, api_key, http, base_url, synth, cap, name,
                          quiet_interval, settings, attachment, server_recv_unix_ms, input_rate, output_rate,
                          named=None):
+        client = RunsClient(base_url, api_key, http=http, approval_choice=settings.approval_choice)
+        try:
+            catalog = public_model_catalog(await client.model_options())
+        except Exception:
+            logger.warning("converse model catalog unavailable", exc_info=True)
+            catalog = {'providers': []}
         ready = {
             "type": "ready",
+            "model_catalog": catalog,
             "input": {"sample_rate": input_rate, "format": "pcm16", "block_ms": 30},
             "output": {"sample_rate": output_rate, "format": "pcm16"},
             "session_id": session.session_id,
@@ -318,13 +326,13 @@ class ConverseRoute:
             ready.pop('conversation_id')
             ready.update(recipient_id=device.recipient_id, assistant_name=device.assistant_name,
                          device_name=device.device_name)
+        ready["server_send_unix_ms"] = int(time.time() * 1000)
         await ws.send_json(ready)
         arbitrator = await self._arbitrator_for_settings(settings)
         # A configured label is a prefix: each socket needs its own candidate identity.
         device_id = f"{settings.arbitrate_device_id or 'device'}_{uuid.uuid4().hex}"
         if arbitrator is not None:
             await arbitrator.register(device_id)
-        client = RunsClient(base_url, api_key, http=http, approval_choice=settings.approval_choice)
         if named is not None:
             connection.client = client
         await _serve(ws, session=session, synth=synth, cap=cap, client=client, settings=settings,
@@ -465,8 +473,9 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
     session_id = attachment.conversation_id if attachment is not None else session.session_id
     history = [] if history is None else history
     allow_signoff = quiet_interval > 0
+    default_model = (settings.model, settings.provider)
+    selected_model = default_model
     wake_tasks: set[asyncio.Task] = set()
-
     async def _reply_wake(frame: dict) -> None:
         try:
             reply = await _wake_response(frame, arbitrator=arbitrator, device_id=device_id)
@@ -475,6 +484,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
             logger.debug("converse wake reply failed", exc_info=True)
 
     async def _pump_client() -> None:
+        nonlocal selected_model
         try:
             async for msg in ws:
                 if msg.type == web.WSMsgType.BINARY:
@@ -494,6 +504,21 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                         session.notify_drained(frame.get("turn_id"))
                     if frame.get("type") == "cancel":
                         session.cancel(frame.get("turn_id"))
+                    if frame.get("type") == "set_model":
+                        request_id = frame.get("request_id")
+                        if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", request_id):
+                            await ws.send_json({"type": "model_error", "error": "bad_request_id"})
+                            continue
+                        try:
+                            choice = parse_model_selection(frame)
+                        except ValueError:
+                            await ws.send_json({"type": "model_error", "request_id": request_id,
+                                                "error": "bad_model_selection"})
+                            continue
+                        selected_model = default_model if choice == (None, None) else choice
+                        await ws.send_json({"type": "model_changed", "request_id": request_id,
+                                            "model": selected_model[0], "provider": selected_model[1],
+                                            "uses_default": choice == (None, None), "applies_to": "next_turn"})
                     if frame.get("type") == "wake":
                         # Do not block PCM, cancel, stop, or a new claim while an election runs.
                         task = asyncio.create_task(_reply_wake(frame))
@@ -506,6 +531,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
         session.stop()
 
     async def _run_turn(transcript: str, on_delta, *, interrupted: bool) -> tuple[str, Optional[str]]:
+        model, provider = selected_model  # Snapshot once; do not alter a run already in flight.
         with hub.owned_run(attachment, transcript) if hub is not None else contextlib.nullcontext() as owned:
             result = await client.run_turn(
                 text=transcript, session_id=session_id, on_delta=on_delta,
@@ -513,7 +539,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                     name, allow_signoff=allow_signoff, end_phrases=settings.end_phrases,
                     device_name=named_device.device_name if named_device else None,
                     recipient_id=named_device.recipient_id if named_device else None),
-                model=settings.model, provider=settings.provider,
+                model=model, provider=provider,
                 idempotency_key=f"converse-{session_id}-{uuid.uuid4().hex}")
             if owned is not None and result.error is None:
                 owned.reply = result.reply
