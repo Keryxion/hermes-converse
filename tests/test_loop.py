@@ -381,6 +381,8 @@ def test_drive_converse_turns_control_frame_ordering():
     assert sent[0]["text"] == "hello there." and sent[3] == ("bytes", b"Hi back.")
     turn_ids = {f["turn_id"] for f in sent if isinstance(f, dict) and "turn_id" in f}
     assert len(turn_ids) == 1 and sent[0]["turn_id"] == sent[-1]["turn_id"]
+    thinking = next(f for f in sent if isinstance(f, dict) and f.get("type") == "thinking")
+    assert thinking["turn_id"] == sent[0]["turn_id"]
     assert history == [{"role": "user", "content": "hello there."}, {"role": "assistant", "content": "Hi back."}]
 
 

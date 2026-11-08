@@ -679,7 +679,7 @@ async def drive_converse_turns(
 async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> Optional[bool]:
     """Run one agent turn and speak its reply; return turn_done's ``expects_more``."""
     session = d.session
-    await d.send_json({"type": "thinking"})
+    await d.send_json({"type": "thinking", **turn.meta})
     session.begin_turn()
     interrupted_in = session.take_interrupted()
     turn_task = asyncio.ensure_future(_run_agent(d, turn, interrupted_in))
