@@ -681,6 +681,46 @@ def test_session_idle_cancel_does_not_poison_next_capture():
     assert session.transcripts.get_nowait() == "a fresh transcript"
 
 
+def test_cancel_cannot_land_inside_the_capture_start_transition():
+    # Regression for the _capturing/_cancelled race: cancel() must not be able to observe
+    # `_capturing = True` from a fresh capture whose `_cancelled.clear()` hasn't happened yet (it
+    # would queue a CancelTurn for a capture that then runs to completion as a normal turn right
+    # after). Hold `_capture_lock` across a simulated capture-start transition, as `_run` does, and
+    # assert a concurrent cancel() blocks until the transition finishes rather than interleaving.
+    session = ConverseSession(np)
+    session._cancelled.set()  # a stale cancel from before this capture started
+    entered = threading.Event()
+    release = threading.Event()
+
+    def fake_capture_start():
+        with session._capture_lock:
+            entered.set()
+            release.wait(timeout=2)
+            session._cancelled.clear()
+            session._capturing = True
+
+    starter = threading.Thread(target=fake_capture_start)
+    starter.start()
+    assert entered.wait(timeout=2)
+
+    canceller = threading.Thread(target=lambda: session.cancel("turn-x"))
+    canceller.start()
+    canceller.join(timeout=0.1)
+    assert canceller.is_alive()  # cancel() is blocked on the lock, not racing the transition
+
+    release.set()
+    starter.join(timeout=2)
+    canceller.join(timeout=2)
+
+    # cancel() ran after the transition completed, so it correctly sees the real capture and
+    # queues exactly one CancelTurn for it; `_cancelled` is left set so the capture gets discarded.
+    assert session._capturing is True
+    assert session._cancelled.is_set()
+    marker = session.transcripts.get_nowait()
+    assert isinstance(marker, cl.CancelTurn) and marker.turn_id == "turn-x"
+    assert session.transcripts.qsize() == 0
+
+
 def test_driver_cancel_turn_emits_frames():
     session = _FakeConverseSession([])
     session.transcripts = _queue.Queue()

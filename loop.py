@@ -216,6 +216,11 @@ class ConverseSession:
         # True while the VAD worker is mid-capture, so ``cancel()`` knows whether aborting a capture
         # (and queuing a CancelTurn marker) applies to the capture happening right now.
         self._capturing = False
+        # Guards the ``_capturing`` / ``_cancelled`` transition at capture start against
+        # ``cancel()`` (called from the websocket thread): without it, a cancel landing between
+        # "capturing = True" and "cancelled.clear()" gets wiped by that clear(), so the capture it
+        # meant to abort runs to completion as a normal turn right after a phantom cancelled one.
+        self._capture_lock = threading.Lock()
         self.stream = NetworkMicStream(np, stop=self._stop)
         # The event stream the driver consumes: a transcript str, a QuietTick, a TailBarge, or the
         # None sentinel on shutdown.
@@ -315,8 +320,9 @@ class ConverseSession:
                     except Exception:
                         logger.debug("converse on_trip callback failed", exc_info=True)
                 recorder = PhaseRecorder(input_rate=self._input_rate, session_mode=self._quiet_interval > 0)
-                self._capturing = True
-                self._cancelled.clear()  # fresh capture: an idle cancel must not poison it
+                with self._capture_lock:
+                    self._cancelled.clear()  # fresh capture: an idle cancel must not poison it
+                    self._capturing = True
                 try:
                     transcript = self._capture_and_transcribe(recorder)
                 finally:
@@ -381,7 +387,9 @@ class ConverseSession:
         end the playback tail — and keep the socket, session and history. Queues a
         :class:`CancelTurn` marker when a capture was aborted so the driver emits ``interrupted``
         + ``turn_done`` for the cancelled turn."""
-        self._cancelled.set()
+        with self._capture_lock:
+            self._cancelled.set()
+            capturing = self._capturing
         # Unblock stream.read() so an in-progress capture ends promptly instead of blocking on the
         # mic queue. (Mirrors commit().)
         silence = self._np.zeros(self._block, dtype=self._np.int16).tobytes()
@@ -393,7 +401,7 @@ class ConverseSession:
             self._interrupted.set()
         self._playing.clear()
         self.end_playback_tail()
-        if self._capturing:
+        if capturing:
             self.transcripts.put(CancelTurn(turn_id))
 
     def _trigger_barge_in(self) -> None:
