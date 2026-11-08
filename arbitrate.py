@@ -15,11 +15,12 @@ Design
 The arbitrator is intentionally small and has no audio, VAD, STT or TTS of its own. It is a pure
 decision layer over a message bus:
 
-* ``register(device_id, area=None, person=None)`` — a device announces itself; returns a
-  ``Device`` handle the device uses for the lifetime of its socket.
-* ``claim_turn(device_id, utterance_id, transcript)`` — a device that has endpointed an utterance
-  asks to answer it. The first claim that lands wins; every other device is told to stand down for
-  that turn.
+* ``register(device_id)`` — a device announces itself; returns a ``Device`` handle the device uses
+  for the lifetime of its socket.
+* ``claim_turn(device_id, utterance_id, transcript, *, wake_word=None, confidence=None,
+  heard_at=None, volume=None)`` — a device that has endpointed an utterance asks to answer it.
+  Every other device claiming the same utterance (and, under ``wake_signal``, the same wake word)
+  is told to stand down for that turn.
 * ``release_turn(device_id, utterance_id)`` — the winner is done (reply spoken, or the socket
   closed); the utterance is cleared so a later utterance can be re-elected.
 
@@ -32,9 +33,18 @@ Two election policies are supported:
 
 * ``first_to_endpoint`` (default) — the first device to ``claim_turn`` wins the utterance. Best for
   always-listening clients where the one closest to the user naturally endpointed first.
-* ``proximity`` — the device in the same ``area`` as the ``person`` who spoke wins; ties fall back
-  to first-to-endpoint. Requires the start frame to carry ``area`` and ``person`` (populated from
-  Xanadue per-person area inference on the client side).
+* ``wake_signal`` — claims for the same utterance are first split by ``wake_word``: devices that
+  heard a *different* wake word are not competing (two different assistants were addressed, or the
+  transcripts merely collided) and each such group is elected independently. Within a group, the
+  claimant with the highest wake-word detection ``confidence`` wins; ties fall back to the loudest
+  captured ``volume``, then to the earliest ``heard_at`` (the client's wall-clock wake timestamp),
+  then to whoever's claim reached the server first. Any field a device omits sorts as "worst" on
+  that tier rather than crashing, so older clients that send none of this still arbitrate (by
+  ``heard_at``/first-claim order, same as a bare ``first_to_endpoint`` tie).
+
+  There used to be a third policy, ``proximity``, that guessed the speaker's location by a majority
+  vote over each client's self-reported ``area`` string. It never had a real signal to work from —
+  no client actually measured proximity — so it has been replaced by ``wake_signal`` above.
 
 Concurrency
 -----------
@@ -58,7 +68,7 @@ logger = logging.getLogger(__name__)
 # ── policies ─────────────────────────────────────────────────────────────────────────────────
 
 POLICY_FIRST_TO_ENDPOINT = "first_to_endpoint"
-POLICY_PROXIMITY = "proximity"
+POLICY_WAKE_SIGNAL = "wake_signal"
 DEFAULT_POLICY = POLICY_FIRST_TO_ENDPOINT
 
 
@@ -68,20 +78,25 @@ DEFAULT_POLICY = POLICY_FIRST_TO_ENDPOINT
 class DeviceAnnounce:
     """A device announced itself on the bus."""
     device_id: str
-    area: Optional[str]
-    person: Optional[str]
     registered_at: float
 
 
 @dataclass(frozen=True)
 class TurnClaim:
-    """A device claims the right to answer an utterance."""
+    """A device claims the right to answer an utterance.
+
+    ``wake_word``/``confidence``/``heard_at``/``volume`` are the ``wake_signal`` policy's inputs;
+    all four are optional and ``None`` when a device doesn't report them (older clients, or a
+    session-mode turn that followed on from a conversation without a fresh wake-word hit).
+    """
     device_id: str
     utterance_id: str
     transcript: str
-    area: Optional[str]
-    person: Optional[str]
     claimed_at: float
+    wake_word: Optional[str] = None
+    confidence: Optional[float] = None
+    heard_at: Optional[float] = None
+    volume: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -121,18 +136,27 @@ class Device:
     """
 
     device_id: str
-    area: Optional[str] = None
-    person: Optional[str] = None
     registered_at: float = 0.0
 
-    def claim(self, utterance_id: str, transcript: str) -> TurnClaim:
+    def claim(
+        self,
+        utterance_id: str,
+        transcript: str,
+        *,
+        wake_word: Optional[str] = None,
+        confidence: Optional[float] = None,
+        heard_at: Optional[float] = None,
+        volume: Optional[float] = None,
+    ) -> TurnClaim:
         return TurnClaim(
             device_id=self.device_id,
             utterance_id=utterance_id,
             transcript=transcript,
-            area=self.area,
-            person=self.person,
             claimed_at=time.monotonic(),
+            wake_word=wake_word,
+            confidence=confidence,
+            heard_at=heard_at,
+            volume=volume,
         )
 
 
@@ -197,76 +221,66 @@ class Arbitrator:
     bus:
         The message bus devices publish claims on and subscribe to grants/denials on.
     policy:
-        ``first_to_endpoint`` (default) or ``proximity``.
+        ``first_to_endpoint`` (default) or ``wake_signal``.
     """
 
     def __init__(self, *, bus: Optional[Bus] = None, policy: str = DEFAULT_POLICY) -> None:
         self.bus = bus or LocalBus()
-        if policy not in (POLICY_FIRST_TO_ENDPOINT, POLICY_PROXIMITY):
+        if policy not in (POLICY_FIRST_TO_ENDPOINT, POLICY_WAKE_SIGNAL):
             raise ValueError(f"unknown arbitrate policy {policy!r}")
         self.policy = policy
         self._lock = asyncio.Lock()
         self._devices: dict[str, Device] = {}
-        # utterance_id -> (winner_device_id, granted)
-        self._elected: dict[str, tuple[str, bool]] = {}
-        # device_id -> set of utterance_ids it has won (for release bookkeeping)
-        self._wins: dict[str, set[str]] = {}
-        # utterance_id -> list of TurnClaim (every claimant, for proximity matching)
-        self._claims: dict[str, list[TurnClaim]] = {}
-        # utterance_id -> asyncio.Event set when proximity finalization completes
-        self._finalized: dict[str, asyncio.Event] = {}
-        # utterance_id -> winning device_id (proximity outcome)
-        self._proximity_winner: dict[str, str] = {}
+        # election_key -> (winner_device_id, granted). Under first_to_endpoint the key is always
+        # (utterance_id, None); under wake_signal it is (utterance_id, wake_word), so claims for the
+        # same utterance but a different wake word elect independently instead of competing.
+        self._elected: dict[tuple[str, Optional[str]], tuple[str, bool]] = {}
+        # device_id -> set of election_keys it has won (for release bookkeeping)
+        self._wins: dict[str, set[tuple[str, Optional[str]]]] = {}
+        # election_key -> list of TurnClaim (every claimant, for wake_signal ranking)
+        self._claims: dict[tuple[str, Optional[str]], list[TurnClaim]] = {}
+        # election_key -> asyncio.Event set when wake_signal finalization completes
+        self._finalized: dict[tuple[str, Optional[str]], asyncio.Event] = {}
+        # election_key -> winning device_id (wake_signal outcome)
+        self._wake_winner: dict[tuple[str, Optional[str]], str] = {}
+
+    def _election_key(self, utterance_id: str, wake_word: Optional[str]) -> tuple[str, Optional[str]]:
+        """The key claims are grouped and elected under: just the utterance under
+        ``first_to_endpoint`` (wake word is irrelevant to that policy), or utterance+wake-word under
+        ``wake_signal`` so different wake words never suppress each other."""
+        if self.policy != POLICY_WAKE_SIGNAL:
+            return (utterance_id, None)
+        return (utterance_id, wake_word)
 
     # ── registration ─────────────────────────────────────────────────────────────────────
 
-    async def register(
-        self,
-        device_id: str,
-        *,
-        area: Optional[str] = None,
-        person: Optional[str] = None,
-    ) -> Device:
+    async def register(self, device_id: str) -> Device:
         """Register *device_id* as a candidate and announce it on the bus.
 
-        Returns a :class:`Device` handle. Re-registering the same id updates its area/person and
-        returns the same handle.
+        Returns a :class:`Device` handle. Re-registering the same id returns the same handle.
         """
         async with self._lock:
             device = self._devices.get(device_id)
             if device is None:
-                device = Device(
-                    device_id=device_id,
-                    area=area,
-                    person=person,
-                    registered_at=time.monotonic(),
-                )
+                device = Device(device_id=device_id, registered_at=time.monotonic())
                 self._devices[device_id] = device
                 self._wins[device_id] = set()
-            else:
-                device.area = area
-                device.person = person
-        await self.bus.publish(
-            DeviceAnnounce(
-                device_id=device_id,
-                area=area,
-                person=person,
-                registered_at=device.registered_at,
-            )
-        )
-        logger.info(
-            "arbitrate: registered device %s (area=%s person=%s policy=%s)",
-            device_id, area, person, self.policy,
-        )
+        await self.bus.publish(DeviceAnnounce(device_id=device_id, registered_at=device.registered_at))
+        logger.info("arbitrate: registered device %s (policy=%s)", device_id, self.policy)
         return device
 
     async def unregister(self, device_id: str) -> None:
         """Drop *device_id* from the candidate set and release any utterance it has won."""
         async with self._lock:
             device = self._devices.pop(device_id, None)
-            won = self._wins.pop(device_id, set()) or set()
-        for utterance_id in list(won):
+            # A snapshot, not a pop: release_turn looks the election key up through this same
+            # ``_wins[device_id]`` set and discards from it as it releases, so the entry must
+            # still be there for each call below to find.
+            won = set(self._wins.get(device_id, set()))
+        for utterance_id, _wake_word in list(won):
             await self.release_turn(device_id, utterance_id)
+        async with self._lock:
+            self._wins.pop(device_id, None)
         if device is not None:
             logger.info("arbitrate: unregistered device %s", device_id)
 
@@ -277,62 +291,71 @@ class Arbitrator:
         device_id: str,
         utterance_id: str,
         transcript: str,
+        *,
+        wake_word: Optional[str] = None,
+        confidence: Optional[float] = None,
+        heard_at: Optional[float] = None,
+        volume: Optional[float] = None,
     ) -> tuple[bool, Optional[str]]:
         """Ask to answer *utterance_id*.
+
+        ``wake_word``/``confidence``/``heard_at``/``volume`` are only consulted under the
+        ``wake_signal`` policy (see the module docstring); ``first_to_endpoint`` ignores them.
 
         Returns ``(granted, winner_device_id)``. When ``granted`` is True, this device won and may
         speak aloud; ``winner_device_id`` is this device's id. When ``granted`` is False, another
         device won and this one must stay silent; ``winner_device_id`` is the winner.
-
-        Only the first claim for a given ``utterance_id`` wins; later claims are denied. A device
-        may only win an utterance it has not already won.
         """
         claim = None
         should_finalize = False
+        key = self._election_key(utterance_id, wake_word)
         async with self._lock:
             device = self._devices.get(device_id)
             if device is None:
                 logger.warning("arbitrate: claim from unregistered device %s", device_id)
                 return False, None
-            claim = device.claim(utterance_id, transcript)
-            self._claims.setdefault(utterance_id, []).append(claim)
+            claim = device.claim(
+                utterance_id, transcript,
+                wake_word=wake_word, confidence=confidence, heard_at=heard_at, volume=volume,
+            )
+            self._claims.setdefault(key, []).append(claim)
 
-            existing = self._elected.get(utterance_id)
+            existing = self._elected.get(key)
             if existing is not None:
                 winner, granted = existing
                 if granted:
                     # Already finalized: deny this claim.
                     return False, winner
-                # Proximity finalization in progress: wait for the first claimant's decision.
+                # wake_signal finalization in progress: wait for the first claimant's decision.
                 should_finalize = False
             else:
-                # First claim for this utterance.
+                # First claim for this election.
                 if self.policy == POLICY_FIRST_TO_ENDPOINT:
                     # First claim wins outright.
-                    self._elected[utterance_id] = (device_id, True)
-                    self._wins.setdefault(device_id, set()).add(utterance_id)
+                    self._elected[key] = (device_id, True)
+                    self._wins.setdefault(device_id, set()).add(key)
                     granted = True
                     winner = device_id
                 else:
-                    # Proximity: tentatively record; finalize below once concurrent claims drain.
-                    # The real winner is added to ``_wins`` in ``_finalize_proximity`` — the
+                    # wake_signal: tentatively record; finalize below once concurrent claims drain.
+                    # The real winner is added to ``_wins`` in ``_finalize_wake_signal`` — the
                     # tentative claimant may not be the one that actually wins.
-                    self._elected[utterance_id] = (device_id, False)
-                    self._finalized[utterance_id] = asyncio.Event()
-                    self._proximity_winner[utterance_id] = device_id  # placeholder
-                    granted = False  # placeholder; resolved in _finalize_proximity
+                    self._elected[key] = (device_id, False)
+                    self._finalized[key] = asyncio.Event()
+                    self._wake_winner[key] = device_id  # placeholder
+                    granted = False  # placeholder; resolved in _finalize_wake_signal
                     winner = device_id
                     should_finalize = True
 
         # Publish the claim so every device (and any external observer) sees the attempt.
         await self.bus.publish(claim)
 
-        if self.policy == POLICY_PROXIMITY:
+        if self.policy == POLICY_WAKE_SIGNAL:
             if should_finalize:
-                return await self._finalize_proximity(claim, device)
+                return await self._finalize_wake_signal(claim, device, key)
             # Another claimant is finalizing: wait for the outcome.
-            await self._finalized[utterance_id].wait()
-            winner = self._proximity_winner[utterance_id]
+            await self._finalized[key].wait()
+            winner = self._wake_winner[key]
             granted = (device_id == winner)
             return granted, winner
 
@@ -342,57 +365,47 @@ class Arbitrator:
             await self._publish_decision(utterance_id, winner, granted=False)
         return granted, winner
 
-    async def _finalize_proximity(
-        self, claim: TurnClaim, device: Device
+    async def _finalize_wake_signal(
+        self, claim: TurnClaim, device: Device, key: tuple[str, Optional[str]]
     ) -> tuple[bool, Optional[str]]:
-        """Resolve a proximity election: same-area-as-speaker wins; ties go to first claim."""
+        """Resolve a wake_signal election: best-ranked claimant (see ``_rank_wake_signal``) wins."""
         # A small delay lets concurrent claims from other devices arrive before we finalize.
         await asyncio.sleep(0.05)
         async with self._lock:
-            winner, _ = self._elected[claim.utterance_id]
+            winner, _ = self._elected[key]
             if winner != device.device_id:
                 # Another device already finalized as winner.
                 return False, winner
-            # Re-evaluate: pick the best claimant by area/person proximity.
-            best = await self._best_proximity_match(claim.utterance_id)
-            self._elected[claim.utterance_id] = (best, True)
-            self._proximity_winner[claim.utterance_id] = best
+            best = self._best_wake_signal_match(key)
+            self._elected[key] = (best, True)
+            self._wake_winner[key] = best
             # ``_wins`` tracks utterances a device actually won, so record the real winner
             # (not the tentative claimant recorded at claim time).
-            self._wins.setdefault(best, set()).add(claim.utterance_id)
+            self._wins.setdefault(best, set()).add(key)
             granted = (best == device.device_id)
             winner = best
-        self._finalized[claim.utterance_id].set()
+        self._finalized[key].set()
         await self._publish_decision(claim.utterance_id, winner, granted=granted)
         return granted, winner
 
-    async def _best_proximity_match(self, utterance_id: str) -> str:
-        """Pick the best device for *utterance_id* among claimants:
-        same area as the speaker (most common area for the person) first, then first claim."""
-        claims = self._claims.get(utterance_id, [])
+    @staticmethod
+    def _rank_wake_signal(claim: TurnClaim) -> tuple[float, float, float, float]:
+        """Sort key for wake_signal ranking: highest ``confidence`` first, then loudest ``volume``,
+        then earliest ``heard_at`` (the client's wake-moment wall clock), then earliest server
+        receive order (``claimed_at``, always present, the deterministic final tie-break). A field a
+        claimant did not report sorts worst on its own tier rather than winning by default."""
+        confidence = claim.confidence if claim.confidence is not None else -1.0
+        volume = claim.volume if claim.volume is not None else -1.0
+        heard_at = claim.heard_at if claim.heard_at is not None else float("inf")
+        return (-confidence, -volume, heard_at, claim.claimed_at)
+
+    def _best_wake_signal_match(self, key: tuple[str, Optional[str]]) -> str:
+        """Pick the best device among the claimants sharing *key* (same utterance + wake word)."""
+        claims = self._claims.get(key, [])
         if not claims:
-            winner, _ = self._elected[utterance_id]
+            winner, _ = self._elected[key]
             return winner
-
-        # The speaker is the person on the claims. The speaker's area is the most
-        # common area reported by claimants for that person.
-        person = claims[0].person
-        area_counts: dict[str, int] = {}
-        for c in claims:
-            if c.person == person and c.area:
-                area_counts[c.area] = area_counts.get(c.area, 0) + 1
-
-        if area_counts:
-            # Speaker's area = most common area (ties resolve by claim/insertion order).
-            speaker_area = max(area_counts, key=area_counts.get)
-            # Among claimants in the speaker's area, earliest claim wins.
-            in_area = [c for c in claims if c.area == speaker_area]
-            in_area.sort(key=lambda c: c.claimed_at)
-            return in_area[0].device_id
-
-        # No area info: fall back to first claim.
-        ordered = sorted(claims, key=lambda c: c.claimed_at)
-        return ordered[0].device_id
+        return min(claims, key=self._rank_wake_signal).device_id
 
     # ── publishing decisions ───────────────────────────────────────────────────────────────
 
@@ -424,18 +437,26 @@ class Arbitrator:
     async def release_turn(self, device_id: str, utterance_id: str) -> None:
         """The winner releases *utterance_id* so it can be re-elected.
 
-        Called when the reply is fully spoken (``drained`` received) or the socket closes.
-        Only the winning device may release; a non-winner's release is a no-op.
+        Called when the reply is fully spoken (``drained`` received) or the socket closes. Only the
+        winning device may release; a non-winner's release is a no-op. A device claims at most one
+        election per ``utterance_id`` (its own claim has exactly one wake word), so looking the
+        election key up by ``utterance_id`` among this device's wins is unambiguous even under
+        ``wake_signal``, where several devices may hold independent elections for the same
+        ``utterance_id`` (one per distinct wake word) at once.
         """
         async with self._lock:
-            elected = self._elected.get(utterance_id)
+            won = self._wins.get(device_id, set())
+            key = next((k for k in won if k[0] == utterance_id), None)
+            if key is None:
+                return
+            elected = self._elected.get(key)
             if elected is None or elected[0] != device_id:
                 return
-            self._elected.pop(utterance_id, None)
-            self._wins.setdefault(device_id, set()).discard(utterance_id)
-            self._claims.pop(utterance_id, None)
-            self._finalized.pop(utterance_id, None)
-            self._proximity_winner.pop(utterance_id, None)
+            self._elected.pop(key, None)
+            won.discard(key)
+            self._claims.pop(key, None)
+            self._finalized.pop(key, None)
+            self._wake_winner.pop(key, None)
         await self.bus.publish(
             TurnReleased(
                 utterance_id=utterance_id,
@@ -447,14 +468,15 @@ class Arbitrator:
 
     # ── introspection ──────────────────────────────────────────────────────────────────────
 
-    def elected_winner(self, utterance_id: str) -> Optional[str]:
-        """Return the winning device id for *utterance_id*, or None if not yet elected."""
-        entry = self._elected.get(utterance_id)
+    def elected_winner(self, utterance_id: str, wake_word: Optional[str] = None) -> Optional[str]:
+        """Return the winning device id for *utterance_id* (optionally scoped to *wake_word* under
+        ``wake_signal``), or None if not yet elected."""
+        entry = self._elected.get(self._election_key(utterance_id, wake_word))
         return entry[0] if entry is not None else None
 
-    def is_winner(self, device_id: str, utterance_id: str) -> bool:
-        """True when *device_id* won *utterance_id*."""
-        entry = self._elected.get(utterance_id)
+    def is_winner(self, device_id: str, utterance_id: str, wake_word: Optional[str] = None) -> bool:
+        """True when *device_id* won *utterance_id* (optionally scoped to *wake_word*)."""
+        entry = self._elected.get(self._election_key(utterance_id, wake_word))
         return entry is not None and entry[0] == device_id
 
     @property

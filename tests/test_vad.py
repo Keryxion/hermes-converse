@@ -135,9 +135,10 @@ def test_capture_until_quiet_produces_wav_from_shim():
     stream.feed(speech.tobytes())
     for _ in range(endpoint_blocks + 2):
         stream.feed(silence.tobytes())
-    wav_path = vad.capture_until_quiet(stream, np, block, deque(maxlen=4), endpoint_blocks=endpoint_blocks,
-                                       max_blocks=max(1, 30_000 // 30), sample_rate=22050)
+    wav_path, volume = vad.capture_until_quiet(stream, np, block, deque(maxlen=4), endpoint_blocks=endpoint_blocks,
+                                               max_blocks=max(1, 30_000 // 30), sample_rate=22050)
     assert wav_path
+    assert volume > 0  # the fed audio was loud, not silence
     with wave.open(wav_path, "rb") as wf:
         assert wf.getframerate() == 22050 and wf.getnchannels() == 1 and wf.getnframes() > 0
     vad.unlink_quietly(wav_path)

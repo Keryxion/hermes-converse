@@ -150,14 +150,30 @@ class TailBarge:
 
 
 class Utterance(str):
-    """A transcript carrying the :mod:`tracing` recorder of the capture that produced it. It is a
-    ``str``, so everything that reads the queue as plain transcripts keeps working."""
+    """A transcript carrying the :mod:`tracing` recorder of the capture that produced it, plus the
+    cross-device ``wake_signal`` arbitration inputs for this utterance (see ``arbitrate.py``):
+    ``wake_word``/``confidence``/``heard_at`` come from the client's most recent ``wake`` frame
+    (None when it sent none — an older client, or a session-mode turn with no fresh wake-word hit);
+    ``volume`` is computed server-side from the captured audio (:func:`vad.utterance_volume`). It is
+    a ``str``, so everything that reads the queue as plain transcripts keeps working."""
 
     recorder: Any
+    wake_word: Optional[str]
+    confidence: Optional[float]
+    heard_at: Optional[float]
+    volume: Optional[float]
 
-    def __new__(cls, text: str, recorder: Any) -> "Utterance":
+    def __new__(
+        cls, text: str, recorder: Any, *,
+        wake_word: Optional[str] = None, confidence: Optional[float] = None,
+        heard_at: Optional[float] = None, volume: Optional[float] = None,
+    ) -> "Utterance":
         self = super().__new__(cls, text)
         self.recorder = recorder
+        self.wake_word = wake_word
+        self.confidence = confidence
+        self.heard_at = heard_at
+        self.volume = volume
         return self
 
 
@@ -223,6 +239,24 @@ class ConverseSession:
                 self._turn_detector = None
         self._worker: Optional[threading.Thread] = None
         self.on_trip: Optional[Callable[[str], None]] = None  # called with the phase name on every trip
+        # The most recent client `wake` frame (wake_word, confidence, heard_at) not yet attached to
+        # an utterance, for cross-device wake_signal arbitration. A single slot: only the latest
+        # wake hit matters, and the route's WS pump (asyncio) and this worker (a thread) touch it
+        # under the GIL, so a plain attribute swap is enough — no lock needed.
+        self._pending_wake: Optional[tuple[Optional[str], Optional[float], Optional[float]]] = None
+
+    def note_wake_signal(
+        self, *, wake_word: Optional[str], confidence: Optional[float], heard_at: Optional[float],
+    ) -> None:
+        """Route hook: the client sent a ``wake`` frame reporting its local wake-word detection for
+        the utterance it is about to (or already started to) stream. Attached to the next utterance
+        this session produces, then cleared."""
+        self._pending_wake = (wake_word, confidence, heard_at)
+
+    def _take_wake_signal(self) -> tuple[Optional[str], Optional[float], Optional[float]]:
+        pending = self._pending_wake
+        self._pending_wake = None
+        return pending or (None, None, None)
 
     # ── playback / barge-in coordination ──
     def playing(self) -> bool:
@@ -298,10 +332,17 @@ class ConverseSession:
                         self.on_trip(phase)
                     except Exception:
                         logger.debug("converse on_trip callback failed", exc_info=True)
+                # Take the pending wake signal now, at the trip that starts this utterance — not
+                # after capture, so a wake frame that arrives mid-capture is correctly left for the
+                # utterance it actually announced rather than retroactively claimed by this one.
+                wake_word, confidence, heard_at = self._take_wake_signal()
                 recorder = PhaseRecorder(input_rate=self._input_rate, session_mode=self._quiet_interval > 0)
-                transcript = self._capture_and_transcribe(recorder)
+                transcript, volume = self._capture_and_transcribe(recorder)
                 if transcript:
-                    self.transcripts.put(Utterance(transcript, recorder))
+                    self.transcripts.put(Utterance(
+                        transcript, recorder,
+                        wake_word=wake_word, confidence=confidence, heard_at=heard_at, volume=volume,
+                    ))
         except Exception:
             logger.warning("converse VAD loop failed", exc_info=True)
         finally:
@@ -361,8 +402,10 @@ class ConverseSession:
         self._playing.clear()
         self._interrupted.set()
 
-    def _capture_and_transcribe(self, recorder: Optional[PhaseRecorder] = None) -> str:
-        """Endpoint the utterance from the pre-roll and return its transcript."""
+    def _capture_and_transcribe(self, recorder: Optional[PhaseRecorder] = None) -> tuple[str, float]:
+        """Endpoint the utterance from the pre-roll and return ``(transcript, volume)`` — ``volume``
+        is the captured audio's RMS loudness (:func:`vad.utterance_volume`), the ``wake_signal``
+        arbitration input computed server-side rather than reported by the client."""
         np = self._np
         recorder = recorder or PhaseRecorder()
         silence_rms = max(float(vad.SILENCE_RMS_THRESHOLD),
@@ -370,10 +413,10 @@ class ConverseSession:
         with recorder.phase("voice.capture") as cap:
             if self._turn_detector is not None:
                 cap.set(**{"endpoint.mode": "smart_turn"})
-                wav_path = self._capture_adaptive(silence_rms)
+                wav_path, volume = self._capture_adaptive(silence_rms)
             else:
                 cap.set(**{"endpoint.mode": "fixed"})
-                wav_path = vad.capture_until_quiet(
+                wav_path, volume = vad.capture_until_quiet(
                     self.stream, np, self._block, self._pre_roll,
                     endpoint_blocks=self._endpoint_blocks, max_blocks=self._max_blocks,
                     sample_rate=self._input_rate, silence_rms=silence_rms)
@@ -387,12 +430,12 @@ class ConverseSession:
             finally:
                 vad.unlink_quietly(wav_path)
             stt.set(**{"stt.transcript_chars": len(transcript)})
-        return transcript
+        return transcript, volume
 
-    def _capture_adaptive(self, silence_rms: float) -> str:
+    def _capture_adaptive(self, silence_rms: float) -> tuple[str, float]:
         """Semantic endpoint: mirror the fixed-silence capture, but on reaching a candidate pause ask
         Smart Turn whether the utterance *sounds* finished; hold (keep listening) when it doesn't,
-        bounded by ``MAX_ENDPOINT_HOLDS`` and the utterance cap. Returns a WAV path."""
+        bounded by ``MAX_ENDPOINT_HOLDS`` and the utterance cap. Returns ``(wav_path, volume)``."""
         np = self._np
         frames = list(self._pre_roll)
         quiet = 0
@@ -424,7 +467,8 @@ class ConverseSession:
             vad.vad_log(f"smart-turn: p={prob:.3f} < {self._endpoint_threshold:.2f} -> hold "
                         f"(keep listening, {holds}/{MAX_ENDPOINT_HOLDS})")
             quiet = 0  # keep the mic open for another window
-        return vad.write_wav(np, np.concatenate(frames, axis=0), sample_rate=self._input_rate)
+        audio = np.concatenate(frames, axis=0)
+        return vad.write_wav(np, audio, sample_rate=self._input_rate), vad.utterance_volume(np, audio)
 
     def _frames_to_f32_16k(self, frames: list) -> Any:
         """Concatenate int16 capture blocks into a 16 kHz mono float32 array for Smart Turn."""
@@ -659,10 +703,16 @@ async def drive_converse_turns(
         # Cross-device arbitration: claim this utterance before running the agent turn. Only the
         # elected winner speaks aloud; losers skip the agent and TTS for this utterance. The key is
         # derived from the transcript so two devices that heard the same spoken utterance collide
-        # on the same key and exactly one wins.
+        # on the same key and exactly one wins (wake_signal splits that further by wake word).
         utterance_id = _utterance_key(transcript)
         if d.arbitrator is not None and d.device is not None:
-            granted, winner = await d.arbitrator.claim_turn(d.device_id, utterance_id, transcript)
+            granted, winner = await d.arbitrator.claim_turn(
+                d.device_id, utterance_id, transcript,
+                wake_word=getattr(item, "wake_word", None),
+                confidence=getattr(item, "confidence", None),
+                heard_at=getattr(item, "heard_at", None),
+                volume=getattr(item, "volume", None),
+            )
             if not granted:
                 # Lost the election: stay silent for this utterance. Record that we do not own it
                 # so nothing is released later, then continue listening.

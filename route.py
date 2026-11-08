@@ -22,7 +22,15 @@ Protocol (unchanged from the in-core proposal):
   client → ``{"type":"start", "key":?, "input_rate":?, "output_rate":?, "quiet_interval":?,
              "name":?}`` then binary PCM16 mono frames at ``input_rate`` (30 ms blocks preferred),
            ``{"stop": true}`` to end, ``{"commit": true}`` to force an endpoint,
-           ``{"type":"drained","turn_id":?}`` when the reply's last audio has left the speaker
+           ``{"type":"drained","turn_id":?}`` when the reply's last audio has left the speaker,
+           ``{"type":"wake","wake_word":?,"confidence":?,"heard_at":?}`` — optional, cross-device
+           arbitration input: send it the moment a LOCAL wake-word detector fires, before/as audio
+           for that utterance starts streaming. ``wake_word`` is the detector's keyword/phrase id,
+           ``confidence`` its hit score (0.0-1.0), ``heard_at`` this device's wall-clock unix ms at
+           the moment it fired. Only consulted when ``arbitrate_policy: wake_signal`` (see
+           ``arbitrate.py``); a client that never sends it still arbitrates, just without those
+           signals. Applies to the NEXT utterance this session produces; stale if no utterance
+           follows before the next ``wake`` frame.
   server → ``ready`` (rates, ``session_id``, clock-skew timestamps), ``transcript``, ``thinking``,
            ``speaking`` + binary PCM, ``interrupted``, ``turn_done`` (``expects_more`` in session
            mode), ``quiet``, ``stop_word``, ``error``.
@@ -170,11 +178,7 @@ class ConverseRoute:
             device_id = settings.arbitrate_device_id or f"device_{uuid.uuid4().hex[:8]}"
             device = None
             if arbitrator is not None:
-                device = await arbitrator.register(
-                    device_id,
-                    area=frame.get("area"),
-                    person=frame.get("person"),
-                )
+                device = await arbitrator.register(device_id)
             client = RunsClient(base_url, api_key, http=http, approval_choice=settings.approval_choice)
             await _serve(ws, session=session, synth=synth, cap=cap, client=client, settings=settings,
                          name=name, quiet_interval=quiet_interval, arbitrator=arbitrator, device=device,
@@ -204,6 +208,20 @@ def _resolve_session(settings: Settings, input_rate: int, output_rate: int, quie
         np, input_rate=input_rate, quiet_interval=quiet_interval, transcribe=_transcribe,
         endpoint_model=settings.endpoint_model, endpoint_threshold=settings.endpoint_threshold)
     return synth, cap, session
+
+
+def _wake_text(raw: Any) -> Optional[str]:
+    text = str(raw).strip() if raw is not None else ""
+    return text or None
+
+
+def _wake_number(raw: Any) -> Optional[float]:
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 async def _fail(ws: web.WebSocketResponse, error: str, code: int) -> None:
@@ -272,6 +290,12 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                         session.commit()
                     if frame.get("type") == "drained":
                         session.notify_drained(frame.get("turn_id"))
+                    if frame.get("type") == "wake":
+                        session.note_wake_signal(
+                            wake_word=_wake_text(frame.get("wake_word")),
+                            confidence=_wake_number(frame.get("confidence")),
+                            heard_at=_wake_number(frame.get("heard_at")),
+                        )
                 elif msg.type in (web.WSMsgType.CLOSE, web.WSMsgType.ERROR):
                     break
         except Exception:
