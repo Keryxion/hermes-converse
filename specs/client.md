@@ -11,6 +11,9 @@ Each Arya has a name and uses an existing Hermes conversation, titled
 which handles voice activity detection, endpointing, speech-to-text, and the
 agent turn, then streams reply PCM back. Conversation history persists across
 turns and reconnects; closing the socket does not end the Hermes conversation.
+If the conversation was deleted in Hermes, reconnecting reuses a compatible
+conversation with the same title or starts a fresh one. The device name and
+routing identity stay the same; deleted history is not restored.
 
 Wake selection is cooperative: it recommends an answering device without
 restricting audio processing. Section 8 defines the cooperative wake contract.

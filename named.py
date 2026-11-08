@@ -105,7 +105,8 @@ class DeviceStore:
             with db:
                 try:
                     db.execute('UPDATE conversations SET session_id=? WHERE recipient_id=? AND assistant_name=? '
-                               'AND session_id IS NULL', (session_id, device.recipient_id, device.assistant_name))
+                               'AND session_id IS ?',
+                               (session_id, device.recipient_id, device.assistant_name, device.session_id))
                 except sqlite3.IntegrityError:
                     raise NamedError() from None
                 saved = db.execute('SELECT session_id FROM conversations WHERE recipient_id=? AND assistant_name=?',
@@ -150,8 +151,10 @@ class NamedSessions:
             raise NamedError()
         return row
 
-    async def get(self, session_id, *, saved_root=False):
+    async def get(self, session_id, *, saved_root=False, missing_ok=False):
         status, body = await self.request('GET', f'/api/sessions/{quote(session_id, safe="")}')
+        if status == 404 and missing_ok:
+            return None
         if status != 200:
             raise NamedError()
         row = self.compatible(body.get('session'), saved_root=saved_root)
@@ -171,15 +174,17 @@ class NamedSessions:
         return self.compatible(rows[0]) if rows else None
 
     async def resolve(self, device: DeviceConversation, store: DeviceStore):
+        root = None
         if device.session_id:
-            # A deleted/inaccessible saved history must never create a replacement.
-            root = await self.get(device.session_id, saved_root=True)
+            root = await self.get(device.session_id, saved_root=True, missing_ok=True)
             sid = device.session_id
-        else:
+        if root is None:
             row = await self.lookup(device.title)
             if row is None:
                 status, body = await self.request('POST', '/api/sessions', json={
-                    'id': device.candidate_id, 'source': 'api_server', 'title': device.title})
+                    # Deleted IDs may be retired by Hermes. Keep device identity, mint a new session.
+                    'id': 'voice_' + uuid.uuid4().hex if device.session_id else device.candidate_id,
+                    'source': 'api_server', 'title': device.title})
                 if status == 201:
                     row = self.compatible(body.get('session'))
                     if row.get('title') != device.title:
