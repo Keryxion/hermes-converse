@@ -6,12 +6,14 @@ This document does not change runtime behavior.
 ## Named Aryas
 
 Keep a device record with its stable recipient identity, household/profile,
-device label, optional room/aliases, permissions, credential, and Hermes session
-reference. Device labels are unique within the household. `assistant_name` is
+device label, optional room/aliases, and Hermes session reference. Device labels are unique within the household. `assistant_name` is
 the name used in the voice system prompt, often related to the wake word;
 `device_name` identifies the particular device. Neither is a credential.
 
-Authenticate before opening the conversation or accepting timer requests.
+Authenticate using the existing API key before opening the conversation or
+accepting timer requests. Do not add a separate device/attachment credential.
+The device name identifies a destination, not a separate security principal;
+clients sharing a server API key share its access boundary.
 The device's conversation title is `<assistant_name>: <device_name>`.
 There is no client conversation override, selection protocol, or separate
 conversation extension. Reject a supplied `start.conversation` as an invalid
@@ -29,7 +31,7 @@ losing history. Report rename success only after the device record and title
 agree. Recover incomplete renames before accepting affected work. If saved
 history is deleted or inaccessible, report unavailable rather than replacing it.
 
-Use one authenticated attachment for named-device and timer behavior. A
+Use the authenticated socket for named-device and timer behavior. A
 replacement fences the old connection and stops/settles its in-flight work
 before new admission. Report busy while settlement is pending. Supply trusted
 source-device context to the agent/tools; transcript text cannot impersonate it.
