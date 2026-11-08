@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from .phrases import normalize_phrases
+from .arbitrate import POLICY_FIRST_TO_ENDPOINT, POLICY_PROXIMITY
 
 DEFAULT_NAME = "Sakura"
 DEFAULT_STOP_PHRASES = ("stop", "cancel")
@@ -72,6 +73,14 @@ def _model_enabled(raw: Any) -> bool:
     return bool(raw) and str(raw).strip().lower() not in ("", "none", "false", "off", "0")
 
 
+def _arbitrate_policy(raw: Any) -> str:
+    """Coerce *raw* to a known arbitrate policy, falling back to the default on anything unknown."""
+    policy = str(raw or DEFAULT_ARBITRATE_POLICY).strip()
+    if policy not in (POLICY_FIRST_TO_ENDPOINT, POLICY_PROXIMITY):
+        return DEFAULT_ARBITRATE_POLICY
+    return policy
+
+
 def load_settings(get: Getter) -> Settings:
     """Build :class:`Settings` from ``get(key, default)`` (``ctx.get_config`` or a dict's ``.get``)."""
     approval = str(get("approval_choice", "deny") or "deny").strip().lower()
@@ -90,6 +99,6 @@ def load_settings(get: Getter) -> Settings:
         approval_choice=approval if approval in APPROVAL_CHOICES else "deny",
         api_base_url=str(get("api_base_url", "") or "").strip().rstrip("/"),
         arbitrate_enabled=_model_enabled(get("arbitrate_enabled", DEFAULT_ARBITRATE_ENABLED)),
-        arbitrate_policy=str(get("arbitrate_policy", DEFAULT_ARBITRATE_POLICY) or DEFAULT_ARBITRATE_POLICY).strip(),
+        arbitrate_policy=_arbitrate_policy(get("arbitrate_policy", DEFAULT_ARBITRATE_POLICY)),
         arbitrate_device_id=_text(get("arbitrate_device_id", DEFAULT_ARBITRATE_DEVICE_ID)),
     )

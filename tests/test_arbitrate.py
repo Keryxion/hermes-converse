@@ -146,6 +146,20 @@ async def test_proximity_same_area_wins():
 
 
 @pytest.mark.asyncio
+async def test_proximity_majority_area_wins_over_first_claim():
+    """Concurrent claims: the living-room device claims first, but two kitchen
+    devices form the majority area for the speaker, so a kitchen device wins."""
+    arb = Arbitrator(bus=LocalBus(), policy=POLICY_PROXIMITY)
+    await arb.register("d1", area="kitchen", person="darrell")
+    await arb.register("d2", area="kitchen", person="darrell")
+    await arb.register("d3", area="living_room", person="darrell")
+    results = await _gather(arb, [("d3", "u1"), ("d1", "u1"), ("d2", "u1")])
+    winners = [r for r in results if r[0]]
+    assert len(winners) == 1
+    assert winners[0][1] in ("d1", "d2")  # a kitchen device wins
+
+
+@pytest.mark.asyncio
 async def test_proximity_falls_back_to_first_claim():
     arb = Arbitrator(bus=LocalBus(), policy=POLICY_PROXIMITY)
     await arb.register("d1", area="kitchen")

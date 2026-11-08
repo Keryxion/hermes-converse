@@ -211,6 +211,12 @@ class Arbitrator:
         self._elected: dict[str, tuple[str, bool]] = {}
         # device_id -> set of utterance_ids it has won (for release bookkeeping)
         self._wins: dict[str, set[str]] = {}
+        # utterance_id -> list of TurnClaim (every claimant, for proximity matching)
+        self._claims: dict[str, list[TurnClaim]] = {}
+        # utterance_id -> asyncio.Event set when proximity finalization completes
+        self._finalized: dict[str, asyncio.Event] = {}
+        # utterance_id -> winning device_id (proximity outcome)
+        self._proximity_winner: dict[str, str] = {}
 
     # ── registration ─────────────────────────────────────────────────────────────────────
 
@@ -282,40 +288,52 @@ class Arbitrator:
         may only win an utterance it has not already won.
         """
         claim = None
+        should_finalize = False
         async with self._lock:
             device = self._devices.get(device_id)
             if device is None:
                 logger.warning("arbitrate: claim from unregistered device %s", device_id)
                 return False, None
             claim = device.claim(utterance_id, transcript)
+            self._claims.setdefault(utterance_id, []).append(claim)
 
             existing = self._elected.get(utterance_id)
             if existing is not None:
-                # Already elected: deny this claim.
-                winner, _ = existing
-                return False, winner
-
-            if self.policy == POLICY_FIRST_TO_ENDPOINT:
-                # First claim wins outright.
-                self._elected[utterance_id] = (device_id, True)
-                self._wins.setdefault(device_id, set()).add(utterance_id)
-                granted = True
-                winner = device_id
+                winner, granted = existing
+                if granted:
+                    # Already finalized: deny this claim.
+                    return False, winner
+                # Proximity finalization in progress: wait for the first claimant's decision.
+                should_finalize = False
             else:
-                # Proximity: tentatively record; finalize below after any concurrent claims drain.
-                # We mark it elected now so a racing second claim is denied; the granted decision
-                # (first vs proximity) is resolved by arrival order which is first-to-endpoint among
-                # same-area candidates, falling back to first overall.
-                self._elected[utterance_id] = (device_id, False)
-                self._wins.setdefault(device_id, set()).add(utterance_id)
-                granted = False  # placeholder; resolved in _finalize_proximity
-                winner = device_id
+                # First claim for this utterance.
+                if self.policy == POLICY_FIRST_TO_ENDPOINT:
+                    # First claim wins outright.
+                    self._elected[utterance_id] = (device_id, True)
+                    self._wins.setdefault(device_id, set()).add(utterance_id)
+                    granted = True
+                    winner = device_id
+                else:
+                    # Proximity: tentatively record; finalize below once concurrent claims drain.
+                    self._elected[utterance_id] = (device_id, False)
+                    self._wins.setdefault(device_id, set()).add(utterance_id)
+                    self._finalized[utterance_id] = asyncio.Event()
+                    self._proximity_winner[utterance_id] = device_id  # placeholder
+                    granted = False  # placeholder; resolved in _finalize_proximity
+                    winner = device_id
+                    should_finalize = True
 
         # Publish the claim so every device (and any external observer) sees the attempt.
         await self.bus.publish(claim)
 
         if self.policy == POLICY_PROXIMITY:
-            return await self._finalize_proximity(claim, device)
+            if should_finalize:
+                return await self._finalize_proximity(claim, device)
+            # Another claimant is finalizing: wait for the outcome.
+            await self._finalized[utterance_id].wait()
+            winner = self._proximity_winner[utterance_id]
+            granted = (device_id == winner)
+            return granted, winner
 
         if granted:
             await self._publish_decision(utterance_id, winner, granted=True)
@@ -334,27 +352,43 @@ class Arbitrator:
             if winner != device.device_id:
                 # Another device already finalized as winner.
                 return False, winner
-            # Re-evaluate: is this device's area/person the best match?
+            # Re-evaluate: pick the best claimant by area/person proximity.
             best = await self._best_proximity_match(claim.utterance_id)
-            if best == device.device_id:
-                self._elected[claim.utterance_id] = (device.device_id, True)
-                granted = True
-            else:
-                self._elected[claim.utterance_id] = (best, True)
-                granted = False
-                winner = best
+            self._elected[claim.utterance_id] = (best, True)
+            self._proximity_winner[claim.utterance_id] = best
+            granted = (best == device.device_id)
+            winner = best
+        self._finalized[claim.utterance_id].set()
         await self._publish_decision(claim.utterance_id, winner, granted=granted)
         return granted, winner
 
     async def _best_proximity_match(self, utterance_id: str) -> str:
-        """Pick the best device for *utterance_id* among claimants: same area+person first, then
-        same area, then first claim."""
-        # This is called under the arbitrator lock by _finalize_proximity, but re-acquiring is safe
-        # (we hold the lock here via the caller). Collect claims for this utterance from the bus
-        # history is not available, so use the elected entry's device plus any device in the same
-        # area. Since we only track the elected device, fall back to it.
-        winner, _ = self._elected[utterance_id]
-        return winner
+        """Pick the best device for *utterance_id* among claimants:
+        same area as the speaker (most common area for the person) first, then first claim."""
+        claims = self._claims.get(utterance_id, [])
+        if not claims:
+            winner, _ = self._elected[utterance_id]
+            return winner
+
+        # The speaker is the person on the claims. The speaker's area is the most
+        # common area reported by claimants for that person.
+        person = claims[0].person
+        area_counts: dict[str, int] = {}
+        for c in claims:
+            if c.person == person and c.area:
+                area_counts[c.area] = area_counts.get(c.area, 0) + 1
+
+        if area_counts:
+            # Speaker's area = most common area (ties resolve by claim/insertion order).
+            speaker_area = max(area_counts, key=area_counts.get)
+            # Among claimants in the speaker's area, earliest claim wins.
+            in_area = [c for c in claims if c.area == speaker_area]
+            in_area.sort(key=lambda c: c.claimed_at)
+            return in_area[0].device_id
+
+        # No area info: fall back to first claim.
+        ordered = sorted(claims, key=lambda c: c.claimed_at)
+        return ordered[0].device_id
 
     # ── publishing decisions ───────────────────────────────────────────────────────────────
 
@@ -395,6 +429,9 @@ class Arbitrator:
                 return
             self._elected.pop(utterance_id, None)
             self._wins.setdefault(device_id, set()).discard(utterance_id)
+            self._claims.pop(utterance_id, None)
+            self._finalized.pop(utterance_id, None)
+            self._proximity_winner.pop(utterance_id, None)
         await self.bus.publish(
             TurnReleased(
                 utterance_id=utterance_id,

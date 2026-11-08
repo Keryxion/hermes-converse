@@ -20,6 +20,7 @@ import asyncio
 import contextlib
 import logging
 import queue
+import re
 import threading
 import time
 import uuid
@@ -496,6 +497,17 @@ def clamp_sample_rate(raw: Any, default: int) -> int:
     return max(SAMPLE_RATE_MIN, min(val, SAMPLE_RATE_MAX))
 
 
+def _utterance_key(transcript: str) -> str:
+    """A key shared across devices that heard the same utterance.
+
+    Derived from the transcript text so two devices that transcribed the same spoken
+    utterance collide on the same key and arbitrate. Falls back to a random id for
+    empty transcripts (empty transcripts are skipped upstream before arbitration).
+    """
+    normalized = re.sub(r"\s+", " ", transcript.strip().lower())
+    return normalized or f"utt_{uuid.uuid4().hex}"
+
+
 def parse_quiet_interval(raw: Any) -> float:
     """The SESSION-mode opt-in from the ``start`` frame: seconds of received quiet between turns
     before a ``{"type":"quiet"}`` advisory (which also enables stop-phrase handling). Absent /
@@ -699,8 +711,10 @@ async def drive_converse_turns(
             tt.end()
             continue
         # Cross-device arbitration: claim this utterance before running the agent turn. Only the
-        # elected winner speaks aloud; losers skip the agent and TTS for this utterance.
-        utterance_id = f"utt_{turn_id}"
+        # elected winner speaks aloud; losers skip the agent and TTS for this utterance. The key is
+        # derived from the transcript so two devices that heard the same spoken utterance collide
+        # on the same key and exactly one wins.
+        utterance_id = _utterance_key(transcript)
         if d.arbitrator is not None and d.device is not None:
             granted, winner = await d.arbitrator.claim_turn(d.device_id, utterance_id, transcript)
             if not granted:
