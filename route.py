@@ -27,8 +27,7 @@ Protocol (unchanged from the in-core proposal):
            ``{"type":"wake","claim_id":"...","wake_word":"...", ...}`` requests an
            advisory wake recommendation; see ``client spec.md``. Audio is always processed normally.
   server → ``ready`` (rates, ``session_id``, clock-skew timestamps), ``transcript``, ``thinking``,
-           ``speaking`` + binary PCM, ``interrupted``, ``turn_done`` (``next_action`` and legacy
-           ``expects_more`` in session mode), ``quiet``, ``stop_word``, ``error``.
+           ``speaking`` + binary PCM, ``interrupted``, ``turn_done`` (``next_action``), ``quiet``, ``stop_word``, ``error``.
 """
 
 from __future__ import annotations

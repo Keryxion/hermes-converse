@@ -79,14 +79,13 @@ Every `turn_done` includes `next_action: "listen"` or `"standby"`. After speaker
 upstream audio and returns to local wake detection while keeping the socket open. The server
 chooses the action; clients never interpret sign-off phrases. Normal completions, cancellations,
 interruptions, and errors return `listen`; only a successful sign-off in session mode requests
-`standby`. The deprecated `expects_more` field remains for older clients. New clients prefer
-`next_action`, falling back to legacy `expects_more = false` for standby, otherwise listen.
+`standby`.
 
 **Session mode** (`quiet_interval` > 0) is for wake-word devices: the server reports quiet in
 *received* audio, recognizes stop phrases, and decides when to return the client to standby.
 Keep streaming through playback drain, then follow `next_action`. An open socket does not
 require sending idle ambient audio. See [the client spec](client%20spec.md#handling-turn_donenext_action)
-for the full action and migration contract.
+for the full action contract.
 
 Conversation output should also reach attached clients without a wake word or user utterance.
 [Client spec sections 9–10](client%20spec.md#9-conversation-output-without-user-input-proposed-extension)
@@ -113,7 +112,7 @@ plugin settings form):
 | `approval_choice` | `deny` | what a voice turn answers when the agent asks for a command approval |
 | `api_base_url` | `""` | loopback URL of the API server when it cannot be derived from the listener |
 | `arbitrate_enabled` | `false` | enable advisory wake selection for cooperating clients |
-| `arbitrate_policy` | `wake_signal` | rank wake claims; legacy `first_to_endpoint` grants immediately without selection |
+| `arbitrate_policy` | `wake_signal` | rank wake claims with `wake_signal` |
 | `arbitrate_device_id` | `""` | optional label prefix for server-generated unique socket identifiers |
 | `arbitrate_wake_window_seconds` | `0.25` | how long the arbitrator collects concurrent wake claims for the same wake word before electing the primary device |
 
@@ -134,9 +133,7 @@ and its follow-up conversation, including uninterrupted upstream audio during th
 playback for barge-in/control detection. The server's selection is advisory: it still accepts
 audio sent by noncooperating clients after a denial or without a claim. Cooperating clients
 must follow the gate; idle and losing devices do not stream their ambient audio.
-With arbitration disabled, requests receive immediate grants. The legacy
-`first_to_endpoint` setting also grants immediately; unknown policies fall back
-to `wake_signal`. See [client spec.md](client%20spec.md) for the full protocol,
+With arbitration disabled, requests receive immediate grants. See [client spec.md](client%20spec.md) for the full protocol,
 and examples.
 
 **Smart Turn v3** (optional): with `endpoint_model: smart-turn-v3` the fixed silence endpoint
