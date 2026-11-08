@@ -35,7 +35,12 @@ before new admission. Report busy while settlement is pending. Supply trusted
 source-device context to the agent/tools; transcript text cannot impersonate it.
 Fencing does not prove that a disconnected speaker is silent.
 
-There is no inactivity expiry. Hermes owns compression and retention. Verify
+There is no inactivity expiry. Use Hermes's existing compression settings to
+keep voice context short and compact it frequently: `compression.threshold`
+sets the percentage trigger and `compression.threshold_tokens` caps that trigger
+by token count. Configure these server-side; do not add client fields or another
+compactor. A compaction trigger is not a hard limit on retained context.
+Hermes owns compression and retention. Verify
 required Hermes API support, preserve history through continuation, and recover
 local sign-off bookkeeping where needed. Never replay an unacknowledged request.
 
