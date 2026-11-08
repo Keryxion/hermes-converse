@@ -306,3 +306,97 @@ def test_proximity_policy_no_longer_accepted():
     error (settings.py's ``_arbitrate_policy`` is what falls a config value back to the default)."""
     with pytest.raises(ValueError):
         Arbitrator(bus=LocalBus(), policy="proximity")
+
+
+# ── wake handshake (claim_wake) ───────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_claim_wake_same_wake_word_one_grant_one_deny():
+    """Same wake word within the collection window: exactly one grant, the other denied naming the
+    winner. Highest confidence wins even when it arrives concurrently."""
+    arb = Arbitrator(bus=LocalBus(), policy=POLICY_WAKE_SIGNAL, wake_window=0.1)
+    await arb.register("d1")
+    await arb.register("d2")
+    results = await asyncio.gather(
+        arb.claim_wake("d1", wake_word="arya", confidence=0.60, heard_at=100.0),
+        arb.claim_wake("d2", wake_word="arya", confidence=0.95, heard_at=101.0),
+    )
+    granted = [r for r in results if r[0]]
+    denied = [r for r in results if not r[0]]
+    assert len(granted) == 1 and len(denied) == 1
+    assert granted[0][1] == "d2"  # higher confidence wins
+    assert denied[0][1] == "d2"   # loser names the winner
+    assert granted[0][2] and denied[0][2]  # claim ids echoed back
+    assert granted[0][2] != denied[0][2]
+
+
+@pytest.mark.asyncio
+async def test_claim_wake_different_wake_words_both_granted():
+    """Different wake words elect independently: both devices proceed."""
+    arb = Arbitrator(bus=LocalBus(), policy=POLICY_WAKE_SIGNAL, wake_window=0.1)
+    await arb.register("d1")
+    await arb.register("d2")
+    g1, w1, c1 = await arb.claim_wake("d1", wake_word="arya", confidence=0.5)
+    g2, w2, c2 = await arb.claim_wake("d2", wake_word="echo", confidence=0.5)
+    assert g1 is True and w1 == "d1"
+    assert g2 is True and w2 == "d2"
+    assert c1 != c2
+
+
+@pytest.mark.asyncio
+async def test_claim_wake_volume_breaks_confidence_tie():
+    arb = Arbitrator(bus=LocalBus(), policy=POLICY_WAKE_SIGNAL, wake_window=0.1)
+    await arb.register("d1")
+    await arb.register("d2")
+    results = await asyncio.gather(
+        arb.claim_wake("d1", wake_word="arya", confidence=0.9, volume=1200.0),
+        arb.claim_wake("d2", wake_word="arya", confidence=0.9, volume=4500.0),
+    )
+    granted = [r for r in results if r[0]]
+    assert len(granted) == 1
+    assert granted[0][1] == "d2"  # same confidence, louder capture wins
+
+
+@pytest.mark.asyncio
+async def test_claim_wake_heard_at_breaks_remaining_tie():
+    arb = Arbitrator(bus=LocalBus(), policy=POLICY_WAKE_SIGNAL, wake_window=0.1)
+    await arb.register("d1")
+    await arb.register("d2")
+    results = await asyncio.gather(
+        arb.claim_wake("d1", wake_word="arya", confidence=0.9, volume=3000.0, heard_at=500.0),
+        arb.claim_wake("d2", wake_word="arya", confidence=0.9, volume=3000.0, heard_at=200.0),
+    )
+    granted = [r for r in results if r[0]]
+    assert len(granted) == 1
+    assert granted[0][1] == "d2"  # same confidence and volume, heard it first
+
+
+@pytest.mark.asyncio
+async def test_claim_wake_missing_fields_first_claim_wins():
+    """Devices reporting no wake_signal fields still arbitrate, falling back to claim order."""
+    arb = Arbitrator(bus=LocalBus(), policy=POLICY_WAKE_SIGNAL, wake_window=0.1)
+    await arb.register("d1")
+    await arb.register("d2")
+    results = await asyncio.gather(
+        arb.claim_wake("d1", wake_word="arya"),
+        arb.claim_wake("d2", wake_word="arya"),
+    )
+    granted = [r for r in results if r[0]]
+    assert len(granted) == 1
+    assert granted[0][1] == "d1"  # claimed first on the server
+
+
+@pytest.mark.asyncio
+async def test_claim_wake_late_claim_starts_new_election():
+    """A claim that arrives after the window closed starts a fresh election for the same wake
+    word — it never joins the old one as a late claimant."""
+    arb = Arbitrator(bus=LocalBus(), policy=POLICY_WAKE_SIGNAL, wake_window=0.05)
+    await arb.register("d1")
+    await arb.register("d2")
+    g1, w1, c1 = await arb.claim_wake("d1", wake_word="arya", confidence=0.9)
+    await asyncio.sleep(0.1)  # let the first election close
+    g2, w2, c2 = await arb.claim_wake("d2", wake_word="arya", confidence=0.1)
+    assert g1 is True and w1 == "d1"
+    assert g2 is True and w2 == "d2"  # new election: d2 is the sole claimant
+    assert c1 != c2

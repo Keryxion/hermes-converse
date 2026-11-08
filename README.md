@@ -87,6 +87,7 @@ plugin settings form):
 | `arbitrate_enabled` | `false` | turn on cross-device voice arbitration so exactly one device answers each utterance |
 | `arbitrate_policy` | `first_to_endpoint` | how the winner is elected: `first_to_endpoint` (first claim wins) or `wake_signal` (see below) |
 | `arbitrate_device_id` | `""` | stable id for this device in arbitration; `""` = auto-generated per socket |
+| `arbitrate_wake_window_seconds` | `0.25` | how long the arbitrator collects concurrent wake claims for the same wake word before electing the primary device |
 
 STT and TTS come from your normal Hermes `stt.*` and `tts.*` configuration.
 

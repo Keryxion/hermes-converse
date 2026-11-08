@@ -85,3 +85,7 @@ config_schema:
     type: str
     default: ""
     description: "Stable id for this device in arbitration. '' = auto-generated per socket."
+  arbitrate_wake_window_seconds:
+    type: float
+    default: 0.25
+    description: "How long the arbitrator collects concurrent wake claims for the same wake word before electing the primary device."
