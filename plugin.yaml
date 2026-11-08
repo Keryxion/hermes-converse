@@ -15,10 +15,15 @@ license: MIT
 homepage: https://github.com/Keryxion/hermes-converse
 tags: [voice, api_server, realtime, websocket, esp32]
 requires_hermes: ">=0.21.6"
-# The VAD and the PCM resampler are numpy + PyAV; everything else is Hermes core or stdlib.
+# Smart Turn dependencies are installed for everyone; model loading remains opt-in.
 python_dependencies:
   - "numpy>=2,<3"
   - "av>=14,<20"
+  # ONNX Runtime has no current Intel macOS or Android wheels. Those hosts keep the
+  # fixed endpoint; do not make the whole voice plugin uninstallable there.
+  - "onnxruntime>=1.20,<2; (sys_platform != 'darwin' or platform_machine != 'x86_64') and sys_platform != 'android'"
+  - "transformers>=4.46,<6"
+  - "huggingface_hub>=0.26,<2"
 provides_tools: []
 provides_hooks: []
 config_schema:

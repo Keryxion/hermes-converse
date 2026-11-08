@@ -82,11 +82,19 @@ def doctor() -> int:
 
     settings = load_settings(lambda key, default=None: _plugin_setting(cfg, key, default))
     if settings.endpoint_model:
-        from .turn_detector import missing_modules
+        from .turn_detector import load_turn_detector, missing_modules
 
         missing = missing_modules()
         if missing:
-            _bad("Smart Turn endpointer", "enabled but missing: " + ", ".join(missing))
+            _bad("Smart Turn endpointer", "enabled but missing: " + ", ".join(missing)
+                 + "; using fixed silence. Reinstall/update hermes-converse through the plugin manager "
+                 "to install its declared dependencies, then restart the gateway. "
+                 "ONNX Runtime has no current Intel macOS or Android wheels; use the fixed endpoint there.")
+            failures += 1
+        elif load_turn_detector(settings.endpoint_threshold) is None:
+            _bad("Smart Turn endpointer", "dependencies found but model could not load; using fixed silence. "
+                 "Check the smart-turn warning above (imports, ONNX runtime, or model download/cache). "
+                 "First use needs access to Hugging Face; offline use needs cached weights.")
             failures += 1
         else:
             _ok("Smart Turn endpointer", f"enabled (threshold {settings.endpoint_threshold:g})")
