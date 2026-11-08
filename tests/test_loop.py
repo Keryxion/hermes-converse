@@ -259,6 +259,27 @@ def test_playback_tail_suppresses_quiet_until_drained():
     assert len(_drain_ticks()) >= 1
 
 
+def test_drained_before_turn_done_skips_playback_tail():
+    """A `drained` received before `turn_done` is remembered so no playback tail is started for
+    that turn (issue #6): a later VAD trip is captured as a new turn instead of being dropped as a
+    TailBarge."""
+    session = ConverseSession(np)
+
+    # The client cut the reply locally and reported drained before turn_done arrived.
+    session.notify_drained("turn-1")
+    assert "turn-1" in session._drained_turn_ids
+
+    # begin_playback_tail for that turn must no-op (no tail, no suppression).
+    session.begin_playback_tail("turn-1", fallback_seconds=100)
+    assert session._tail_active is False
+    assert session._tail_turn_id is None
+
+    # A different turn that was not drained still gets a normal tail.
+    session.begin_playback_tail("turn-2", fallback_seconds=100)
+    assert session._tail_active is True
+    assert session._tail_turn_id == "turn-2"
+
+
 # ── start frame + prompt ──
 
 def test_parse_start_config_defaults_and_clamps():

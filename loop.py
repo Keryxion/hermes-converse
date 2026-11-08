@@ -224,6 +224,9 @@ class ConverseSession:
         self._tail_active = False
         self._tail_turn_id: Optional[str] = None
         self._tail_deadline = 0.0
+        # Turns the client has already reported `drained` for (it cut the reply locally before
+        # `turn_done` arrived): never start a playback tail for these (issue #6).
+        self._drained_turn_ids: set[str] = set()
         self._stop = threading.Event()
         self._playing = threading.Event()
         self._tts_stop: Optional[threading.Event] = None
@@ -363,6 +366,11 @@ class ConverseSession:
         """Driver hook: the reply is fully SENT but the client is still PLAYING it."""
         if fallback_seconds <= 0:
             return
+        if turn_id is not None and turn_id in self._drained_turn_ids:
+            # The client already reported this turn drained (it cut the reply locally before
+            # turn_done arrived): no playback tail, so nothing is dropped by a tail trip.
+            self._drained_turn_ids.discard(turn_id)
+            return
         self._tail_active = True
         self._tail_turn_id = turn_id
         self._tail_deadline = time.monotonic() + fallback_seconds
@@ -374,7 +382,10 @@ class ConverseSession:
 
     def notify_drained(self, turn_id: Optional[str] = None) -> None:
         """Client hook (``{"type":"drained"}``): ends the playback tail for the matching turn (or
-        the current tail when no id is given)."""
+        the current tail when no id is given). A ``drained`` received before ``turn_done`` is
+        remembered so no playback tail is ever started for that turn (issue #6)."""
+        if turn_id is not None:
+            self._drained_turn_ids.add(turn_id)
         if self._tail_active and (turn_id is None or turn_id == self._tail_turn_id):
             self.end_playback_tail()
 
