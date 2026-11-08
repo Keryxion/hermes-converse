@@ -164,3 +164,19 @@ async def test_cancel_during_admission_waits_for_id_and_stops_accepted_run():
             run_id = next(iter(fake.runs))
             assert fake.stop_calls == [run_id]
             assert fake.runs[run_id]['status'] == 'cancelled'
+
+
+@pytest.mark.asyncio
+async def test_next_request_waits_for_previous_run_to_settle():
+    fake = FakeRunsAPI(API_KEY)
+    async with TestClient(TestServer(fake.app())) as tc:
+        client, http = await _client_for(tc.server, settle_timeout=0)
+        async with http:
+            fake.runs['old'] = {'status': 'running', 'output': '', 'stopped': asyncio.Event()}
+            client.unsettled_run_ids.add('old')
+            result = await client.run_turn(text='and make it warm white', session_id='s', on_delta=lambda _: None)
+            assert result.error and len(fake.runs) == 1  # no overlapping admission
+            fake.runs['old']['status'] = 'cancelled'
+            result = await client.run_turn(text='and make it warm white', session_id='s', on_delta=lambda _: None)
+            assert not result.error and len(fake.runs) == 2
+            assert client.unsettled_run_ids == set()

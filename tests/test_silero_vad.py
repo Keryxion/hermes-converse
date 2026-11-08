@@ -247,26 +247,30 @@ def test_playback_baseline_is_available_after_about_half_a_second(monkeypatch):
     assert 'playback' in [detector.feed(np.full(480, 4000, np.int16), True) for _ in range(12)]
 
 
-def test_active_turn_speech_interrupts_without_stt_and_is_evaluated_once(monkeypatch):
+def test_generation_continuation_is_captured_with_one_evaluation_per_block(monkeypatch):
     import threading
     from hermes_converse import speech
-    detector = scripted(monkeypatch, [0.9]*30)
+    detector = scripted(monkeypatch, [0.1]*30 + [0.9]*30 + [0.1]*30)
     interrupted = threading.Event()
     session = ConverseSession(np, vad_model='energy',
-                              transcribe=lambda path: pytest.fail('control audio must never reach STT'))
+                              transcribe=lambda path: 'continued speech')
     session._detector = detector
     session.begin_turn('test-turn', on_interrupt=interrupted.set)
     monkeypatch.setattr(speech, 'spawn_context_thread',
                         lambda target, **kw: threading.Thread(target=target, daemon=True))
     session.start()
     try:
+        for _ in range(30):
+            detector.feed(np.zeros(480, np.int16), False)
+        detector._stream.calls = 0
         session.stream.feed(np.full(30*480, 5000, np.int16).tobytes())
+        session.stream.feed(np.zeros(30*480, np.int16).tobytes())
         assert interrupted.wait(timeout=2)
+        assert session.transcripts.get(timeout=2) == 'continued speech'
     finally:
         session.stop()
         session._worker.join(timeout=2)
-    assert detector._stream.calls <= 30  # discard-until-quiet reads the cached decision
-    assert not any(isinstance(item, str) for item in list(session.transcripts.queue))
+    assert detector._stream.calls <= 60  # every onset/capture block advances the model once
 
 
 def test_download_failure_cleans_temporary_file(tmp_path, monkeypatch):

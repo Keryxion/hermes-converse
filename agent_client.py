@@ -116,6 +116,12 @@ class RunsClient:
                        provider: Optional[str] = None, idempotency_key: Optional[str] = None) -> TurnResult:
         """Start a run and stream it to completion. Returns the reply for the history and the error
         (if any) the client should hear about; ``status`` is the run's terminal status."""
+        if self.admission_uncertain:
+            return TurnResult("", "Previous request admission is unresolved; reconnect before retrying.", "failed", None)
+        for previous in tuple(self.unsettled_run_ids):
+            await self._settle_by_polling(previous, on_delta_seen=True, reason="previous run still stopping")
+        if self.unsettled_run_ids:
+            return TurnResult("", "Previous request is still stopping; please try again.", "failed", None)
         body: dict[str, Any] = {"input": text, "session_id": session_id}
         if instructions:
             body["instructions"] = instructions

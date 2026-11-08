@@ -16,7 +16,7 @@
 - The client spec is written from the client's point of view: what JSON to send,
   what JSON comes back, and observable behavior. Show concrete JSON examples.
 - Put server storage, Hermes integration, persistence, and recovery details in
-  `docs/server-spec.md`, not the client contract.
+  `specs/server.md`, not the client contract.
 - State intended behavior directly. Do not qualify it with "currently" or recount
   old implementations and abandoned designs.
 - A spec-only request authorizes documentation changes, not implementation or deployment.

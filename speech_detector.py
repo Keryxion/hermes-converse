@@ -32,6 +32,7 @@ class SpeechDetector:
         self._stream = None
         self.fallback_reason: Optional[str] = None
         self.quiet = True
+        self.probability: Optional[float] = None
         self._in_speech = False
         self._speech_ms = 0.0
         self._levels: deque = deque(maxlen=_LEVEL_WINDOW_BLOCKS)
@@ -69,7 +70,7 @@ class SpeechDetector:
     def feed(self, block: Any, playing: bool, *, interrupting: bool = False) -> Optional[str]:
         """Process once; interrupting selects active-turn sensitivity, even before playback."""
         energy_phase = self._energy.feed(vad.rms(self._np, block), playing, interrupting=interrupting)
-        probability = self._probability(block)
+        probability = self.probability = self._probability(block)
         self.quiet = self._energy_quiet(block) if probability is None else probability < SPEECH_OFF
         if probability is None:
             return energy_phase
@@ -101,6 +102,6 @@ class SpeechDetector:
 
     def is_quiet(self, block: Any) -> bool:
         """Process a capture block once, using the same model for candidate pauses."""
-        probability = self._probability(block)
+        probability = self.probability = self._probability(block)
         self.quiet = self._energy_quiet(block) if probability is None else probability < SPEECH_OFF
         return self.quiet
