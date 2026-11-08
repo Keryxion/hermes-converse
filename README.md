@@ -199,6 +199,14 @@ Silero distinguishes speech from non-speech; it can also hear speaker echo as
 speech, so playback uses an echo-relative level guard. Detection alone does not
 prevent a spoken wake phrase from becoming an utterance.
 
+Active-turn interruption also requires sustained energy above the existing
+barge-in level floor (1500 RMS, adjusted for the quiet floor and capped at 4000).
+That applies while waiting for a turn, thinking, speaking, and draining playback:
+high speech probability from soft mumbling is insufficient, as is a brief loud
+burst over quiet speech. Idle input remains sensitive to quiet voices. This is
+an audibility/sustain guard, not semantic recognition of whether speech was
+addressed to the assistant.
+
 Silero and Smart Turn work together: Silero finds candidate pauses; Smart Turn,
 when enabled, decides whether the person has finished their thought. Speech
 onset needs at least 250 ms above Silero's speech threshold (0.5, continuing down
@@ -320,6 +328,14 @@ model. Ordinary tests stay offline and exercise the energy fallback. To include 
 ```bash
 HERMES_TEST_SILERO_MODEL=/path/to/silero_vad_16k_op15.onnx HERMES_AGENT_ROOT=/path/to/hermes-agent python -m pytest tests/test_silero_vad.py
 ```
+
+`tests/test_barge_soft_speech.py` exercises pending, thinking, speaking, and
+playback-tail interruption against both detectors and inference-failure fallback.
+The real-model tests also accept `HERMES_TEST_BARGE_AUDIO=/path/to/reviewed.wav`
+for local mono PCM16 recordings at 16 kHz. They replay the recording quietly
+(loudest 30 ms block at 900 RMS) to check rejection during a turn, then at its
+original volume to verify interruption still works. Quiet speech must also
+remain detectable as ordinary idle input. Private room audio is not committed.
 
 ## Disclosure
 
