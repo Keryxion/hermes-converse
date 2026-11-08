@@ -1,70 +1,45 @@
 # Server spec
 
-This document records server responsibilities behind the client protocol in
-[client spec.md](../client%20spec.md). It does not change runtime behavior.
+Server responsibilities behind [client spec.md](../client%20spec.md).
+This document does not change runtime behavior.
 
-## Named Aryas and conversation resolution
+## Named Aryas
 
-Keep one device record per Arya: stable recipient identity, household/profile,
-human name, optional room/aliases, permissions, credential, and default Hermes
-session reference. Names must be unique in a household. Device names identify
-destinations; conversation names select context. Neither is a credential.
-`start.assistant_name` is the assistant's spoken name for the voice system prompt, often
-related to the wake word. It is not the device label and must not be used to
-identify a recipient. It supplies the assistant part of the default
-conversation title, `<assistant_name>: <device_name>`. Several devices may
-share that assistant name. `start.device_name` is the configured device label;
-check it against the authenticated device record, not against the assistant name. For example, a device labeled `Den Echo` can answer
-to `Arya` and use the default conversation `Arya: Den Echo`.
+Keep a device record with its stable recipient identity, household/profile,
+device label, optional room/aliases, permissions, credential, and Hermes session
+reference. Device labels are unique within the household. `assistant_name` is
+the name used in the voice system prompt, often related to the wake word;
+`device_name` identifies the particular device. Neither is a credential.
 
-Authenticate the device before resolving a conversation or accepting a timer
-request. Use the same device attachment for conversation and timer extensions.
-A replacement fences the previous connection; stop and settle its in-flight
-work before starting competing work. Report busy while settlement is pending.
-Fencing does not prove a disconnected speaker is silent.
+Authenticate before opening the conversation or accepting timer requests.
+The device's conversation title is `<assistant_name>: <device_name>`.
+There is no client conversation override, selection protocol, or separate
+conversation extension. Reject a supplied `start.conversation` as an invalid
+field rather than silently accepting it.
 
 Use Hermes's existing session APIs for title lookup, creation, rename, history,
-and continuation after compression. Do not build a parallel conversation store
-or a second conversation-ID namespace. Pass the resolved Hermes session ID to
-Runs; clients only need the conversation name. Do not expose storage or lineage
-mechanics through the client protocol.
+and compression continuation. Reuse an authorized compatible named session or
+create it when confirmed absent; on concurrent creation conflict, re-read the
+winner. A failed lookup or inaccessible title must not silently create another
+history. Save the session reference for reconnect and rename; do not build a
+parallel conversation store or expose Hermes session mechanics to clients.
 
-At start, resolve the supplied conversation title, defaulting to
-`<assistant_name>: <device_name>`. Reuse an authorized compatible session with that title;
-create it only when the lookup confirms it is absent. On a concurrent creation
-conflict, re-read the winner through Hermes. A failed lookup, unavailable store,
-or inaccessible/incompatible title must not silently create another history.
-Follow Hermes title validation and ownership rules; a name grants no access.
+A change to either configured name updates the existing session title without
+losing history. Report rename success only after the device record and title
+agree. Recover incomplete renames before accepting affected work. If saved
+history is deleted or inaccessible, report unavailable rather than replacing it.
 
-Save the default session reference so a device rename can update its title
-without losing history. Rename preserves recipient identity and timer targets.
-Do not rename a separately chosen custom conversation. Report success only when
-the device record and default title agree; recover incomplete renames before
-resolving affected names. If saved default history is deleted or inaccessible,
-report unavailable instead of silently replacing it.
+Use one authenticated attachment for named-device and timer behavior. A
+replacement fences the old connection and stops/settles its in-flight work
+before new admission. Report busy while settlement is pending. Supply trusted
+source-device context to the agent/tools; transcript text cannot impersonate it.
+Fencing does not prove that a disconnected speaker is silent.
 
-Bind the resolved session for the socket's lifetime. There are no switch modes,
-selection receipts, separate reset frames, or inactivity expiry. Reconnect with
-another name to change context. Supply trusted source-device identity/name and
-the resolved session to the agent and tools for each request; do not obtain the
-source identity from transcript text. This context is request-scoped when
-several devices use the same conversation.
+There is no inactivity expiry. Hermes owns compression and retention. Verify
+required Hermes API support, preserve history through continuation, and recover
+local sign-off bookkeeping where needed. Never replay an unacknowledged request.
 
-Verify that the installed Hermes version supports the required APIs. Reuse its
-normal compression, retention, title-conflict, and run-admission behavior.
-Recover/replace local sign-off bookkeeping where needed; an empty local reply
-list does not mean the Hermes history is empty. Do not replay unacknowledged
-utterances after reconnect.
-
-## Acceptance criteria
-
-- Kitchen, Bedroom, and Office open default conversations titled `Arya: Kitchen`,
-  `Arya: Bedroom`, and `Arya: Office`.
-- Reconnect, restart, concurrent title creation, and compression preserve the
-  intended history without duplicate sessions.
-- A supplied conversation name opens that history; another name on reconnect
-  changes context without changing the Arya identity or existing timer targets.
-- Device rename preserves default history and timers, while conflicts/failures
-  remain explicit and recoverable.
-- Unauthorized names/credentials and failed lookups never silently attach or
-  create unrelated context. Old connections cannot admit competing work.
+Verify first setup, concurrent creation, reconnect/restart, rename, failed
+lookup, unauthorized access, compression continuation, and replacement
+attachments without duplicate history or competing work. Include the case
+`assistant_name: Alexa`, `device_name: Den Echo`, title `Alexa: Den Echo`.

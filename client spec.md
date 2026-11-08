@@ -50,7 +50,6 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 | `input_rate` | sample rate of the PCM you'll send (8000–48000, default 16000) |
 | `output_rate` | sample rate of PCM the server sends back (default 24000) |
 | `quiet_interval` | session mode: seconds of silence between turns (0 = off) |
-| `conversation` | Optional Hermes conversation title, used with negotiated conversation-v1; defaults to `<assistant_name>: <device_name>` (section 11). |
 | `device_name` | The configured device label, such as `Den Echo`; required for named-device connections (section 11). |
 | `assistant_name` | What you call the assistant, such as `Arya` or `Alexa`, without “Hey”. Used in the voice system prompt; separate from the device label, such as `Den Echo`. |
 
@@ -71,7 +70,7 @@ All are JSON text frames:
 
 | frame | meaning |
 |---|---|
-| `{"stop": true}` | Stops live work and closes the socket. Preserves the selected Hermes conversation and its history for reconnection (section 11). |
+| `{"stop": true}` | Stops live work and closes the socket. Preserves the device's Hermes conversation and its history for reconnection (section 11). |
 | `{"commit": true}` | Forces the current utterance to endpoint now (runs a turn on it). |
 | `{"type": "cancel", "turn_id": "..."}` | Cancels the **current** turn — stops TTS and the agent — but keeps the socket, session, and history alive. |
 | `{"type": "wake", "claim_id": "...", "wake_word": "Hey Arya"}` | request an advisory wake decision while buffering the new activation locally; see section 8. |
@@ -579,94 +578,63 @@ recipient attachment, and playback signalling remain implementation work.
 These proposed extensions do not change the current wire protocol by themselves.
 
 
-## 11. Named Aryas and conversations
+## 11. Named Aryas
 
-A device has a label such as `Den Echo`, `Kitchen`, or `Bedroom`. Device labels
-must be unique in your household; configure them during device setup. They are
-separate from what you call the assistant: many devices can answer to `Arya`
-or `Alexa` while having different device labels.
+Use `assistant_name` for what you call the assistant, such as `Arya` or `Alexa`.
+Use `device_name` for the device label, such as `Den Echo` or `Kitchen`.
+Device labels must be unique in your household and configured during setup.
+Many devices may share the same assistant name. The detected wake phrase is
+sent separately in `wake.wake_word` (section 8).
 
-`start.assistant_name` tells the assistant its name in the voice system prompt. It is
-related to the wake name, not the device label. The detected wake phrase is
-still sent separately in `wake.wake_word` (section 8). Renaming a device or
-choosing another conversation does not change what you call the assistant.
+Each device uses a persistent conversation titled
+**`<assistant_name>: <device_name>`**, for example `Alexa: Den Echo`.
+Clients cannot choose or override the conversation.
 
 ### Start and ready
 
-Send `assistant_name`, `device_name`, the device attachment credential, and
-optionally a conversation name in `start`. `device_name` must match the device
-label configured during setup. If `conversation` is omitted, use `<assistant_name>: <device_name>`.
+Send both names and the device credential in `start`. The device label must
+match the configured device. Negotiate `arya-v1` before using named-device
+behavior:
 
 ```json
-{"type":"start","key":"<API_SERVER_KEY>","input_rate":16000,"output_rate":24000,"assistant_name":"Arya","device_name":"Den Echo",
- "conversation":"Arya: Den Echo",
- "extensions":{"arya-v1":{"attachment_token":"<device credential>"},"conversation-v1":{}}}
+{"type":"start","key":"<API_SERVER_KEY>","input_rate":16000,"output_rate":24000,
+ "assistant_name":"Alexa","device_name":"Den Echo",
+ "extensions":{"arya-v1":{"attachment_token":"<device credential>"}}}
 ```
 
-For a task-specific conversation, send a name such as
-`"conversation":"Dinner planning"`. The server opens that conversation,
-creating it if needed. An existing conversation keeps its history.
-
-Wait for `ready` before streaming audio. It reports the device identity and
-the conversation name actually opened:
+Wait for `ready` before streaming audio:
 
 ```json
-{"type":"ready","session_id":"socket-9","conversation":"Arya: Den Echo",
- "extensions":{"arya-v1":{"recipient_id":"device-7","device_name":"Den Echo","attachment_id":"attachment-9"},"conversation-v1":{}}}
+{"type":"ready","session_id":"socket-9","extensions":{
+ "arya-v1":{"recipient_id":"device-7","device_name":"Den Echo","attachment_id":"attachment-9"}}}
 ```
 
-`ready.extensions.arya-v1.device_name` is the device label (`Den Echo` here), not
-the assistant name supplied in `start.assistant_name` (`Arya` here). The default
-conversation combines both fields: `Arya: Den Echo` (or `Alexa: Den Echo`
-when `assistant_name` is `Alexa`).
+`session_id` identifies the socket for diagnostics. `recipient_id` identifies
+the device across reconnects and renames. `attachment_id` identifies its current
+connection. Treat these IDs as opaque. If `arya-v1` is missing from `ready`,
+named-device behavior is unavailable; show that state rather than claiming
+the conversation was restored.
 
-`session_id` identifies this socket for diagnostics. `recipient_id` identifies
-the Arya across reconnects and renames. `attachment_id` identifies its current
-connection and is used by timer operations (section 10). Treat these IDs as
-opaque; clients do not generate them or infer names from them.
+### Reconnect
 
-Check that `ready.extensions` acknowledges both requested extensions. If either
-is missing, the named-conversation contract is unavailable. Show that state and
-fall back explicitly or disconnect; do not claim the conversation was restored.
-A conversation name is a nonempty string. The server rejects invalid or
-inaccessible names rather than silently opening a different conversation.
+Reconnect with the same device credential and names to continue its history.
+Inactivity, standby, sign-off, cancellation, and socket closure do not reset it.
+Do not automatically resend an utterance whose outcome is unknown: its actions
+may already have happened. Renaming the device or assistant updates the title
+while preserving the device's history and timer destinations.
 
-### Reconnect and change conversations
-
-Remember the chosen name and send it again in `start` after reconnecting.
-To change conversations, reconnect with a different name. To start fresh, choose
-a new name. There is no separate conversation-selection frame or mode.
-Omitting the name always opens the device's default conversation.
-
-Inactivity, standby, sign-off, cancellation, and socket closure do not reset
-conversation history. Reconnecting restores context; it does not replay audio
-or retry an interrupted request. Do not automatically resend an utterance whose
-outcome is unknown, since its actions may already have happened.
-
-One connection serves an Arya at a time. A replacement connection closes the
-old one with `4409 attachment_replaced`. Stop sending on the old connection and
-use the new `attachment_id` for subsequent operations.
-
-| failure | client behavior |
-|---|---|
-| `4402 bad_extension` | Fix invalid extension fields or an invalid conversation value before retrying. |
-| `4403 forbidden_attachment` | Check the device credential; a name alone does not identify a device. |
-| `4404 conversation_unavailable` | Show the error; do not claim context was restored. |
-| `conversation_busy` before ready | Retry connection later; an earlier request is still stopping. |
-
-Normal API authentication and first-frame errors remain as defined in section 1.
+A replacement connection closes the old one with `4409 attachment_replaced`.
+Stop sending on the old connection and use the new attachment for operations.
+Invalid fields return `4402 bad_extension`; invalid device credentials return
+`4403 forbidden_attachment`. If the conversation cannot be opened, show
+`4404 conversation_unavailable` rather than claiming restored context.
+A `conversation_busy` error before ready means retry later while earlier work
+stops. Normal authentication and first-frame errors remain as in section 1.
 
 ### Timers on named Aryas
 
-"Set a timer" defaults to the requesting Arya. "Set a timer on Bedroom" targets
-Bedroom, even when the request comes from Kitchen. Ask for clarification if a
-room/name matches several devices. Report an unavailable destination before
-confirming audible delivery there. Timer operations are defined in section 10.
-
-The requesting device receives the confirmation; the destination device rings.
-Changing conversation or renaming either device does not move an existing timer.
-A timer received while another conversation is open does not switch that
-conversation. Renaming Kitchen changes its default conversation's display name
-to `<assistant_name>: <new device_name>` while retaining its history; custom conversation names are
-unchanged. After a rename, use the new name from `ready`, or omit `conversation`
-to open the renamed default.
+"Set a timer" targets the requesting device. "Set a timer on Bedroom" targets
+Bedroom even when requested from Kitchen. Clarify ambiguous names, and report
+an unavailable destination before confirming audible delivery there (section 10).
+The requesting device receives confirmation; only the destination rings.
+Renaming either device does not move an existing timer.
