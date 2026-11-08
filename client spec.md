@@ -6,16 +6,16 @@
 GET /v1/audio/converse
 ```
 
-One socket = one conversation. You stream microphone PCM up, the server does
-voice activity detection, endpointing, speech-to-text, the agent turn, and
-streams the reply back as PCM audio — all on the same socket. The socket,
-session, and conversation history stay alive across turns unless you close
-them.
+Each Arya has a name and uses an existing Hermes conversation, titled
+`<assistant_name>: <device_name>` by default. A WebSocket carries microphone PCM to the server,
+which handles voice activity detection, endpointing, speech-to-text, and the
+agent turn, then streams reply PCM back. Conversation history persists across
+turns and reconnects; closing the socket does not end the Hermes conversation.
 
 Wake selection is cooperative: it recommends an answering device without
 restricting audio processing. Section 8 defines the cooperative wake contract.
-Sections 9–10 define the proposed conversation-output and timer/alarm
-extensions; the current server does not implement those extensions yet.
+Sections 9–10 define conversation output and timers. Section 11 defines named
+Aryas and attachment to Hermes conversations. Negotiate extensions before use.
 
 ## 1. Connect and authenticate
 
@@ -40,7 +40,7 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 
 ```json
 {"type": "start", "key": "<API_SERVER_KEY>", "input_rate": 16000,
- "output_rate": 24000, "quiet_interval": 0, "name": "Arya"}
+ "output_rate": 24000, "quiet_interval": 0, "assistant_name": "Arya", "device_name": "Den Echo"}
 ```
 
 | field | what it does |
@@ -50,7 +50,8 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 | `input_rate` | sample rate of the PCM you'll send (8000–48000, default 16000) |
 | `output_rate` | sample rate of PCM the server sends back (default 24000) |
 | `quiet_interval` | session mode: seconds of silence between turns (0 = off) |
-| `name` | the assistant's name — set this to "Arya" (not "Hey Arya"). Arya uses her name in the voice prompt so she knows she's being addressed and doesn't get confused about why she's being called that name |
+| `device_name` | The configured device label, such as `Den Echo`; required for named-device connections (section 11). |
+| `assistant_name` | What you call the assistant, such as `Arya` or `Alexa`, without “Hey”. Used in the voice system prompt; separate from the device label, such as `Den Echo`. |
 
 **Client profile selection is removed.**
 
@@ -89,7 +90,7 @@ All are JSON text frames:
 
 | frame | meaning |
 |---|---|
-| `{"stop": true}` | Ends the whole session and closes the socket. History is lost. |
+| `{"stop": true}` | Stops live work and closes the socket. Preserves the device's Hermes conversation and its history for reconnection (section 11). |
 | `{"commit": true}` | Forces the current utterance to endpoint now (runs a turn on it). |
 | `{"type": "cancel", "turn_id": "..."}` | Cancels the **current** turn — stops TTS and the agent — but keeps the socket, session, and history alive. |
 | `{"type": "wake", "claim_id": "...", "wake_word": "Hey Arya"}` | request an advisory wake decision while buffering the new activation locally; see section 8. |
@@ -385,7 +386,7 @@ client's `claim_id` and `wake_word`.
 
 `start.device_id`, `start.area`, and `start.person` are not supported selection
 inputs. The existing `arbitrate_device_id` is an optional server-configured label prefix;
-the server appends a unique socket identifier to keep candidates distinct. The assistant's `start.name`
+the server appends a unique socket identifier to keep candidates distinct. The assistant's `start.assistant_name`
 remains separate from the exact detected `wake_word` phrase.
 
 ### Cooperating client flows
@@ -595,3 +596,65 @@ promise of an audible alarm while the client is disconnected.
 Exact alarm capability negotiation, timer-operation frames, acknowledgements,
 recipient attachment, and playback signalling remain implementation work.
 These proposed extensions do not change the current wire protocol by themselves.
+
+
+## 11. Named Aryas
+
+Use `assistant_name` for what you call the assistant, such as `Arya` or `Alexa`.
+Use `device_name` for the device label, such as `Den Echo` or `Kitchen`.
+Device labels must be unique in your household and configured during setup.
+Many devices may share the same assistant name. The detected wake phrase is
+sent separately in `wake.wake_word` (section 8).
+
+Each device uses a persistent conversation titled
+**`<assistant_name>: <device_name>`**, for example `Alexa: Den Echo`.
+Clients cannot choose or override the conversation.
+
+### Start and ready
+
+Send both names and the device credential in `start`. The device label must
+match the configured device. Negotiate `arya-v1` before using named-device
+behavior:
+
+```json
+{"type":"start","key":"<API_SERVER_KEY>","input_rate":16000,"output_rate":24000,
+ "assistant_name":"Alexa","device_name":"Den Echo",
+ "extensions":{"arya-v1":{"attachment_token":"<device credential>"}}}
+```
+
+Wait for `ready` before streaming audio:
+
+```json
+{"type":"ready","session_id":"socket-9","extensions":{
+ "arya-v1":{"recipient_id":"device-7","device_name":"Den Echo","attachment_id":"attachment-9"}}}
+```
+
+`session_id` identifies the socket for diagnostics. `recipient_id` identifies
+the device across reconnects and renames. `attachment_id` identifies its current
+connection. Treat these IDs as opaque. If `arya-v1` is missing from `ready`,
+named-device behavior is unavailable; show that state rather than claiming
+the conversation was restored.
+
+### Reconnect
+
+Reconnect with the same device credential and names to continue its history.
+Inactivity, standby, sign-off, cancellation, and socket closure do not reset it.
+Do not automatically resend an utterance whose outcome is unknown: its actions
+may already have happened. Renaming the device or assistant updates the title
+while preserving the device's history and timer destinations.
+
+A replacement connection closes the old one with `4409 attachment_replaced`.
+Stop sending on the old connection and use the new attachment for operations.
+Invalid fields return `4402 bad_extension`; invalid device credentials return
+`4403 forbidden_attachment`. If the conversation cannot be opened, show
+`4404 conversation_unavailable` rather than claiming restored context.
+A `conversation_busy` error before ready means retry later while earlier work
+stops. Normal authentication and first-frame errors remain as in section 1.
+
+### Timers on named Aryas
+
+"Set a timer" targets the requesting device. "Set a timer on Bedroom" targets
+Bedroom even when requested from Kitchen. Clarify ambiguous names, and report
+an unavailable destination before confirming audible delivery there (section 10).
+The requesting device receives confirmation; only the destination rings.
+Renaming either device does not move an existing timer.
