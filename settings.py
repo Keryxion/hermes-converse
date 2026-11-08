@@ -27,6 +27,7 @@ DEFAULT_TAIL_FALLBACK = 45.0
 DEFAULT_MAX_TTS_CHARS = 1500
 DEFAULT_ENDPOINT_THRESHOLD = 0.5
 APPROVAL_CHOICES = ("deny", "once")
+DEFAULT_VOICE_TOKEN = ""
 
 Getter = Callable[..., Any]
 
@@ -45,6 +46,7 @@ class Settings:
     endpoint_threshold: float = DEFAULT_ENDPOINT_THRESHOLD
     approval_choice: str = "deny"
     api_base_url: str = ""
+    voice_token: str = DEFAULT_VOICE_TOKEN
 
 
 def _number(raw: Any, default: float) -> float:
@@ -81,4 +83,5 @@ def load_settings(get: Getter) -> Settings:
                                                       DEFAULT_ENDPOINT_THRESHOLD))),
         approval_choice=approval if approval in APPROVAL_CHOICES else "deny",
         api_base_url=str(get("api_base_url", "") or "").strip().rstrip("/"),
+        voice_token=str(get("voice_token", "") or "").strip(),
     )

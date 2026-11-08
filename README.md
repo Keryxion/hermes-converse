@@ -34,6 +34,13 @@ Dial `ws://<host>:<port>/v1/audio/converse` and send one `start` frame first:
  "quiet_interval": 0, "name": "Sakura"}
 ```
 
+Instead of the full `API_SERVER_KEY` you may send `{"type": "start", "voice_token": "<VOICE_TOKEN>", ...}`
+(the scoped, voice-only credential), or offer the `hermes-voice-token.<VOICE_TOKEN>` subprotocol
+(browser clients). A voice token authorizes only `/v1/audio/converse`, so a sniffed token on plain
+`ws://` gives away voice turns only, never the full API. Configure it with the
+`plugins.entries.hermes-converse.settings.voice_token` setting (or have the API server accept the
+voice token as Bearer for `/v1/capabilities` and `/v1/runs`).
+
 A browser client can put the key in the WebSocket subprotocols instead (`hermes-voice-v1` plus
 `hermes-key.<API_SERVER_KEY>`); the server accepts only `hermes-voice-v1` and never echoes the key.
 Either way the key is verified against the API server itself, so your existing key is the only
@@ -79,6 +86,7 @@ plugin settings form):
 | `endpoint_model`, `endpoint_threshold` | off, `0.5` | Smart Turn v3 semantic endpointer (see below) |
 | `approval_choice` | `deny` | what a voice turn answers when the agent asks for a command approval |
 | `api_base_url` | `""` | loopback URL of the API server when it cannot be derived from the listener |
+| `voice_token` | `""` | scoped, voice-only credential clients may present instead of `API_SERVER_KEY` (see above) |
 
 STT and TTS come from your normal Hermes `stt.*` and `tts.*` configuration.
 

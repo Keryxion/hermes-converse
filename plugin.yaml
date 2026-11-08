@@ -72,3 +72,7 @@ config_schema:
     type: str
     default: ""
     description: "Loopback base URL of this API server ('' = derived from the listener, e.g. http://127.0.0.1:8642)."
+  voice_token:
+    type: str
+    default: ""
+    description: "Scoped, voice-only credential clients may present instead of API_SERVER_KEY. When set, a client can open /v1/audio/converse with start.voice_token (or the hermes-voice-token.<token> subprotocol) and the plugin accepts it by local compare; a sniffed token only opens voice turns, never the full API."

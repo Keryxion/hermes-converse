@@ -94,6 +94,7 @@ def doctor() -> int:
         _ok("endpointer", "fixed silence (set endpoint_model to enable Smart Turn)")
     print(f"\n  WebSocket URL: ws://{host}:{port}/v1/audio/converse")
     print("  First frame:   {\"type\":\"start\",\"key\":\"<API_SERVER_KEY>\",\"input_rate\":16000,\"output_rate\":24000}")
+    print("                or {\"type\":\"start\",\"voice_token\":\"<VOICE_TOKEN>\",...} for a scoped voice-only credential")
     return 1 if failures else 0
 
 
