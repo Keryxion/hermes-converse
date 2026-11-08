@@ -81,8 +81,19 @@ plugin settings form):
 | `endpoint_model`, `endpoint_threshold` | off, `0.5` | Smart Turn v3 semantic endpointer (see below) |
 | `approval_choice` | `deny` | what a voice turn answers when the agent asks for a command approval |
 | `api_base_url` | `""` | loopback URL of the API server when it cannot be derived from the listener |
+| `arbitrate_enabled` | `false` | turn on cross-device voice arbitration so exactly one device answers each utterance |
+| `arbitrate_policy` | `first_to_endpoint` | how the winner is elected: `first_to_endpoint` (first claim wins) or `proximity` (same area/person as the speaker) |
+| `arbitrate_device_id` | `""` | stable id for this device in arbitration; `""` = auto-generated per socket |
 
 STT and TTS come from your normal Hermes `stt.*` and `tts.*` configuration.
+
+**Cross-device voice arbitration.** When `arbitrate_enabled` is true, every device on this route
+shares one arbitrator. When a device captures and transcribes an utterance it claims the turn; the
+first claim wins (`first_to_endpoint`) or the device in the same area as the speaker wins
+(`proximity`, needs `start.area`/`start.person`). Only the elected winner runs the agent turn and
+speaks aloud — the losers still send the transcript frame but stay silent for that utterance, so
+exactly one device answers. The winner releases the turn when `turn_done` is sent or the socket
+closes, allowing re-election on a later utterance.
 
 **Smart Turn v3** (optional): with `endpoint_model: smart-turn-v3` the fixed silence endpoint
 becomes adaptive — on each candidate pause the model estimates whether the utterance sounds
@@ -101,6 +112,7 @@ API-server client.
 |---|---|
 | `route.py` | the WebSocket handler, auth flow and the per-connection wiring |
 | `loop.py` | the mic shim, the VAD/STT session worker, the turn driver (sentence-by-sentence TTS, barge-in, session mode) |
+| `arbitrate.py` | cross-device voice arbitration: elects the single device that answers each utterance |
 | `agent_client.py` | the Runs API client: idempotent run creation, SSE with replay-safe sequence tracking, stop, approval answers |
 | `auth.py` | key verification through the API server's own `/v1/capabilities` |
 | `vad.py` | the barge/onset detector, endpointer and WAV capture |

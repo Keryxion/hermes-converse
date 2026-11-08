@@ -72,3 +72,16 @@ config_schema:
     type: str
     default: ""
     description: "Loopback base URL of this API server ('' = derived from the listener, e.g. http://127.0.0.1:8642)."
+  arbitrate_enabled:
+    type: bool
+    default: false
+    description: "Turn on cross-device voice arbitration so exactly one device answers each utterance."
+  arbitrate_policy:
+    type: str
+    choices: [first_to_endpoint, proximity]
+    default: first_to_endpoint
+    description: "How the winner is elected: first_to_endpoint (first claim wins) or proximity (same area/person as the speaker)."
+  arbitrate_device_id:
+    type: str
+    default: ""
+    description: "Stable id for this device in arbitration. '' = auto-generated per socket."

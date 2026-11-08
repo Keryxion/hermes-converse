@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Iterator, Optional
 
 from . import speech, vad
+from .arbitrate import Arbitrator, Device, TurnClaim
 from .phrases import is_end_phrase, is_stop_phrase, strip_end_phrase
 from .settings import (
     DEFAULT_END_PHRASES, DEFAULT_MAX_TTS_CHARS, DEFAULT_NAME, DEFAULT_STOP_PHRASES,
@@ -575,6 +576,14 @@ class _Driver:
     max_tts_chars: int
     stop_phrases: tuple[str, ...]
     end_phrases: tuple[str, ...]
+    # Cross-device voice arbitration. When set, the driver claims each utterance before running it;
+    # only the elected winner speaks aloud. Losers still send the transcript frame so nothing is
+    # dropped, but they skip the agent turn and TTS.
+    arbitrator: Optional[Arbitrator] = None
+    device: Optional[Device] = None
+    device_id: str = ""
+    owned_utterance_getter: Optional[Callable[[], Optional[str]]] = None
+    owned_utterance_setter: Optional[Callable[[Optional[str]], None]] = None
 
 
 class _Turn:
@@ -621,6 +630,12 @@ async def drive_converse_turns(
     max_tts_chars: int = DEFAULT_MAX_TTS_CHARS,
     stop_phrases: tuple[str, ...] = DEFAULT_STOP_PHRASES,
     end_phrases: tuple[str, ...] = DEFAULT_END_PHRASES,
+    # Cross-device voice arbitration: elect the single device that answers each utterance.
+    arbitrator: Optional[Arbitrator] = None,
+    device: Optional[Device] = None,
+    device_id: str = "",
+    owned_utterance_getter: Optional[Callable[[], Optional[str]]] = None,
+    owned_utterance_setter: Optional[Callable[[Optional[str]], None]] = None,
 ) -> None:
     """Run the per-transcript incremental-TTS turn loop.
 
@@ -634,12 +649,23 @@ async def drive_converse_turns(
     BARGE-IN: a VAD trip while playing stops TTS playback (``session`` sets ``tts_stop``), we emit
     ``interrupted``, and — when the host provides ``interrupt_turn`` — the in-flight agent turn is
     cancelled so it stops generating / firing tools.
+
+    CROSS-DEVICE ARBITRATION: when an ``arbitrator`` is given, each transcript is first claimed
+    via :meth:`~.arbitrate.Arbitrator.claim_turn`. Only the elected winner runs the agent turn and
+    speaks aloud; losers send the ``transcript`` frame but skip the agent and TTS, so exactly one
+    device answers each utterance. The winner's utterance id is stored through
+    ``owned_utterance_getter``/``owned_utterance_setter`` and released (via
+    :meth:`~.arbitrate.Arbitrator.release_turn`) by the caller when the reply is fully spoken or
+    the socket closes.
     """
     d = _Driver(session=session, synth=synth, cap=cap, loop=loop, send_json=send_json,
                 send_bytes=send_bytes, run_turn=run_turn, history=history,
                 quiet_interval=quiet_interval, interrupt_turn=interrupt_turn,
                 turn_timeout=turn_timeout, tail_fallback=tail_fallback, max_tts_chars=max_tts_chars,
-                stop_phrases=tuple(stop_phrases), end_phrases=tuple(end_phrases))
+                stop_phrases=tuple(stop_phrases), end_phrases=tuple(end_phrases),
+                arbitrator=arbitrator, device=device, device_id=device_id,
+                owned_utterance_getter=owned_utterance_getter,
+                owned_utterance_setter=owned_utterance_setter)
     while not session.stopped:
         item = await loop.run_in_executor(None, session.transcripts.get)
         if item is None:  # shutdown sentinel
@@ -672,6 +698,20 @@ async def drive_converse_turns(
             tt.set(outcome="stop_word")
             tt.end()
             continue
+        # Cross-device arbitration: claim this utterance before running the agent turn. Only the
+        # elected winner speaks aloud; losers skip the agent and TTS for this utterance.
+        utterance_id = f"utt_{turn_id}"
+        if d.arbitrator is not None and d.device is not None:
+            granted, winner = await d.arbitrator.claim_turn(d.device_id, utterance_id, transcript)
+            if not granted:
+                # Lost the election: stay silent for this utterance. Record that we do not own it
+                # so nothing is released later, then continue listening.
+                d.owned_utterance_setter(None)
+                tt.set(outcome="denied_by_arbitration")
+                tt.end()
+                continue
+            d.owned_utterance_setter(utterance_id)
+            logger.info("converse: won arbitration for utterance %s (winner=%s)", utterance_id, winner)
         if await _run_turn(d, _Turn(transcript, turn_id, meta), tt) is False:
             _discard_after_signoff(session)
 
@@ -734,6 +774,16 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> Optional[bool]:
     await d.send_json(turn_done)
     _finish_trace(tt, turn, reply, err=turn_err, barged=barged, expects_more=expects_more)
     session.end_turn()
+    # Release the arbitration utterance now that turn_done has been sent, so the same utterance can
+    # be re-elected on a later turn if the user repeats themselves.
+    if d.arbitrator is not None and d.device is not None:
+        utterance = d.owned_utterance_getter() if d.owned_utterance_getter else None
+        if utterance is not None:
+            try:
+                await d.arbitrator.release_turn(d.device_id, utterance)
+            except Exception:
+                logger.debug("converse: release_turn failed", exc_info=True)
+            d.owned_utterance_setter(None)
     if d.quiet_interval > 0 and expects_more is not False and not turn.timed_out:
         session.begin_playback_tail(turn.turn_id, d.tail_fallback)
     return expects_more

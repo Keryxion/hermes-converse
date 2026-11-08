@@ -14,6 +14,10 @@ from .phrases import normalize_phrases
 DEFAULT_NAME = "Sakura"
 DEFAULT_STOP_PHRASES = ("stop", "cancel")
 DEFAULT_END_PHRASES = ("over and out",)
+# ── cross-device voice arbitration ────────────────────────────────────────────────────────
+DEFAULT_ARBITRATE_POLICY = "first_to_endpoint"  # first_to_endpoint | proximity
+DEFAULT_ARBITRATE_DEVICE_ID = None  # ''/None = auto-generate from socket
+DEFAULT_ARBITRATE_ENABLED = False
 # Hard cap on a single agent turn (LLM think + stream). A turn that produces nothing — an LLM call
 # hung with no request timeout — otherwise never ends: no reply, no turn_done, so the client is stuck
 # "thinking" forever. The driver stops the run at this deadline, sends an error + turn_done, and
@@ -45,6 +49,10 @@ class Settings:
     endpoint_threshold: float = DEFAULT_ENDPOINT_THRESHOLD
     approval_choice: str = "deny"
     api_base_url: str = ""
+    # Cross-device voice arbitration: elect the single device that answers each utterance.
+    arbitrate_enabled: bool = DEFAULT_ARBITRATE_ENABLED
+    arbitrate_policy: str = DEFAULT_ARBITRATE_POLICY
+    arbitrate_device_id: Optional[str] = DEFAULT_ARBITRATE_DEVICE_ID
 
 
 def _number(raw: Any, default: float) -> float:
@@ -78,7 +86,10 @@ def load_settings(get: Getter) -> Settings:
         end_phrases=normalize_phrases(get("end_phrases", DEFAULT_END_PHRASES), DEFAULT_END_PHRASES),
         endpoint_model=_model_enabled(get("endpoint_model", "")),
         endpoint_threshold=min(1.0, max(0.0, _number(get("endpoint_threshold", DEFAULT_ENDPOINT_THRESHOLD),
-                                                      DEFAULT_ENDPOINT_THRESHOLD))),
+                                                       DEFAULT_ENDPOINT_THRESHOLD))),
         approval_choice=approval if approval in APPROVAL_CHOICES else "deny",
         api_base_url=str(get("api_base_url", "") or "").strip().rstrip("/"),
+        arbitrate_enabled=_model_enabled(get("arbitrate_enabled", DEFAULT_ARBITRATE_ENABLED)),
+        arbitrate_policy=str(get("arbitrate_policy", DEFAULT_ARBITRATE_POLICY) or DEFAULT_ARBITRATE_POLICY).strip(),
+        arbitrate_device_id=_text(get("arbitrate_device_id", DEFAULT_ARBITRATE_DEVICE_ID)),
     )
