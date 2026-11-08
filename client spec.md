@@ -89,6 +89,30 @@ wake word again mid-turn and you want to keep the conversation going.
 | `stop_word` | session mode: you said a stop phrase; no turn ran |
 | `error` | the turn failed (spoken-safe text) |
 
+### Handling `thinking`
+
+`thinking` is the server's explicit signal that the agent turn has started.
+For example:
+
+```json
+{"type": "thinking", "turn_id": "<turn_id>"}
+```
+
+Treat it as a turn boundary even if the client has not received a
+`transcript` for that turn. Mark the agent turn active, stop forwarding
+microphone PCM for the current capture, and show "thinking". Keep the
+socket and session open so the reply can arrive.
+
+If the client uses a turn deadline, arm it on `thinking` when `transcript`
+has not already armed it; do not restart an existing deadline. Record the
+event in the turn trace if tracing is enabled. When both frames arrive,
+`transcript` identifies what was heard and `thinking` confirms that the
+agent has started; they belong to the same `turn_id`.
+
+This is a lifecycle status notification, not streamed reasoning text.
+Continue handling `speaking`, `interrupted`, `error`, and `turn_done` as
+usual to play the reply or finish the turn.
+
 ## 5. Session mode (`quiet_interval > 0`)
 
 For wake-word devices. The server reports quiet in **received** audio (never
@@ -105,6 +129,10 @@ false`.
 4. Stream microphone PCM
 5. Receive `transcript` → `thinking` → `speaking` + PCM → `turn_done`
 6. Repeat from step 4 for the next turn, or send `cancel`/`stop`
+
+This is the typical sequence, not a prerequisite for handling `thinking`:
+the client must enter the active-turn state even without a preceding
+`transcript` frame.
 
 ## 7. turn_id
 

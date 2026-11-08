@@ -53,6 +53,12 @@ Then stream binary PCM16 mono frames at `input_rate` (30 ms blocks are ideal). T
 | `quiet` | session mode: the stream has been silent for another `quiet_interval` seconds |
 | `stop_word` | session mode: you said a stop phrase; no turn ran |
 
+Handle `thinking` as an explicit turn boundary even without a preceding `transcript`:
+mark the agent turn active, stop forwarding microphone PCM for the current capture, and show
+"thinking" while keeping the socket open. Arm the client's turn deadline if it is not already
+running; do not restart it. This frame reports lifecycle status, not reasoning text. See
+[the client spec](client%20spec.md#handling-thinking) for the frame format and tracing behavior.
+
 Client control frames: `{"stop": true}` ends the session, `{"commit": true}` forces the current
 utterance to endpoint, `{"type": "cancel", "turn_id": "..."}` cancels the current turn while
 keeping the socket, session and history alive, `{"type": "drained", "turn_id": "..."}` says the
