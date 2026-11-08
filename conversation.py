@@ -1,6 +1,7 @@
 """Profile-local conversation output subscriptions; no broadcast or offline outbox."""
 from __future__ import annotations
 
+import asyncio
 from collections import OrderedDict
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -15,6 +16,7 @@ from .loop import ConversationOutput
 class VoiceRequest:
     text: str
     reply: str | None = None
+    cancelled: bool = False
     candidates: OrderedDict[str, tuple[str, float]] = field(default_factory=OrderedDict)
 
 
@@ -53,6 +55,9 @@ class ConversationHub:
             attachment.voice_request = request
         try:
             yield request
+        except asyncio.CancelledError:
+            request.cancelled = True
+            raise
         finally:
             with self._lock:
                 attachment.voice_request = None
@@ -62,10 +67,11 @@ class ConversationHub:
             own_event = next((event_id for event_id, response in reversed(candidates)
                               if response[0] == request.reply), None)
             for event_id, (response, expiry) in candidates:
-                if request.reply is not None and event_id != own_event:
+                if not request.cancelled and event_id != own_event:
                     self.publish(attachment.session.session_id, response, event_id, expires_at=expiry)
                 else:
-                    # Remember suppressed events too: a replay must not revive a voice reply.
+                    # Only confirmed duplicates or explicitly cancelled requests are suppressed.
+                    # A failed run with no reply cannot identify any candidate as its duplicate.
                     with self._lock:
                         attachment.seen[event_id] = None
                         if len(attachment.seen) > 1024:

@@ -287,3 +287,46 @@ async def test_background_response_is_not_suppressed_during_a_voice_owned_run(mo
         assert pcm and background[0]['event_id'] == 'turn:background'
         assert len(fake.runs) == 1
         await ws.close()
+
+
+
+@pytest.mark.asyncio
+async def test_completed_same_input_output_survives_voice_run_error(monkeypatch):
+    fake = FakeRunsAPI(API_KEY)
+    _patch_speech(monkeypatch, _FakeStreamer([b'\x01\x02']))
+
+    async def refused_voice_run(request):
+        body = await request.json()
+        harness.route.hub.on_response(session_id=body['session_id'], turn_id='completed-elsewhere',
+            user_message=body['input'], assistant_response='The completed background response.')
+        return web.json_response({'error': {'message': 'voice run refused'}}, status=409)
+
+    fake.create_run = refused_voice_run
+    harness = Harness(fake)
+    async with harness as client:
+        ws, _ = await connect(client)
+        for frame in _speech_then_silence_pcm():
+            await ws.send_bytes(frame)
+        failed, _ = await _collect_turn(ws)
+        assert [f['type'] for f in failed] == ['transcript', 'thinking', 'error', 'turn_done']
+        output, pcm = await _collect_turn(ws)
+        assert output[0]['event_id'] == 'turn:completed-elsewhere' and pcm
+        assert not fake.runs
+        await ws.close()
+
+
+def test_explicit_cancellation_does_not_revive_matching_hook_output():
+    import numpy as np
+    from hermes_converse.conversation import ConversationHub
+    from hermes_converse.loop import ConverseSession
+    hub = ConversationHub()
+    session = ConverseSession(np)
+    attachment = hub.attach(session.session_id, session)
+    with pytest.raises(asyncio.CancelledError):
+        with hub.owned_run(attachment, 'cancelled input'):
+            hub.on_response(session_id=session.session_id, turn_id='cancelled-turn',
+                user_message='cancelled input', assistant_response='Old response.')
+            raise asyncio.CancelledError
+    hub.on_response(session_id=session.session_id, turn_id='cancelled-turn',
+        user_message='cancelled input', assistant_response='Old response.')
+    assert session.transcripts.empty()
