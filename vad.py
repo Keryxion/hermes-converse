@@ -100,10 +100,8 @@ def unlink_quietly(path: Optional[str]) -> None:
 
 def utterance_volume(np: Any, audio: Any) -> float:
     """The RMS loudness of a captured utterance, same int16-amplitude units as every threshold in
-    this module (a quiet room is ~30-80, normal speech ~3000-8000). Used as the ``volume`` signal
-    for cross-device ``wake_signal`` arbitration (arbitrate.py): it is only ever compared against
-    other devices' volume for the same utterance, not against an absolute loudness standard, so no
-    normalization against the int16 ceiling is needed."""
+    this module (a quiet room is ~30-80, normal speech ~3000-8000). This is a local
+    capture measurement, separate from the normalized 0–1 wake volume reported by clients."""
     return rms(np, audio)
 
 

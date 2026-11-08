@@ -6,6 +6,7 @@ the getter rather than the context so tests (and the CLI) can feed it a dict.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
@@ -16,7 +17,7 @@ DEFAULT_NAME = "Sakura"
 DEFAULT_STOP_PHRASES = ("stop", "cancel")
 DEFAULT_END_PHRASES = ("over and out",)
 # ── cross-device voice arbitration ────────────────────────────────────────────────────────
-DEFAULT_ARBITRATE_POLICY = "first_to_endpoint"  # first_to_endpoint | wake_signal
+DEFAULT_ARBITRATE_POLICY = POLICY_WAKE_SIGNAL
 DEFAULT_ARBITRATE_DEVICE_ID = None  # ''/None = auto-generate from socket
 DEFAULT_ARBITRATE_ENABLED = False
 # How long the arbitrator collects concurrent wake claims for the same wake word before electing
@@ -54,7 +55,7 @@ class Settings:
     endpoint_threshold: float = DEFAULT_ENDPOINT_THRESHOLD
     approval_choice: str = "deny"
     api_base_url: str = ""
-    # Cross-device voice arbitration: elect the single device that answers each utterance.
+    # Cooperative wake recommendations; never suppress streamed audio.
     arbitrate_enabled: bool = DEFAULT_ARBITRATE_ENABLED
     arbitrate_policy: str = DEFAULT_ARBITRATE_POLICY
     arbitrate_device_id: Optional[str] = DEFAULT_ARBITRATE_DEVICE_ID
@@ -86,6 +87,11 @@ def _arbitrate_policy(raw: Any) -> str:
     return policy
 
 
+def _wake_window(raw: Any) -> float:
+    value = _number(raw, DEFAULT_ARBITRATE_WAKE_WINDOW_SECONDS)
+    return value if math.isfinite(value) and value >= 0 else DEFAULT_ARBITRATE_WAKE_WINDOW_SECONDS
+
+
 def load_settings(get: Getter) -> Settings:
     """Build :class:`Settings` from ``get(key, default)`` (``ctx.get_config`` or a dict's ``.get``)."""
     approval = str(get("approval_choice", "deny") or "deny").strip().lower()
@@ -106,8 +112,6 @@ def load_settings(get: Getter) -> Settings:
         arbitrate_enabled=_model_enabled(get("arbitrate_enabled", DEFAULT_ARBITRATE_ENABLED)),
         arbitrate_policy=_arbitrate_policy(get("arbitrate_policy", DEFAULT_ARBITRATE_POLICY)),
         arbitrate_device_id=_text(get("arbitrate_device_id", DEFAULT_ARBITRATE_DEVICE_ID)),
-        arbitrate_wake_window_seconds=_number(
-            get("arbitrate_wake_window_seconds", DEFAULT_ARBITRATE_WAKE_WINDOW_SECONDS),
-            DEFAULT_ARBITRATE_WAKE_WINDOW_SECONDS,
-        ),
+        arbitrate_wake_window_seconds=_wake_window(
+            get("arbitrate_wake_window_seconds", DEFAULT_ARBITRATE_WAKE_WINDOW_SECONDS)),
     )

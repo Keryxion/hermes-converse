@@ -75,16 +75,16 @@ config_schema:
   arbitrate_enabled:
     type: bool
     default: false
-    description: "Turn on cross-device voice arbitration so exactly one device answers each utterance."
+    description: "Enable advisory wake selection for cooperating clients; streamed audio is always processed."
   arbitrate_policy:
     type: str
     choices: [first_to_endpoint, wake_signal]
-    default: first_to_endpoint
-    description: "How the winner is elected: first_to_endpoint (first claim wins) or wake_signal (different wake words don't compete; else highest wake-word confidence, then loudest, then earliest heard)."
+    default: wake_signal
+    description: "wake_signal ranks exact-phrase wake claims by confidence, normalized volume, detection time, then arrival order. Legacy first_to_endpoint grants immediately."
   arbitrate_device_id:
     type: str
     default: ""
-    description: "Stable id for this device in arbitration. '' = auto-generated per socket."
+    description: "Optional label prefix for unique server-generated socket device ids."
   arbitrate_wake_window_seconds:
     type: float
     default: 0.25

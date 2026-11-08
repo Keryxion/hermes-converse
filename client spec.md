@@ -12,11 +12,9 @@ streams the reply back as PCM audio — all on the same socket. The socket,
 session, and conversation history stay alive across turns unless you close
 them.
 
-**Protocol status:** The existing connection, audio, and turn lifecycle below
-remain the baseline. Section 8 defines the intended cooperative wake contract.
-PR #15 does **not yet implement that contract in full**; section 9 lists the
-known differences. Wake examples and table entries marked “intended” are targets
-for implementation, not claims about current server support.
+Wake selection is cooperative: it recommends an answering device without
+restricting audio processing. Section 8 defines the client/server contract;
+section 9 describes compatibility with earlier versions of this PR.
 
 ## 1. Connect and authenticate
 
@@ -69,7 +67,7 @@ All are JSON text frames:
 | `{"stop": true}` | Ends the whole session and closes the socket. History is lost. |
 | `{"commit": true}` | Forces the current utterance to endpoint now (runs a turn on it). |
 | `{"type": "cancel", "turn_id": "..."}` | Cancels the **current** turn — stops TTS and the agent — but keeps the socket, session, and history alive. |
-| `{"type": "wake", "claim_id": "...", "wake_word": "Hey Arya"}` | Intended: request an advisory wake decision before streaming an activation; see section 8. |
+| `{"type": "wake", "claim_id": "...", "wake_word": "Hey Arya"}` | request an advisory wake decision before streaming an activation; see section 8. |
 | `{"type": "drained", "turn_id": "..."}` | Tells the server the reply's last audio has left the speaker, so the server won't transcribe its own echo as a new turn. |
 
 **`cancel` vs `stop`:** `stop` tears down the session; `cancel` only kills the
@@ -81,8 +79,8 @@ wake word again mid-turn and you want to keep the conversation going.
 | frame | meaning |
 |---|---|
 | `ready` | rates, `session_id`, clock-skew timestamps |
-| `wake_grant` | Intended: recommends this client handle the wake activation; echoes its `claim_id` and `wake_word`. |
-| `wake_deny` | Intended: recommends this client stand down for the activation; echoes its `claim_id` and `wake_word`. |
+| `wake_grant` | recommends this client handle the wake activation; echoes its `claim_id` and `wake_word`. |
+| `wake_deny` | recommends this client stand down for the activation; echoes its `claim_id` and `wake_word`. |
 | `transcript` | what the server heard; carries a `turn_id` repeated on later frames of the turn |
 | `thinking` | the agent turn is running (show "thinking", not "listening") |
 | `speaking` + binary frames | the reply as PCM16 at `output_rate` |
@@ -117,7 +115,7 @@ you can match frames to a turn. `cancel` and `drained` accept an optional
 `turn_id` to target a specific turn.
 
 
-## 8. Cooperative wake selection — intended contract
+## 8. Cooperative wake selection
 
 ### Participation and lifetime
 
@@ -197,14 +195,16 @@ signals in the request; it does not wait for streamed audio or STT.
 
 These are server/plugin settings, not fields of `start`. The existing names
 are `arbitrate_enabled` (default `false`), `arbitrate_policy`, and
-`arbitrate_wake_window_seconds`. Use `wake_signal` for this ranked selection.
+`arbitrate_wake_window_seconds`. The default policy is `wake_signal`, which
+performs this ranked selection.
 When arbitration is disabled, immediately send `wake_grant`, still echoing the
 client's `claim_id` and `wake_word`. The legacy `first_to_endpoint` policy is not
-the cooperative selection contract; see section 9.
+a ranked election; it grants every wake request immediately, without a later
+transcript election. See section 9.
 
 `start.device_id`, `start.area`, and `start.person` are not supported selection
-inputs. The existing `arbitrate_device_id` is server configuration; otherwise the
-server generates a socket device identifier. The assistant's `start.name`
+inputs. The existing `arbitrate_device_id` is an optional server-configured label prefix;
+the server appends a unique socket identifier to keep candidates distinct. The assistant's `start.name`
 remains separate from the exact detected `wake_word` phrase.
 
 ### Cooperating client flows
@@ -224,27 +224,24 @@ arya-esp32.
 A later detection always gets a new `claim_id`. A grant does not require audio:
 if the activation is abandoned locally, no reservation needs releasing.
 
-## 9. PR #15 implementation gaps
+## 9. Compatibility and migration
 
-Section 8 is the intended contract. The current branch differs in these ways;
-this documentation update defers the runtime changes:
+Earlier revisions of PR #15 generated claim IDs on the server, suppressed audio
+after denial, and arbitrated matching transcripts. Those behaviors are removed:
+all streamed audio is processed normally, regardless of wake participation or
+recommendation. There is no turn ownership to release at `turn_done` or socket
+close. Clients own the wake-activation lifecycle and the 1000 ms decision timer.
 
-| subject | current implementation | intended contract |
-|---|---|---|
-| Request correlation | The server ignores client `claim_id`, generates its own ID with arbitration enabled, and omits it from grants when arbitration is disabled. | Echo a client-generated ID in every decision, including when disabled, so late responses can be ignored reliably. |
-| Audio after denial | The driver drops the next denied utterance before announcing a transcript or running the agent. | Process streamed audio normally; the client chooses whether to honor the recommendation. |
-| Nonparticipating clients and follow-ups | Without a recorded wake decision, the driver performs transcript-key arbitration. A recorded decision is attached only to the next captured utterance. | No transcript arbitration; selection advises the client for the whole activation and its follow-ups. |
-| `first_to_endpoint` | Wake requests receive immediate grants from the arbitrator. The driver then skips transcript arbitration for a granted utterance, so multiple waking devices can answer. Without a wake grant, the first transcript claim wins. | Ranked cooperative selection uses `wake_signal`; no legacy endpoint election is part of the intended client contract. |
+Clients must generate a new `claim_id` for every wake detection, send the exact
+`wake_word` phrase, and use normalized 0–1 `volume` rather than raw PCM16 RMS.
+A wake request without nonempty string `claim_id` and `wake_word` receives
+`{"type":"error","error":"bad_wake"}` without closing the socket. Invalid
+optional numeric signals (non-numeric, non-finite, negative, or outside 0–1 for
+confidence/volume) are treated as missing; omit unavailable signals.
 
-The older `proximity` policy and its `area` / `person` inputs were removed.
-Unknown policy settings, including `proximity`, currently fall back to
-`first_to_endpoint`. Existing README policy descriptions describe legacy
-implementation behavior; use section 8 for the intended client contract.
-
-Contract review scenarios: matching phrases compete within a window; different
-phrases and claims after the window elect independently; ties and missing
-signals follow the ranking above; grants cover follow-ups; denial and timeout
-return cooperating clients to wake detection; late responses cannot affect a
-new claim; nonparticipating clients and audio sent after denial are processed
-normally. These are acceptance criteria for future runtime work, not assertions
-that the current arbitration tests validate this contract.
+`arbitrate_enabled` remains off by default. The policy default is now
+`wake_signal`; unknown settings, including the removed `proximity` policy, fall
+back to it. An explicitly configured legacy `first_to_endpoint` grants wake
+requests immediately and does not arbitrate transcripts. Select `wake_signal`
+to enable ranked recommendations. `start.device_id`, `area`, and `person` remain
+unsupported selection inputs.

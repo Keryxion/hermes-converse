@@ -20,7 +20,6 @@ import asyncio
 import contextlib
 import logging
 import queue
-import re
 import threading
 import time
 import uuid
@@ -28,7 +27,6 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Iterator, Optional
 
 from . import speech, vad
-from .arbitrate import Arbitrator, Device, TurnClaim
 from .phrases import is_end_phrase, is_stop_phrase, strip_end_phrase
 from .settings import (
     DEFAULT_END_PHRASES, DEFAULT_MAX_TTS_CHARS, DEFAULT_NAME, DEFAULT_STOP_PHRASES,
@@ -162,56 +160,12 @@ class CancelTurn:
 
 
 class Utterance(str):
-    """A transcript carrying the :mod:`tracing` recorder of the capture that produced it, plus the
-    cross-device ``wake_signal`` arbitration inputs for this utterance (see ``arbitrate.py``):
-    ``wake_word``/``confidence``/``heard_at`` come from the client's most recent ``wake`` frame
-    (None when it sent none — an older client, or a session-mode turn with no fresh wake-word hit);
-    ``volume`` is computed server-side from the captured audio (:func:`vad.utterance_volume).
-    ``wake_claim_id``/``wake_granted`` record the wake-time handshake decision: ``True`` means the
-    server already elected this device primary for the wake word, ``False`` means another device is
-    primary and this utterance must be dropped, and ``None`` means no handshake happened (older
-    client, or arbitration disabled) so the driver claims at transcript time instead. It is a
-    ``str``, so everything that reads the queue as plain transcripts keeps working."""
+    """A transcript carrying the tracing recorder of its audio capture."""
 
-    recorder: Any
-    wake_word: Optional[str]
-    confidence: Optional[float]
-    heard_at: Optional[float]
-    volume: Optional[float]
-    wake_claim_id: Optional[str]
-    wake_granted: Optional[bool]
-
-    def __new__(
-        cls, text: str, recorder: Any, *,
-        wake_word: Optional[str] = None, confidence: Optional[float] = None,
-        heard_at: Optional[float] = None, volume: Optional[float] = None,
-        wake_claim_id: Optional[str] = None, wake_granted: Optional[bool] = None,
-    ) -> "Utterance":
+    def __new__(cls, text: str, recorder: Any) -> "Utterance":
         self = super().__new__(cls, text)
         self.recorder = recorder
-        self.wake_word = wake_word
-        self.confidence = confidence
-        self.heard_at = heard_at
-        self.volume = volume
-        self.wake_claim_id = wake_claim_id
-        self.wake_granted = wake_granted
         return self
-
-
-@dataclass(frozen=True)
-class WakeSignal:
-    """The client's most recent ``wake`` frame plus the server's handshake answer.
-
-    ``granted`` is ``None`` when no handshake ran (arbitration disabled or an older client that sent
-    only the legacy signal), ``True`` when this device is the elected primary box, and ``False``
-    when another device is primary and this session must stay silent for that utterance.
-    """
-
-    wake_word: Optional[str] = None
-    confidence: Optional[float] = None
-    heard_at: Optional[float] = None
-    claim_id: Optional[str] = None
-    granted: Optional[bool] = None
 
 
 def _default_transcribe(wav_path: str) -> str:
@@ -282,36 +236,6 @@ class ConverseSession:
                 self._turn_detector = None
         self._worker: Optional[threading.Thread] = None
         self.on_trip: Optional[Callable[[str], None]] = None  # called with the phase name on every trip
-        # The most recent client `wake` frame plus the server's handshake answer, not yet attached
-        # to an utterance. A single slot: only the latest wake hit matters, and the route's WS pump
-        # (asyncio) and this worker (a thread) touch it under the GIL, so a plain attribute swap is
-        # enough — no lock needed.
-        self._pending_wake: Optional[WakeSignal] = None
-
-    def note_wake_decision(
-        self, *, granted: bool, claim_id: Optional[str] = None,
-        wake_word: Optional[str] = None, confidence: Optional[float] = None,
-        heard_at: Optional[float] = None,
-    ) -> None:
-        """Route hook: the wake-time handshake answered this device's claim. Attached to the next
-        utterance this session produces, then cleared, so the driver can skip the redundant
-        transcript-time claim (granted) or drop the utterance entirely (denied)."""
-        self._pending_wake = WakeSignal(
-            wake_word=wake_word, confidence=confidence, heard_at=heard_at,
-            claim_id=claim_id, granted=granted)
-
-    def note_wake_signal(
-        self, *, wake_word: Optional[str], confidence: Optional[float], heard_at: Optional[float],
-    ) -> None:
-        """Route hook for a ``wake`` frame when no handshake ran (arbitration disabled): record the
-        legacy signal for the transcript-time claim, attached to the next utterance then cleared."""
-        self._pending_wake = WakeSignal(
-            wake_word=wake_word, confidence=confidence, heard_at=heard_at)
-
-    def _take_wake_signal(self) -> WakeSignal:
-        pending = self._pending_wake
-        self._pending_wake = None
-        return pending or WakeSignal()
 
     # ── playback / barge-in coordination ──
     def playing(self) -> bool:
@@ -387,15 +311,11 @@ class ConverseSession:
                         self.on_trip(phase)
                     except Exception:
                         logger.debug("converse on_trip callback failed", exc_info=True)
-                # Take the pending wake signal now, at the trip that starts this utterance — not
-                # after capture, so a wake frame that arrives mid-capture is correctly left for the
-                # utterance it actually announced rather than retroactively claimed by this one.
-                wake = self._take_wake_signal()
                 recorder = PhaseRecorder(input_rate=self._input_rate, session_mode=self._quiet_interval > 0)
                 self._capturing = True
                 self._cancelled.clear()  # fresh capture: an idle cancel must not poison it
                 try:
-                    transcript, volume = self._capture_and_transcribe(recorder)
+                    transcript, _volume = self._capture_and_transcribe(recorder)
                 finally:
                     self._capturing = False
                 # A cancelled capture is discarded: no turn runs on it, the session stays alive.
@@ -403,12 +323,7 @@ class ConverseSession:
                     self._cancelled.clear()
                     continue
                 if transcript:
-                    self.transcripts.put(Utterance(
-                        transcript, recorder,
-                        wake_word=wake.wake_word, confidence=wake.confidence,
-                        heard_at=wake.heard_at, volume=volume,
-                        wake_claim_id=wake.claim_id, wake_granted=wake.granted,
-                    ))
+                    self.transcripts.put(Utterance(transcript, recorder))
         except Exception:
             logger.warning("converse VAD loop failed", exc_info=True)
         finally:
@@ -491,8 +406,8 @@ class ConverseSession:
 
     def _capture_and_transcribe(self, recorder: Optional[PhaseRecorder] = None) -> tuple[str, float]:
         """Endpoint the utterance from the pre-roll and return ``(transcript, volume)`` — ``volume``
-        is the captured audio's RMS loudness (:func:`vad.utterance_volume`), the ``wake_signal``
-        arbitration input computed server-side rather than reported by the client."""
+        is the captured audio's RMS loudness (:func:`vad.utterance_volume`). Wake
+        selection uses only client-reported signals and never gates this capture."""
         np = self._np
         recorder = recorder or PhaseRecorder()
         silence_rms = max(float(vad.SILENCE_RMS_THRESHOLD),
@@ -580,17 +495,6 @@ def clamp_sample_rate(raw: Any, default: int) -> int:
     return max(SAMPLE_RATE_MIN, min(val, SAMPLE_RATE_MAX))
 
 
-def _utterance_key(transcript: str) -> str:
-    """A key shared across devices that heard the same utterance.
-
-    Derived from the transcript text so two devices that transcribed the same spoken
-    utterance collide on the same key and arbitrate. Falls back to a random id for
-    empty transcripts (empty transcripts are skipped upstream before arbitration).
-    """
-    normalized = re.sub(r"\s+", " ", transcript.strip().lower())
-    return normalized or f"utt_{uuid.uuid4().hex}"
-
-
 def parse_quiet_interval(raw: Any) -> float:
     """The SESSION-mode opt-in from the ``start`` frame: seconds of received quiet between turns
     before a ``{"type":"quiet"}`` advisory (which also enables stop-phrase handling). Absent /
@@ -671,14 +575,6 @@ class _Driver:
     max_tts_chars: int
     stop_phrases: tuple[str, ...]
     end_phrases: tuple[str, ...]
-    # Cross-device voice arbitration. When set, the driver claims each utterance before running it;
-    # only the elected winner speaks aloud. Losers still send the transcript frame so nothing is
-    # dropped, but they skip the agent turn and TTS.
-    arbitrator: Optional[Arbitrator] = None
-    device: Optional[Device] = None
-    device_id: str = ""
-    owned_utterance_getter: Optional[Callable[[], Optional[str]]] = None
-    owned_utterance_setter: Optional[Callable[[Optional[str]], None]] = None
 
 
 class _Turn:
@@ -725,12 +621,6 @@ async def drive_converse_turns(
     max_tts_chars: int = DEFAULT_MAX_TTS_CHARS,
     stop_phrases: tuple[str, ...] = DEFAULT_STOP_PHRASES,
     end_phrases: tuple[str, ...] = DEFAULT_END_PHRASES,
-    # Cross-device voice arbitration: elect the single device that answers each utterance.
-    arbitrator: Optional[Arbitrator] = None,
-    device: Optional[Device] = None,
-    device_id: str = "",
-    owned_utterance_getter: Optional[Callable[[], Optional[str]]] = None,
-    owned_utterance_setter: Optional[Callable[[Optional[str]], None]] = None,
 ) -> None:
     """Run the per-transcript incremental-TTS turn loop.
 
@@ -745,22 +635,12 @@ async def drive_converse_turns(
     ``interrupted``, and — when the host provides ``interrupt_turn`` — the in-flight agent turn is
     cancelled so it stops generating / firing tools.
 
-    CROSS-DEVICE ARBITRATION: when an ``arbitrator`` is given, each transcript is first claimed
-    via :meth:`~.arbitrate.Arbitrator.claim_turn`. Only the elected winner runs the agent turn and
-    speaks aloud; losers send the ``transcript`` frame but skip the agent and TTS, so exactly one
-    device answers each utterance. The winner's utterance id is stored through
-    ``owned_utterance_getter``/``owned_utterance_setter`` and released (via
-    :meth:`~.arbitrate.Arbitrator.release_turn`) by the caller when the reply is fully spoken or
-    the socket closes.
     """
     d = _Driver(session=session, synth=synth, cap=cap, loop=loop, send_json=send_json,
                 send_bytes=send_bytes, run_turn=run_turn, history=history,
                 quiet_interval=quiet_interval, interrupt_turn=interrupt_turn,
                 turn_timeout=turn_timeout, tail_fallback=tail_fallback, max_tts_chars=max_tts_chars,
-                stop_phrases=tuple(stop_phrases), end_phrases=tuple(end_phrases),
-                arbitrator=arbitrator, device=device, device_id=device_id,
-                owned_utterance_getter=owned_utterance_getter,
-                owned_utterance_setter=owned_utterance_setter)
+                stop_phrases=tuple(stop_phrases), end_phrases=tuple(end_phrases))
     while not session.stopped:
         item = await loop.run_in_executor(None, session.transcripts.get)
         if item is None:  # shutdown sentinel
@@ -780,13 +660,6 @@ async def drive_converse_turns(
         transcript = item
         if not transcript:
             continue
-        # Wake-time handshake: another device was elected primary for this wake word, so this
-        # session must stay silent. Drop the utterance before announcing it — the client already
-        # got `wake_deny` and should not have streamed, but enforce it server-side regardless.
-        wake_granted = getattr(item, "wake_granted", None)
-        if wake_granted is False:
-            logger.info("converse: wake handshake denied this device; staying silent")
-            continue
         turn_id = uuid.uuid4().hex
         tt = start_turn(recorder=getattr(item, "recorder", None), turn_id=turn_id,
                         **{"session.id": getattr(session, "session_id", None)})
@@ -800,33 +673,6 @@ async def drive_converse_turns(
             tt.set(outcome="stop_word")
             tt.end()
             continue
-        # Cross-device arbitration. When the wake-time handshake already granted this device, the
-        # election happened before any audio was streamed and must not be repeated here. Otherwise
-        # (no handshake: arbitration was off when the wake fired, or an older client) claim at
-        # transcript time as a fallback; the key is derived from the transcript so two devices that
-        # heard the same spoken utterance collide on the same key.
-        utterance_id = _utterance_key(transcript)
-        if d.arbitrator is not None and d.device is not None and wake_granted is not True:
-            granted, winner = await d.arbitrator.claim_turn(
-                d.device_id, utterance_id, transcript,
-                wake_word=getattr(item, "wake_word", None),
-                confidence=getattr(item, "confidence", None),
-                heard_at=getattr(item, "heard_at", None),
-                volume=getattr(item, "volume", None),
-            )
-            if not granted:
-                # Lost the election: stay silent for this utterance. Record that we do not own it
-                # so nothing is released later, then continue listening.
-                d.owned_utterance_setter(None)
-                tt.set(outcome="denied_by_arbitration")
-                tt.end()
-                continue
-            d.owned_utterance_setter(utterance_id)
-            logger.info("converse: won arbitration for utterance %s (winner=%s)", utterance_id, winner)
-        elif wake_granted is True:
-            # The wake-time election is already closed; nothing to release when the turn ends.
-            d.owned_utterance_setter(None)
-            logger.info("converse: wake handshake granted utterance %s", utterance_id)
         if await _run_turn(d, _Turn(transcript, turn_id, meta), tt) is False:
             _discard_after_signoff(session)
 
@@ -889,16 +735,6 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> Optional[bool]:
     await d.send_json(turn_done)
     _finish_trace(tt, turn, reply, err=turn_err, barged=barged, expects_more=expects_more)
     session.end_turn()
-    # Release the arbitration utterance now that turn_done has been sent, so the same utterance can
-    # be re-elected on a later turn if the user repeats themselves.
-    if d.arbitrator is not None and d.device is not None:
-        utterance = d.owned_utterance_getter() if d.owned_utterance_getter else None
-        if utterance is not None:
-            try:
-                await d.arbitrator.release_turn(d.device_id, utterance)
-            except Exception:
-                logger.debug("converse: release_turn failed", exc_info=True)
-            d.owned_utterance_setter(None)
     if d.quiet_interval > 0 and expects_more is not False and not turn.timed_out:
         session.begin_playback_tail(turn.turn_id, d.tail_fallback)
     return expects_more

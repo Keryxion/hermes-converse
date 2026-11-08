@@ -1,28 +1,19 @@
-"""Integration test for arbitration wired through ``drive_converse_turns``.
+"""Real WebSocket and driver coverage for the cooperative wake contract.
 
-This needs only stdlib + numpy: the ``speech`` seams the turn driver touches (thread spawning,
-sentence chunking, markdown stripping) are replaced in-process, and the session's transcript queue
-is fed directly. That lets us verify the real driver path — (a) only the winning device runs the
-agent turn, (b) the loser stays silent, and (c) release allows re-election. Run with::
-
-    python3 -m pytest tests/test_arbitrate_integration.py -q
+Only speech-provider seams are replaced; no Hermes checkout is required.
 """
-from __future__ import annotations
-
 import asyncio
 import re
 import threading
-from dataclasses import dataclass
-from typing import Optional
 
-import numpy as np
 import pytest
+from aiohttp import web
 
-import hermes_converse.loop as cl
 from hermes_converse import speech
-from hermes_converse.arbitrate import Arbitrator, LocalBus, POLICY_WAKE_SIGNAL
-from hermes_converse.loop import ConverseSession, drive_converse_turns, Utterance
-
+from tests.support.fake_api import FakeRunsAPI
+from tests.test_route import (
+    Harness, _FakeStreamer, _patch_speech, _collect_turn, _speech_then_silence_pcm, _start_msg,
+)
 
 @pytest.fixture(autouse=True)
 def _speech_seams(monkeypatch):
@@ -56,262 +47,136 @@ def _speech_seams(monkeypatch):
     monkeypatch.setattr(speech, "sentence_chunker", lambda: _Chunker())
     monkeypatch.setattr(speech, "strip_markdown", lambda text: text)
     monkeypatch.setattr(speech, "sentence_boundary_re", lambda: re.compile(r"(?<=[.!?])\s+"))
+    monkeypatch.setattr(speech, "mark_speech_interrupted", lambda: None)
 
 
-class _FakeSynth:
-    sample_rate = 24000
-
-    def __init__(self) -> None:
-        self.spoken: list[str] = []
-
-    def synth(self, text: str):
-        self.spoken.append(text)
-        return iter([])  # no PCM
+async def _connect(client):
+    ws = await client.ws_connect('/v1/audio/converse')
+    await ws.send_str(_start_msg(key='-'.join(('fixture', 'converse', 'api', 'key', '0123456789'))))
+    assert (await ws.receive_json(timeout=2))['type'] == 'ready'
+    return ws
 
 
-@dataclass
-class _RunCall:
-    transcript: str
-    interrupted: bool
+def _patch(monkeypatch):
+    streamer = _FakeStreamer([b"\x01\x02\x03\x04"])
+    _patch_speech(monkeypatch, streamer)
+    monkeypatch.setattr(speech, 'transcribe_wav', lambda *a, **kw: 'hello')
+    return FakeRunsAPI('-'.join(('fixture', 'converse', 'api', 'key', '0123456789')), deltas=('Hello.',))
 
 
-class _Harness:
-    def __init__(self, *, arbitrator=None, device=None, device_id="d1", hold=None):
-        self.arbitrator = arbitrator
-        self.device = device
-        self.device_id = device_id
-        self.hold = hold
-        self.synth = _FakeSynth()
-        self.run_calls: list[_RunCall] = []
-        self.sent: list[dict] = []
-        self.owned_utterance: Optional[str] = None
-        self.session = ConverseSession(np, transcribe=lambda p: "")
-        self.loop = asyncio.get_running_loop()
-
-    async def run(self, transcripts):
-        async def run_turn(transcript, on_delta, *, interrupted):
-            self.run_calls.append(_RunCall(transcript, interrupted))
-            if self.hold is not None:
-                await self.hold.wait()  # keep the turn open so a loser's claim still lands
-            return f"reply to {transcript}", None
-
-        sent_json = self.sent
-
-        async def send_json(msg):
-            sent_json.append(msg)
-
-        async def send_bytes(chunk):
-            pass
-
-        owned_getter = lambda: self.owned_utterance
-        owned_setter = lambda v: self.__setattr__("owned_utterance", v)
-
-        await drive_converse_turns(
-            session=self.session,
-            synth=self.synth,
-            cap=4000,
-            loop=self.loop,
-            send_json=send_json,
-            send_bytes=send_bytes,
-            run_turn=run_turn,
-            history=[],
-            arbitrator=self.arbitrator,
-            device=self.device,
-            device_id=self.device_id,
-            owned_utterance_getter=owned_getter,
-            owned_utterance_setter=owned_setter,
-        )
-
-    def feed(self, text, **wake_kwargs):
-        self.session.transcripts.put(Utterance(text, None, **wake_kwargs))
-
-
-# ── tests ────────────────────────────────────────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_without_arbitration_every_device_runs_its_turn():
-    harness = _Harness()
-    task = asyncio.create_task(harness.run(["hello"]))
-    harness.feed("hello")
-    await asyncio.sleep(0.3)
-    harness.session.stop()
-    await task
-    assert len(harness.run_calls) == 1
-    assert harness.run_calls[0].transcript == "hello"
+async def _audio_turn(ws):
+    for chunk in _speech_then_silence_pcm():
+        await ws.send_bytes(chunk)
+    frames, pcm = await _collect_turn(ws)
+    assert any(f['type'] == 'transcript' for f in frames)
+    assert any(f['type'] == 'thinking' and f['turn_id'] for f in frames)
+    assert any(f['type'] == 'speaking' for f in frames)
+    assert pcm
+    return frames
 
 
 @pytest.mark.asyncio
-async def test_with_arbitration_winner_runs_loser_silent():
-    arb = Arbitrator(bus=LocalBus(), policy="first_to_endpoint")
-    d1 = await arb.register("d1")
-    d2 = await arb.register("d2")
+async def test_disabled_echoes_client_id(monkeypatch):
+    async with Harness(_patch(monkeypatch)) as client:
+        ws = await _connect(client)
+        await ws.send_json({'type': 'wake', 'claim_id': 'client-1', 'wake_word': 'Hey Arya'})
+        assert await ws.receive_json(timeout=1) == {
+            'type': 'wake_grant', 'claim_id': 'client-1', 'wake_word': 'Hey Arya'}
+        await ws.close()
 
-    # Keep d1's turn open until both devices have claimed: in the real world a turn takes
-    # seconds (LLM + TTS), so the loser's claim always lands while the winner owns the utterance.
-    hold = asyncio.Event()
-    h1 = _Harness(arbitrator=arb, device=d1, device_id="d1", hold=hold)
-    h2 = _Harness(arbitrator=arb, device=d2, device_id="d2", hold=hold)
 
-    t1 = asyncio.create_task(h1.run(["hello"]))
-    t2 = asyncio.create_task(h2.run(["hello"]))
-
-    # Both devices hear the same utterance. d1 claims first and wins.
-    h1.feed("hello")
-    await asyncio.sleep(0.05)  # d1 claimed and is now holding the turn open
-    h2.feed("hello")
-    await asyncio.sleep(0.05)  # d2 claims while d1 still owns the utterance -> denied
-    hold.set()
-    await asyncio.sleep(0.1)
-
-    h1.session.stop()
-    h2.session.stop()
-    await t1
-    await t2
-
-    # Only d1 ran the agent turn.
-    assert len(h1.run_calls) == 1
-    assert h1.run_calls[0].transcript == "hello"
-    assert len(h2.run_calls) == 0
-    # d2 stayed silent: no synthesis.
-    assert h2.synth.spoken == []
+@pytest.mark.parametrize('first_signals,second_signals', [
+    ({'confidence': 1, 'volume': 0.5}, {'confidence': 0.5, 'volume': 1}),
+    ({'confidence': 0.9, 'volume': 0.8}, {'confidence': 0.9, 'volume': 0.2}),
+])
+@pytest.mark.asyncio
+async def test_denial_is_advisory_and_followups_run(monkeypatch, first_signals, second_signals):
+    fake = _patch(monkeypatch)
+    async with Harness(fake, settings={'arbitrate_enabled': True,
+                                        'arbitrate_device_id': 'shared-label'}) as client:
+        first, second = await _connect(client), await _connect(client)
+        await first.send_json({'type': 'wake', 'claim_id': 'first', 'wake_word': 'Hey Arya',
+                               **first_signals})
+        await second.send_json({'type': 'wake', 'claim_id': 'second', 'wake_word': 'Hey Arya',
+                                **second_signals})
+        grant, deny = await asyncio.gather(first.receive_json(timeout=1), second.receive_json(timeout=1))
+        assert grant['type'] == 'wake_grant' and grant['claim_id'] == 'first'
+        assert deny['type'] == 'wake_deny' and deny['claim_id'] == 'second'
+        assert deny['winner_device_id'].startswith('shared-label_')
+        # A client ignoring the advice still gets a full answer, and so does its follow-up.
+        await _audio_turn(second)
+        await _audio_turn(second)
+        assert len(fake.runs) == 2
+        assert len({run['body']['session_id'] for run in fake.runs.values()}) == 1
+        await first.close()
+        await second.close()
 
 
 @pytest.mark.asyncio
-async def test_winner_release_allows_re_election():
-    arb = Arbitrator(bus=LocalBus(), policy="first_to_endpoint")
-    d1 = await arb.register("d1")
-
-    harness = _Harness(arbitrator=arb, device=d1, device_id="d1")
-    task = asyncio.create_task(harness.run(["one", "two"]))
-    harness.feed("one")
-    await asyncio.sleep(0.4)
-    harness.feed("two")
-    await asyncio.sleep(0.5)
-    harness.session.stop()
-    await task
-
-    # Both utterances were claimed and won by d1 (re-elected after release).
-    assert len(harness.run_calls) == 2
-    assert [c.transcript for c in harness.run_calls] == ["one", "two"]
+async def test_clients_without_wake_both_answer_same_transcript(monkeypatch):
+    fake = _patch(monkeypatch)
+    async with Harness(fake, settings={'arbitrate_enabled': True}) as client:
+        first, second = await _connect(client), await _connect(client)
+        await asyncio.gather(_audio_turn(first), _audio_turn(second))
+        assert len(fake.runs) == 2
+        await first.close()
+        await second.close()
 
 
 @pytest.mark.asyncio
-async def test_wake_signal_higher_confidence_wins_through_the_driver():
-    """Full pipeline: the Utterance carrying wake_word/confidence (as route.py's ConverseSession
-    would attach them from a client ``wake`` frame plus the server-computed volume) decides the
-    election, not claim order — d2 claims second but has the clearer wake-word hit."""
-    arb = Arbitrator(bus=LocalBus(), policy=POLICY_WAKE_SIGNAL)
-    d1 = await arb.register("d1")
-    d2 = await arb.register("d2")
-
-    hold = asyncio.Event()
-    h1 = _Harness(arbitrator=arb, device=d1, device_id="d1", hold=hold)
-    h2 = _Harness(arbitrator=arb, device=d2, device_id="d2", hold=hold)
-
-    t1 = asyncio.create_task(h1.run(["hello"]))
-    t2 = asyncio.create_task(h2.run(["hello"]))
-
-    # Feed both right away so both claims land inside either one's 50ms finalization window —
-    # unlike first_to_endpoint, wake_signal's winner is decided by confidence, not claim order.
-    h1.feed("hello", wake_word="arya", confidence=0.55)
-    h2.feed("hello", wake_word="arya", confidence=0.97)
-    await asyncio.sleep(0.2)  # let the wake_signal finalization window close
-    hold.set()
-    await asyncio.sleep(0.1)
-
-    h1.session.stop()
-    h2.session.stop()
-    await t1
-    await t2
-
-    assert len(h2.run_calls) == 1
-    assert len(h1.run_calls) == 0
-    assert h1.synth.spoken == []
+async def test_overlapping_claims_keep_ids_and_exact_phrases(monkeypatch):
+    async with Harness(_patch(monkeypatch), settings={'arbitrate_enabled': True}) as client:
+        ws = await _connect(client)
+        await ws.send_json({'type': 'wake', 'claim_id': 'old', 'wake_word': 'Arya'})
+        await ws.send_json({'type': 'wake', 'claim_id': 'new', 'wake_word': 'Hey Arya'})
+        replies = [await ws.receive_json(timeout=1), await ws.receive_json(timeout=1)]
+        assert {r['claim_id']: r['wake_word'] for r in replies} == {'old': 'Arya', 'new': 'Hey Arya'}
+        assert all(r['type'] == 'wake_grant' for r in replies)
+        await ws.close()
 
 
 @pytest.mark.asyncio
-async def test_wake_handshake_granted_runs_turn():
-    """A device that won the wake-time election (wake_granted=True) proceeds straight to its turn
-    without a redundant transcript-time claim."""
-    arb = Arbitrator(bus=LocalBus(), policy=POLICY_WAKE_SIGNAL)
-    d1 = await arb.register("d1")
-    harness = _Harness(arbitrator=arb, device=d1, device_id="d1")
-    task = asyncio.create_task(harness.run(["hello"]))
-    harness.feed("hello", wake_word="arya", confidence=0.9, wake_granted=True)
-    await asyncio.sleep(0.4)
-    harness.session.stop()
-    await task
-    assert len(harness.run_calls) == 1
-    assert harness.run_calls[0].transcript == "hello"
-    # The turn completed (turn_done went out) even though the fake synth produced no PCM.
-    assert any(m.get("type") == "turn_done" for m in harness.sent)
+async def test_pending_wake_does_not_block_audio_or_stop(monkeypatch):
+    fake = _patch(monkeypatch)
+    async with Harness(fake, settings={'arbitrate_enabled': True,
+                                        'arbitrate_wake_window_seconds': 5}) as client:
+        ws = await _connect(client)
+        await ws.send_json({'type': 'wake', 'claim_id': 'slow', 'wake_word': 'Hey Arya'})
+        # Audio is accepted while a decision is pending; no wake grant is required.
+        await asyncio.wait_for(_audio_turn(ws), timeout=2)
+        await ws.send_json({'stop': True})
+        msg = await ws.receive(timeout=1)
+        assert msg.type in (web.WSMsgType.CLOSE, web.WSMsgType.CLOSED)
+        await ws.close()
 
 
 @pytest.mark.asyncio
-async def test_wake_handshake_denied_stays_silent():
-    """A device that lost the wake-time election (wake_granted=False) drops the utterance before
-    announcing it: no agent turn, no synthesis."""
-    arb = Arbitrator(bus=LocalBus(), policy=POLICY_WAKE_SIGNAL)
-    d1 = await arb.register("d1")
-    harness = _Harness(arbitrator=arb, device=d1, device_id="d1")
-    task = asyncio.create_task(harness.run(["hello"]))
-    harness.feed("hello", wake_word="arya", confidence=0.3, wake_granted=False)
-    await asyncio.sleep(0.4)
-    harness.session.stop()
-    await task
-    assert len(harness.run_calls) == 0
-    assert harness.synth.spoken == []
-    # The denied utterance never reached the client either.
-    assert all(m.get("type") != "transcript" for m in harness.sent)
+async def test_invalid_wake_does_not_close_socket(monkeypatch):
+    async with Harness(_patch(monkeypatch)) as client:
+        ws = await _connect(client)
+        await ws.send_json({'type': 'wake', 'wake_word': 'Arya'})
+        assert (await ws.receive_json(timeout=1))['error'] == 'bad_wake'
+        await _audio_turn(ws)
+        await ws.close()
 
 
 @pytest.mark.asyncio
-async def test_wake_handshake_different_wake_words_both_proceed():
-    """Different wake words elect independently: both granted devices run their turns."""
-    arb = Arbitrator(bus=LocalBus(), policy=POLICY_WAKE_SIGNAL)
-    d1 = await arb.register("d1")
-    d2 = await arb.register("d2")
-    h1 = _Harness(arbitrator=arb, device=d1, device_id="d1")
-    h2 = _Harness(arbitrator=arb, device=d2, device_id="d2")
-    t1 = asyncio.create_task(h1.run(["hello"]))
-    t2 = asyncio.create_task(h2.run(["hello"]))
-    h1.feed("hello", wake_word="arya", confidence=0.9, wake_granted=True)
-    h2.feed("hello", wake_word="echo", confidence=0.9, wake_granted=True)
-    await asyncio.sleep(0.4)
-    h1.session.stop()
-    h2.session.stop()
-    await t1
-    await t2
-    assert len(h1.run_calls) == 1
-    assert len(h2.run_calls) == 1
-    assert h1.synth.spoken == []
-    assert h2.synth.spoken == []
-    assert any(m.get("type") == "turn_done" for m in h1.sent)
-    assert any(m.get("type") == "turn_done" for m in h2.sent)
+async def test_pending_wake_does_not_block_control_frames(monkeypatch):
+    from hermes_converse.loop import ConverseSession
 
-
-@pytest.mark.asyncio
-async def test_no_wake_handshake_falls_back_to_claim_turn():
-    """Without a wake-time handshake decision (wake_granted=None), the driver claims at transcript
-    time as before — first_to_endpoint: d1 wins, d2 stays silent."""
-    arb = Arbitrator(bus=LocalBus(), policy="first_to_endpoint")
-    d1 = await arb.register("d1")
-    d2 = await arb.register("d2")
-    hold = asyncio.Event()
-    h1 = _Harness(arbitrator=arb, device=d1, device_id="d1", hold=hold)
-    h2 = _Harness(arbitrator=arb, device=d2, device_id="d2", hold=hold)
-    t1 = asyncio.create_task(h1.run(["hello"]))
-    t2 = asyncio.create_task(h2.run(["hello"]))
-    h1.feed("hello")
-    await asyncio.sleep(0.05)
-    h2.feed("hello")
-    await asyncio.sleep(0.05)
-    hold.set()
-    await asyncio.sleep(0.1)
-    h1.session.stop()
-    h2.session.stop()
-    await t1
-    await t2
-    assert len(h1.run_calls) == 1
-    assert len(h2.run_calls) == 0
-    assert h2.synth.spoken == []
+    seen = {name: asyncio.Event() for name in ('cancel', 'commit', 'notify_drained')}
+    for name, event in seen.items():
+        original = getattr(ConverseSession, name)
+        def record(self, *args, _original=original, _event=event):
+            _event.set()
+            return _original(self, *args)
+        monkeypatch.setattr(ConverseSession, name, record)
+    async with Harness(_patch(monkeypatch), settings={'arbitrate_enabled': True,
+                                                     'arbitrate_wake_window_seconds': 5}) as client:
+        ws = await _connect(client)
+        await ws.send_json({'type': 'wake', 'claim_id': 'slow', 'wake_word': 'Hey Arya'})
+        await ws.send_json({'type': 'cancel'})
+        await ws.send_json({'commit': True})
+        await ws.send_json({'type': 'drained'})
+        await asyncio.wait_for(asyncio.gather(*(e.wait() for e in seen.values())), timeout=1)
+        await ws.close()
