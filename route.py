@@ -50,7 +50,7 @@ from .arbitrate import Arbitrator
 from .auth import offered_key_protocol, verify_api_key
 from .conversation import ConversationHub
 from .named import DeviceStore, NamedError, NamedSessions, parse_names
-from .model_selection import parse_model_selection
+from .model_selection import parse_model_selection, public_model_catalog
 from .loop import ConverseSession, drive_converse_turns, parse_start_config, voice_system_prompt
 from .settings import Settings, load_settings
 from .tracing import force_flush
@@ -468,7 +468,19 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
     allow_signoff = quiet_interval > 0
     default_model = (settings.model, settings.provider)
     selected_model = default_model
-    wake_tasks: set[asyncio.Task] = set()
+    control_tasks: set[asyncio.Task] = set()
+    model_catalog_task: Optional[asyncio.Task] = None
+
+    async def _reply_models(frame: dict) -> None:
+        request_id = frame['request_id']
+        try:
+            catalog = await client.model_options(refresh=frame.get('refresh', False))
+            response = {'type': 'model_list', 'request_id': request_id, **public_model_catalog(catalog)}
+        except Exception:
+            response = {'type': 'model_error', 'operation': 'list_models',
+                        'request_id': request_id, 'error': 'model_catalog_unavailable'}
+        with contextlib.suppress(Exception):  # the socket can close while inventory enrichment runs
+            await ws.send_json(response)
 
     async def _reply_wake(frame: dict) -> None:
         try:
@@ -478,7 +490,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
             logger.debug("converse wake reply failed", exc_info=True)
 
     async def _pump_client() -> None:
-        nonlocal selected_model
+        nonlocal selected_model, model_catalog_task
         try:
             async for msg in ws:
                 if msg.type == web.WSMsgType.BINARY:
@@ -498,6 +510,22 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                         session.notify_drained(frame.get("turn_id"))
                     if frame.get("type") == "cancel":
                         session.cancel(frame.get("turn_id"))
+                    if frame.get('type') == 'list_models':
+                        request_id = frame.get('request_id')
+                        if not isinstance(request_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', request_id):
+                            await ws.send_json({'type': 'model_error', 'operation': 'list_models', 'error': 'bad_request_id'})
+                        elif not isinstance(frame.get('refresh', False), bool):
+                            await ws.send_json({'type': 'model_error', 'operation': 'list_models',
+                                                'request_id': request_id, 'error': 'bad_model_request'})
+                        elif model_catalog_task is not None and not model_catalog_task.done():
+                            await ws.send_json({'type': 'model_error', 'operation': 'list_models',
+                                                'request_id': request_id, 'error': 'model_catalog_busy'})
+                        else:
+                            # Catalog enrichment may take seconds. Never stall input/cancel/wake.
+                            model_catalog_task = asyncio.create_task(_reply_models(frame))
+                            control_tasks.add(model_catalog_task)
+                            model_catalog_task.add_done_callback(control_tasks.discard)
+                        continue
                     if frame.get("type") == "set_model":
                         request_id = frame.get("request_id")
                         if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", request_id):
@@ -516,8 +544,8 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                     if frame.get("type") == "wake":
                         # Do not block PCM, cancel, stop, or a new claim while an election runs.
                         task = asyncio.create_task(_reply_wake(frame))
-                        wake_tasks.add(task)
-                        task.add_done_callback(wake_tasks.discard)
+                        control_tasks.add(task)
+                        task.add_done_callback(control_tasks.discard)
                 elif msg.type in (web.WSMsgType.CLOSE, web.WSMsgType.ERROR):
                     break
         except Exception:
@@ -575,11 +603,11 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
         session.stop()
         pump.cancel()
         driver.cancel()
-        for task in wake_tasks:
+        for task in control_tasks:
             task.cancel()
         if fence is not None:
             fence.cancel()
-        await asyncio.gather(pump, driver, *wake_tasks, *([fence] if fence else []), return_exceptions=True)
+        await asyncio.gather(pump, driver, *control_tasks, *([fence] if fence else []), return_exceptions=True)
         if arbitrator is not None:
             with contextlib.suppress(Exception):
                 await arbitrator.unregister(device_id)

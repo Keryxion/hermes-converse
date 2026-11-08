@@ -97,6 +97,19 @@ class RunsClient:
     def current_run_id(self) -> Optional[str]:
         return self._run_id
 
+    async def model_options(self, *, refresh: bool = False) -> dict[str, Any]:
+        """Reuse the authenticated server inventory behind the voice WebSocket."""
+        params = {"include_unconfigured": "false", "refresh": "true" if refresh else "false"}
+        async with asyncio.timeout(8):
+            async with self._http.get(f"{self._base}/api/model/options", params=params,
+                                      headers=self._headers, allow_redirects=False) as response:
+                if response.status != 200:
+                    raise RunsError('model_catalog_unavailable')
+                result = await response.json()
+                if not isinstance(result, dict) or not isinstance(result.get('providers'), list):
+                    raise RunsError('model_catalog_unavailable')
+                return result
+
     # ── turn ──
     async def run_turn(self, *, text: str, session_id: str, on_delta: Callable[[str], None],
                        instructions: Optional[str] = None, model: Optional[str] = None,
