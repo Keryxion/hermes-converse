@@ -15,10 +15,14 @@ license: MIT
 homepage: https://github.com/Keryxion/hermes-converse
 tags: [voice, api_server, realtime, websocket, esp32]
 requires_hermes: ">=0.21.6"
-# The VAD and the PCM resampler are numpy + PyAV; everything else is Hermes core or stdlib.
+# The VAD and the PCM resampler are numpy + PyAV; Smart Turn (onnxruntime backend) additionally
+# needs transformers + huggingface_hub, declared here so Hermes's package manager can admit them
+# when Smart Turn is opted in. onnxruntime arrives with the Silero VAD issue (#2).
 python_dependencies:
   - "numpy>=2,<3"
   - "av>=14,<20"
+  - "transformers>=4,<5"
+  - "huggingface_hub>=0,<1"
 provides_tools: []
 provides_hooks: []
 config_schema:
