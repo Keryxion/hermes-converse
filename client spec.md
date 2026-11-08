@@ -683,8 +683,7 @@ the conversation was restored.
 Reconnect with the same API key and names to continue its history.
 Inactivity, standby, sign-off, cancellation, and socket closure do not reset it.
 Do not automatically resend an utterance whose outcome is unknown: its actions
-may already have happened. Renaming the device or assistant updates the title
-while preserving the device's history and timer destinations.
+may already have happened. Rename/history migration is outside this contract.
 
 A replacement connection closes the old one with `4409 attachment_replaced`.
 Stop sending on the old connection. Invalid fields return `4402 bad_extension`.
@@ -699,4 +698,3 @@ stops. Normal authentication and first-frame errors remain as in section 1.
 Bedroom even when requested from Kitchen. Clarify ambiguous names, and report
 an unavailable destination before confirming audible delivery there (section 10).
 The requesting device receives confirmation; only the destination rings.
-Renaming either device does not move an existing timer.

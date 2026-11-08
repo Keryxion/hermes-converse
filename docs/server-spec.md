@@ -5,8 +5,9 @@ This document does not change runtime behavior.
 
 ## Named Aryas
 
-Keep a device record with its stable recipient identity, household/profile,
-device label, optional room/aliases, and Hermes session reference. Device labels are unique within the household. `assistant_name` is
+Identify a device by its `device_name` within the server/profile. Keep its
+routing record, optional room/aliases, and Hermes session reference. Device
+labels are unique within that scope. `assistant_name` is
 the name used in the voice system prompt, often related to the wake word;
 `device_name` identifies the particular device. Neither is a credential.
 
@@ -19,17 +20,15 @@ There is no client conversation override, selection protocol, or separate
 conversation extension. Reject a supplied `start.conversation` as an invalid
 field rather than silently accepting it.
 
-Use Hermes's existing session APIs for title lookup, creation, rename, history,
+Use Hermes's existing session APIs for title lookup, creation, history,
 and compression continuation. Reuse an authorized compatible named session or
 create it when confirmed absent; on concurrent creation conflict, re-read the
 winner. A failed lookup or inaccessible title must not silently create another
-history. Save the session reference for reconnect and rename; do not build a
+history. Save the session reference for reconnect; do not build a
 parallel conversation store or expose Hermes session mechanics to clients.
 
-A change to either configured name updates the existing session title without
-losing history. Report rename success only after the device record and title
-agree. Recover incomplete renames before accepting affected work. If saved
-history is deleted or inaccessible, report unavailable rather than replacing it.
+Rename/history migration is outside this contract. Do not infer a rename from
+changed names in `start` or silently transfer existing history or timers.
 
 Use the authenticated socket for named-device and timer behavior. A
 replacement fences the old connection and stops/settles its in-flight work
@@ -46,7 +45,7 @@ Hermes owns compression and retention. Verify
 required Hermes API support, preserve history through continuation, and recover
 local sign-off bookkeeping where needed. Never replay an unacknowledged request.
 
-Verify first setup, concurrent creation, reconnect/restart, rename, failed
+Verify first setup, concurrent creation, reconnect/restart, failed
 lookup, unauthorized access, compression continuation, and replacement
 attachments without duplicate history or competing work. Include the case
 `assistant_name: Alexa`, `device_name: Den Echo`, title `Alexa: Den Echo`.
