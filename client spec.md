@@ -602,7 +602,7 @@ These proposed extensions do not change the current wire protocol by themselves.
 
 Use `assistant_name` for what you call the assistant, such as `Arya` or `Alexa`.
 Use `device_name` for the device label, such as `Den Echo` or `Kitchen`.
-Device labels must be unique in your household and configured during setup.
+Device labels must be unique on the server; configure the label in the client.
 Many devices may share the same assistant name. The detected wake phrase is
 sent separately in `wake.wake_word` (section 8).
 
@@ -612,41 +612,39 @@ Clients cannot choose or override the conversation.
 
 ### Start and ready
 
-Send both names and the device credential in `start`. The device label must
-match the configured device. Negotiate `arya-v1` before using named-device
-behavior:
+Authenticate with the existing API key as in section 1. Send both names in
+`start` and negotiate `arya-v1`:
 
 ```json
 {"type":"start","key":"<API_SERVER_KEY>","input_rate":16000,"output_rate":24000,
  "assistant_name":"Alexa","device_name":"Den Echo",
- "extensions":{"arya-v1":{"attachment_token":"<device credential>"}}}
+ "extensions":{"arya-v1":{}}}
 ```
 
 Wait for `ready` before streaming audio:
 
 ```json
 {"type":"ready","session_id":"socket-9","extensions":{
- "arya-v1":{"recipient_id":"device-7","device_name":"Den Echo","attachment_id":"attachment-9"}}}
+ "arya-v1":{"recipient_id":"device-7","device_name":"Den Echo"}}}
 ```
 
 `session_id` identifies the socket for diagnostics. `recipient_id` identifies
-the device across reconnects and renames. `attachment_id` identifies its current
-connection. Treat these IDs as opaque. If `arya-v1` is missing from `ready`,
+the device for timer routing. Treat these IDs as opaque. If `arya-v1` is missing
+from `ready`,
 named-device behavior is unavailable; show that state rather than claiming
 the conversation was restored.
 
 ### Reconnect
 
-Reconnect with the same device credential and names to continue its history.
+Reconnect with the same API key and names to continue its history.
 Inactivity, standby, sign-off, cancellation, and socket closure do not reset it.
 Do not automatically resend an utterance whose outcome is unknown: its actions
 may already have happened. Renaming the device or assistant updates the title
 while preserving the device's history and timer destinations.
 
 A replacement connection closes the old one with `4409 attachment_replaced`.
-Stop sending on the old connection and use the new attachment for operations.
-Invalid fields return `4402 bad_extension`; invalid device credentials return
-`4403 forbidden_attachment`. If the conversation cannot be opened, show
+Stop sending on the old connection. Invalid fields return `4402 bad_extension`.
+If the conversation cannot be opened, show
 `4404 conversation_unavailable` rather than claiming restored context.
 A `conversation_busy` error before ready means retry later while earlier work
 stops. Normal authentication and first-frame errors remain as in section 1.
