@@ -235,9 +235,17 @@ upstream PR publishes; nothing else in the plugin touches core internals.
 
 ## Profiles
 
-The route serves the profile that owns the API server listener. A `start.profile` naming any other
-profile is refused with `profile_unsupported` until Hermes registers plugin routes ahead of its
-`/p/<profile>/` catch-all.
+The route serves the Hermes profile that owns the configured API server listener.
+`start.profile` is not supported by the client contract: all clients must omit it
+and delete their profile selector and saved per-server profile setting. Discard
+legacy values rather than sending `null`, an empty string, or `"default"`.
+Select the server URL and authenticate normally; neither `start.name` nor a
+client-constructed `/p/<profile>/` route replaces profile selection.
+
+Deployed servers may still parse the legacy field and reject it with
+`profile_unsupported` (4400). The parser remains in the current implementation;
+clients must remove the field regardless. See [client spec.md](client%20spec.md)
+for the removal contract.
 
 ## Develop and test
 

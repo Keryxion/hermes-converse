@@ -52,6 +52,26 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 | `quiet_interval` | session mode: seconds of silence between turns (0 = off) |
 | `name` | the assistant's name — set this to "Arya" (not "Hey Arya"). Arya uses her name in the voice prompt so she knows she's being addressed and doesn't get confused about why she's being called that name |
 
+**Client profile selection is removed.**
+
+`start.profile` is not part of the supported protocol. All clients must omit the
+field entirely. Do not send it as `null`, an empty string, or `"default"`. Remove profile
+selectors from client settings and remove the corresponding per-server saved
+configuration; discard legacy saved values instead of sending them on reconnect.
+This applies to every client, including macOS, iOS, Echo, and ESP32 clients.
+
+The connection uses the Hermes profile that owns the configured server listener.
+Clients select a server URL and authenticate to it; the `start` frame does not
+select or switch Hermes profiles. `name` only sets the assistant's spoken identity
+and does not select a profile either. There is no supported profile-prefixed
+converse route in this contract; do not construct `/p/<profile>/` URLs to replace
+the removed field.
+
+Some deployed servers still parse the legacy field and can reject it with
+`profile_unsupported` (close code 4400). Clients must remove the field regardless
+of whether their server accepts legacy values. The legacy server parser remains
+in the current implementation; this update changes the client contract.
+
 For a wake-word client, detect the wake word locally, buffer microphone
 PCM while awaiting arbitration for up to **1000 ms**, and start streaming
 only on a matching grant. Send the buffered audio first, in capture order,
