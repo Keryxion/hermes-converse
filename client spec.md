@@ -35,7 +35,7 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 
 ```json
 {"type": "start", "key": "<API_SERVER_KEY>", "input_rate": 16000,
- "output_rate": 24000, "quiet_interval": 0, "name": "Sakura"}
+ "output_rate": 24000, "quiet_interval": 0, "name": "Arya"}
 ```
 
 | field | what it does |
@@ -45,7 +45,7 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 | `input_rate` | sample rate of the PCM you'll send (8000–48000, default 16000) |
 | `output_rate` | sample rate of PCM the server sends back (default 24000) |
 | `quiet_interval` | session mode: seconds of silence between turns (0 = off) |
-| `name` | the assistant's name — set this to the **wake word** (e.g. "Sakura" or "hey Aria") so the assistant knows it's being addressed and doesn't get confused about why it's being called that name |
+| `name` | the assistant's name — set this to "Arya" (not "Hey Arya"). Arya uses her name in the voice prompt so she knows she's being addressed and doesn't get confused about why she's being called that name |
 
 Then stream binary PCM16 mono frames at `input_rate`. 30 ms blocks are ideal
 (e.g. 480 samples at 16 kHz).
