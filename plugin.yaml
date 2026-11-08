@@ -25,7 +25,7 @@ python_dependencies:
   - "transformers>=4.46,<6"
   - "huggingface_hub>=0.26,<2"
 provides_tools: []
-provides_hooks: []
+provides_hooks: [post_llm_call]
 config_schema:
   name:
     type: str

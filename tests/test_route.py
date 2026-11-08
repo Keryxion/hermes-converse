@@ -60,8 +60,9 @@ class Harness:
         self.base = {"url": ""}
         app = web.Application()
         app.add_routes(fake.routes())
-        ConverseRoute(settings_getter=lambda key, default=None: self.settings.get(key, default),
-                      base_url_resolver=lambda: self.base["url"], profile_name="default").wire(app)
+        self.route = ConverseRoute(settings_getter=lambda key, default=None: self.settings.get(key, default),
+                      base_url_resolver=lambda: self.base["url"], profile_name="default")
+        self.route.wire(app)
         self.app = app
 
     async def __aenter__(self):
@@ -102,7 +103,7 @@ async def _recv(ws, timeout=6.0):
     return await asyncio.wait_for(ws.receive(), timeout)
 
 
-async def _collect_turn(ws, timeout=8.0):
+async def _collect_turn(ws, timeout=8.0, *, drain=True):
     """Frames until turn_done: (json frames, pcm chunks)."""
     frames, pcm = [], []
     while True:
@@ -114,6 +115,8 @@ async def _collect_turn(ws, timeout=8.0):
             payload = json.loads(msg.data)
             frames.append(payload)
             if payload["type"] == "turn_done":
+                if drain:
+                    await ws.send_json({"type": "drained", "turn_id": payload["turn_id"]})
                 break
             continue
         break

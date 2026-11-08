@@ -290,17 +290,37 @@ class _FakeConverseSession:
         self.stopped = False
         self.turns_begun = self.turns_ended = self.tails_begun = 0
 
+    def enable_turn_control(self):
+        pass
+
+    def capture_pending(self):
+        return False
+
+    def reserve_turn(self, turn_id, tts_stop):
+        pass
+
+    def release_capture(self):
+        pass
+
+    async def wait_for_playback_tail(self):
+        pass
+
     def take_interrupted(self):
         return False
 
     def set_playing(self, value, *, tts_stop=None):
         return None
 
-    def begin_turn(self):
+    def begin_turn(self, turn_id=None, **kwargs):
         self.turns_begun += 1
 
     def end_turn(self):
         self.turns_ended += 1
+
+    def finish_turn(self, turn_id, playback_tail_seconds):
+        self.end_turn()
+        if playback_tail_seconds > 0:
+            self.begin_playback_tail(turn_id, playback_tail_seconds)
 
     def begin_playback_tail(self, turn_id, fallback_seconds):
         self.tails_begun += 1
@@ -369,6 +389,7 @@ def test_driver_barge_in_interrupts_the_in_flight_turn():
     sent = _run_driver(_BargingSession(["turn it on"]), [], ["Sure, turning it — "], quiet_interval=1.0,
                        interrupt_turn=lambda: calls.append(True))
     assert calls == [True]
+    assert _spoken_bytes(sent) == b""  # cancellation also discards already queued PCM
     assert "interrupted" in _types(sent) and _types(sent)[-1] == "turn_done"
 
 
@@ -560,7 +581,9 @@ def test_driver_tail_barge_emits_interrupted_not_a_turn():
     session.transcripts.put(TailBarge("turn-x"))
     session.transcripts.put(None)
     sent = _run_driver(session, [], [])
-    assert sent == [{"type": "interrupted", "turn_id": "turn-x"}] and session.turns_begun == 0
+    assert sent == [{"type": "interrupted", "turn_id": "turn-x"},
+                    {"type": "turn_done", "turn_id": "turn-x", "next_action": "listen"}]
+    assert session.turns_begun == 0
 
 
 def test_drive_converse_turns_signoff_requests_standby():
@@ -630,17 +653,15 @@ def test_drive_converse_turns_reports_turn_error():
 # ── per-turn cancel that keeps the session (issue #5) ──
 
 
-def test_session_cancel_stops_playback_and_queues_cancel_turn():
+def test_session_cancel_stops_matching_turn_without_creating_another_turn():
     session = ConverseSession(np)
     tts_stop = threading.Event()
+    session.begin_turn("turn-abc", tts_stop=tts_stop)
     session.set_playing(True, tts_stop=tts_stop)
-    session._capturing = True  # a capture is in flight, so cancel queues a marker
-    session.cancel("turn-abc")
-    assert session._cancelled.is_set()
+    assert session.cancel("turn-abc")
     assert tts_stop.is_set() and session.take_interrupted() is True
-    assert session.playing() is False
-    marker = session.transcripts.get_nowait()
-    assert isinstance(marker, cl.CancelTurn) and marker.turn_id == "turn-abc"
+    assert not session.playing()
+    assert session.transcripts.empty()
 
 
 def test_session_cancel_idle_does_not_queue_marker():
@@ -666,7 +687,7 @@ def test_session_cancel_discards_captured_transcript():
     # Replicate _run's post-capture discard: cancelled -> transcript not queued.
     transcript, volume = session._capture_and_transcribe()
     assert volume >= 0
-    assert transcript == "heard it"  # capture still ran, but ...
+    assert transcript == "" and seen == {}  # cancelled capture never reaches STT
     assert session._cancelled.is_set()
     session._cancelled.clear()
     assert session.transcripts.qsize() == 0  # ... it was discarded, no turn ran
@@ -738,10 +759,146 @@ def test_standby_preserves_playback_tail_until_matching_drain():
     session = ConverseSession(np)
     session.transcripts.put("bye")
     session.transcripts.put(None)
-    sent = _run_driver(session, [], ["Goodbye. Over and out."], quiet_interval=1.0)
-    done = _turn_done_frame(sent)
-    assert done["next_action"] == "standby" and session._tail_active
-    session.notify_drained("another-turn")
-    assert session._tail_active
-    session.notify_drained(done["turn_id"])
-    assert not session._tail_active
+    async def scenario():
+        sent = []
+        async def send(frame):
+            sent.append(frame)
+            if isinstance(frame, dict) and frame.get("type") == "turn_done":
+                assert session._tail_active
+                session.notify_drained("another-turn")
+                assert session._tail_active
+                session.notify_drained(frame["turn_id"])
+        async def run(text, on_delta, **kwargs):
+            on_delta("Goodbye. Over and out.")
+            return "Goodbye. Over and out.", None
+        await drive_converse_turns(session=session, synth=_EchoSynth(), cap=4000,
+            loop=asyncio.get_running_loop(), send_json=send, send_bytes=send,
+            run_turn=run, history=[], quiet_interval=1.0)
+        return sent
+    done = _turn_done_frame(asyncio.run(scenario()))
+    assert done["next_action"] == "standby" and not session._tail_active
+
+
+@pytest.mark.parametrize('phase', ['thinking', 'speaking', 'tail'])
+def test_busy_speech_is_control_only_and_never_transcribed(monkeypatch, phase):
+    calls = []
+    monkeypatch.setattr(speech, 'mark_speech_interrupted', lambda: None)
+    session = ConverseSession(np, transcribe=lambda path: calls.append(path) or 'should never be a message')
+    stop = threading.Event()
+    interrupted = threading.Event()
+    session.begin_turn('active', tts_stop=stop, on_interrupt=interrupted.set)
+    if phase == 'speaking':
+        session.set_playing(True, tts_stop=stop)
+    elif phase == 'tail':
+        session.end_turn()
+        session.begin_playback_tail('active', 5)
+        session.on_tail_barge = lambda turn_id: interrupted.set()
+    session.start()
+    try:
+        for pcm in (calibration(), speech_like(5000, seed=23), silence(1.8)):
+            session.stream.feed(pcm.tobytes())
+        assert interrupted.wait(3)
+        assert not calls and session.transcripts.empty()
+        if phase != 'tail':
+            assert stop.is_set()
+    finally:
+        session.stop()
+
+
+def test_stale_cancel_does_not_touch_newer_thinking_turn():
+    session = ConverseSession(np)
+    stop = threading.Event()
+    interrupted = []
+    session.begin_turn('newer', tts_stop=stop, on_interrupt=lambda: interrupted.append(True))
+    assert not session.cancel('older')
+    assert not stop.is_set() and interrupted == []
+    assert session.cancel('newer')
+    assert stop.is_set() and interrupted == [True]
+    session.cancel('newer')
+    assert interrupted == [True]
+
+
+def test_control_audio_buffer_is_discarded_before_fresh_input():
+    session = ConverseSession(np)
+    session.begin_turn('turn')
+    session.stream.feed(np.full(960, 99, dtype=np.int16).tobytes())
+    session.end_turn()
+    session.stream.feed(np.full(480, 7, dtype=np.int16).tobytes())
+    audio, _ = session.stream.read(480)
+    assert np.all(audio == 7)
+
+
+
+def test_fresh_input_resumes_after_interruption_without_replaying_control_audio(monkeypatch):
+    monkeypatch.setattr(speech, 'mark_speech_interrupted', lambda: None)
+    called = []
+    tripped = threading.Event()
+    session = ConverseSession(np, transcribe=lambda path: called.append(path) or 'fresh request')
+    session.begin_turn('busy', tts_stop=threading.Event(), on_interrupt=tripped.set)
+    session.start()
+    try:
+        for pcm in (calibration(), speech_like(5000, seed=4)):
+            session.stream.feed(pcm.tobytes())
+        assert tripped.wait(3)
+        session.end_turn()
+        for pcm in (silence(2), speech_like(2000, seed=5), silence(2)):
+            session.stream.feed(pcm.tobytes())
+        assert session.transcripts.get(timeout=3) == 'fresh request'
+        assert len(called) == 1
+    finally:
+        session.stop()
+
+
+
+def test_cancel_at_transcript_boundary_never_starts_the_agent():
+    session = ConverseSession(np)
+    session.transcripts.put('request')
+    session.transcripts.put(None)
+    calls, sent = [], []
+
+    async def send(frame):
+        sent.append(frame)
+        if isinstance(frame, dict) and frame.get('type') == 'transcript':
+            assert session.cancel(frame['turn_id'])
+
+    async def run(*args, **kwargs):
+        calls.append(True)
+        return 'must not execute', None
+
+    async def scenario():
+        await drive_converse_turns(session=session, synth=_EchoSynth(), cap=4000,
+            loop=asyncio.get_running_loop(), send_json=send, send_bytes=send, run_turn=run, history=[])
+
+    asyncio.run(scenario())
+    assert calls == []
+    assert _types(sent) == ['transcript', 'interrupted', 'turn_done']
+    assert _turn_done_frame(sent)['next_action'] == 'listen'
+
+
+
+def test_managed_input_reserves_transcript_before_driver_can_begin_thinking():
+    session = ConverseSession(np, transcribe=lambda path: 'first request')
+    session.enable_turn_control()
+    session.start()
+    try:
+        for pcm in (calibration(), speech_like(2000, seed=8), silence(1.8)):
+            session.stream.feed(pcm.tobytes())
+        assert session.transcripts.get(timeout=3) == 'first request'
+        assert session.capture_pending()
+        for pcm in (speech_like(5000, seed=9), silence(1.8)):
+            session.stream.feed(pcm.tobytes())
+        # A second ordinary transcription must not be queued behind the reserved request.
+        with pytest.raises(_queue.Empty):
+            session.transcripts.get(timeout=.2)
+    finally:
+        session.stop()
+
+
+
+def test_signoff_preserves_queued_conversation_output_in_arrival_order():
+    session = _FakeConverseSession(['bye', cl.ConversationOutput('First.', 'first'),
+                                  cl.ConversationOutput('Second.', 'second')])
+    sent = _run_driver(session, [], ['Goodbye. Over and out.'], quiet_interval=1)
+    ids = [frame['event_id'] for frame in sent if isinstance(frame, dict)
+           and frame.get('type') == 'thinking' and 'event_id' in frame]
+    assert ids == ['first', 'second']

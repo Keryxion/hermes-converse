@@ -26,6 +26,7 @@ class FakeRunsAPI:
         self.hang = hang
         self.drop_after = drop_after
         self.runs: dict[str, dict[str, Any]] = {}
+        self.sessions: dict[str, dict] = {}
         self.approvals: list[dict[str, Any]] = []
         self.clarifies: list[dict[str, Any]] = []
         self.subscriptions: list[tuple[str, Optional[str]]] = []
@@ -36,6 +37,8 @@ class FakeRunsAPI:
     def routes(self) -> list:
         return [
             web.get("/v1/capabilities", self.capabilities),
+            web.post("/api/sessions", self.create_session),
+            web.get("/api/sessions/{session_id}", self.get_session),
             web.post("/v1/runs", self.create_run),
             web.get("/v1/runs/{run_id}", self.status),
             web.get("/v1/runs/{run_id}/events", self.events),
@@ -64,6 +67,22 @@ class FakeRunsAPI:
             return err
         return web.json_response({"object": "hermes.api_server.capabilities", "platform": "hermes-agent",
                                   "features": {"run_submission": True, "realtime_voice": False}})
+
+    async def create_session(self, request):
+        err = self._auth(request)
+        if err is not None:
+            return err
+        body = await request.json()
+        session_id = body["id"]
+        self.sessions[session_id] = {"id": session_id, "source": "api_server"}
+        return web.json_response({"session": self.sessions[session_id]}, status=201)
+
+    async def get_session(self, request):
+        err = self._auth(request)
+        if err is not None:
+            return err
+        session = self.sessions.get(request.match_info["session_id"])
+        return web.json_response({"session": session}, status=200 if session else 404)
 
     async def create_run(self, request: web.Request) -> web.Response:
         err = self._auth(request)

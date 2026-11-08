@@ -61,10 +61,10 @@ A non-wake client may stream after `ready`. The server answers:
 Handle `thinking` as an explicit turn boundary even without a preceding `transcript`:
 mark the agent turn active and show "thinking". During the granted activation, keep sending
 microphone PCM through thinking, speaking, and playback drain for server-side interruption/control
-detection. After request endpointing, that audio must not produce ordinary transcripts or queued
-user turns; limited recognition of "cancel" or similar controls is allowed. Arm the client's turn
+detection. After request endpointing, that audio does not produce ordinary transcripts or queued
+user turns; VAD speech onset interrupts the active turn without STT. Arm the client's turn
 deadline if it is not already running; do not restart it. This frame reports lifecycle status,
-not reasoning text. The current worker still needs the interruption-only input mode; see
+not reasoning text. See
 [the client spec](client%20spec.md#handling-thinking) for the frame format and tracing behavior.
 
 During a long agent/TTS turn, `working` frames carry the same `turn_id` (and
@@ -74,7 +74,7 @@ keep any absolute turn limit; keepalives do not extend the server's 120-second
 default turn timeout. They stop before terminal frames and on disconnect. See
 [client spec.md](client%20spec.md) for the full deadline contract.
 
-Client control frames: `{"stop": true}` ends the session, `{"commit": true}` forces the current
+Client control frames: `{"stop": true}` ends the audio attachment (persisted conversation history remains), `{"commit": true}` forces the current
 utterance to endpoint, `{"type": "cancel", "turn_id": "..."}` cancels the current turn while
 keeping the socket, session and history alive, `{"type": "drained", "turn_id": "..."}` says the
 reply's last audio has left the speaker (or queued audio was discarded), ending the server's
@@ -95,12 +95,18 @@ Keep streaming through playback drain, then follow `next_action`. An open socket
 require sending idle ambient audio. See [the client spec](client%20spec.md#handling-turn_donenext_action)
 for the full action contract.
 
-Conversation output should also reach attached clients without a wake word or user utterance.
-[Client spec sections 9–10](client%20spec.md#9-conversation-output-without-user-input-proposed-extension)
-describe the proposed conversation-output subscription, announcements with a lead-in sound and
-shared playback timestamp for optional system-wide synchronization, and server-owned timers with
-client alarm sounds. These are not implemented yet. Heartbeat 2 currently targets messaging-gateway chats;
-voice delivery needs integration, not just a prompt change. Clients do not schedule offline alarms.
+`ready.conversation_id` is the persisted API conversation ID, also returned as `session_id`.
+Send it as `start.conversation_id` to reattach. One voice client may attach at a time. Completed
+responses for that conversation can play without microphone input or a wake word. The public
+final-response hook suppresses voice-owned duplicates and `[SILENT]` output; producers outside
+the process can use authenticated `POST /v1/audio/conversations/<id>/output` with `event_id`,
+`text`, and `expires_at_unix_ms`. Delivery is connected-only and waits for prior speaker drain.
+See [client spec section 9](client%20spec.md#9-conversation-output-without-user-input).
+
+Announcement/alarm capabilities and playback acknowledgements, server-owned timers, and
+synchronized group announcements remain in [issue #34](https://github.com/Keryxion/hermes-converse/issues/34).
+Heartbeat 2 scheduling still needs integration with API conversations; installing it alone does
+not enable later voice delivery. Clients do not schedule offline alarms.
 
 ## Settings
 

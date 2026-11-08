@@ -18,14 +18,14 @@ Browser-context clients must also pass the API server's own CORS origin guard (`
 ``API_SERVER_CORS_ORIGINS``), which runs before any route; an Electron renderer sends
 ``Origin: null``, so list it there.
 
-Protocol (unchanged from the in-core proposal):
+Protocol:
   client → ``{"type":"start", "key":?, "input_rate":?, "output_rate":?, "quiet_interval":?,
              "name":?}`` then binary PCM16 mono frames at ``input_rate`` (30 ms blocks preferred),
            ``{"stop": true}`` to end, ``{"commit": true}`` to force an endpoint,
            ``{"type":"cancel","turn_id":?}`` to cancel the current turn and keep the session,
            ``{"type":"drained","turn_id":?}`` when the reply's last audio has left the speaker,
            ``{"type":"wake","claim_id":"...","wake_word":"...", ...}`` requests an
-           advisory wake recommendation; see ``client spec.md``. Audio is always processed normally.
+           advisory wake recommendation; see ``client spec.md``. Busy-turn audio is for interruption detection.
   server → ``ready`` (rates, ``session_id``, clock-skew timestamps), ``transcript``, ``thinking``, ``working``,
            ``speaking`` + binary PCM, ``interrupted``, ``turn_done`` (``next_action``), ``quiet``, ``stop_word``, ``error``.
 """
@@ -37,6 +37,7 @@ import contextlib
 import json
 import logging
 import math
+import re
 import time
 import uuid
 from typing import Any, Awaitable, Callable, Optional
@@ -46,6 +47,7 @@ from aiohttp import ClientSession, ClientTimeout, web
 from .agent_client import RunsClient
 from .arbitrate import Arbitrator
 from .auth import offered_key_protocol, verify_api_key
+from .conversation import ConversationHub
 from .loop import ConverseSession, drive_converse_turns, parse_start_config, voice_system_prompt
 from .settings import Settings, load_settings
 from .tracing import force_flush
@@ -86,10 +88,11 @@ class ConverseRoute:
     """
 
     def __init__(self, *, settings_getter: Callable[..., Any], base_url_resolver: Callable[[], str],
-                 profile_name: str = "default") -> None:
+                 profile_name: str = "default", hub: Optional[ConversationHub] = None) -> None:
         self._settings_getter = settings_getter
         self._base_url = base_url_resolver
         self._profile_name = profile_name
+        self.hub = hub or ConversationHub()
         self._arbitrator: Optional[Arbitrator] = None
         self._arbitrator_lock = asyncio.Lock()
 
@@ -121,6 +124,7 @@ class ConverseRoute:
             return False
         app.router.add_get(ROUTE_PATH, self.handle)
         app.on_cleanup.append(_flush_tracing)
+        app.router.add_post("/v1/audio/conversations/{conversation_id}/output", self.output)
         return True
 
     def _settings(self) -> Settings:
@@ -163,6 +167,22 @@ class ConverseRoute:
             if not self._profile_allowed(profile):
                 await _fail(ws, "profile_unsupported", 4400)
                 return ws
+            requested = frame.get("conversation_id")
+            if requested is not None:
+                if not isinstance(requested, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", requested):
+                    await _fail(ws, "bad_conversation_id", 4400)
+                    return ws
+                # Delegate conversation existence/profile authorization to Hermes's public API.
+                async with http.get(f"{base_url}/api/sessions/{requested}",
+                                    headers={"Authorization": f"Bearer {api_key}"},
+                                    allow_redirects=False) as response:
+                    if response.status != 200:
+                        await _fail(ws, "conversation_unavailable", 4403)
+                        return ws
+                    existing = (await response.json()).get("session", {})
+                    if existing.get("source") != "api_server":
+                        await _fail(ws, "conversation_source_unsupported", 4403)
+                        return ws
             try:
                 synth, cap, session = await asyncio.get_running_loop().run_in_executor(
                     None, lambda: _resolve_session(settings, input_rate, output_rate, quiet_interval))
@@ -170,24 +190,79 @@ class ConverseRoute:
                 logger.exception("converse setup failed")
                 await _fail(ws, "converse setup failed", 1011)
                 return ws
-            await ws.send_json({
-                "type": "ready",
-                "input": {"sample_rate": input_rate, "format": "pcm16", "block_ms": 30},
-                "output": {"sample_rate": output_rate, "format": "pcm16"},
-                "session_id": session.session_id,
-                "server_recv_unix_ms": server_recv_unix_ms,
-                "server_send_unix_ms": int(time.time() * 1000),
-            })
-            arbitrator = await self._arbitrator_for_settings(settings)
-            # A configured label is a prefix: each socket needs its own candidate identity.
-            device_id = f"{settings.arbitrate_device_id or 'device'}_{uuid.uuid4().hex}"
-            if arbitrator is not None:
-                await arbitrator.register(device_id)
-            client = RunsClient(base_url, api_key, http=http, approval_choice=settings.approval_choice)
-            await _serve(ws, session=session, synth=synth, cap=cap, client=client, settings=settings,
-                         name=name, quiet_interval=quiet_interval, arbitrator=arbitrator,
-                         device_id=device_id)
-        return ws
+            if requested is not None:
+                session.session_id = requested
+            else:
+                # Persist a real API conversation before ready; the ID can be reattached later.
+                async with http.post(f"{base_url}/api/sessions",
+                                     json={"source": "api_server", "id": f"voice_{uuid.uuid4().hex}"},
+                                     headers={"Authorization": f"Bearer {api_key}"},
+                                     allow_redirects=False) as response:
+                    if response.status != 201:
+                        await _fail(ws, "conversation_unavailable", 1011)
+                        return ws
+                    body = await response.json()
+                    session.session_id = body["session"]["id"]
+            try:
+                attachment = self.hub.attach(session.session_id, session)
+            except ValueError:
+                await _fail(ws, "conversation_in_use", 4409)
+                return ws
+            try:
+                await self._connected(ws, session, api_key, http, base_url, synth, cap, name,
+                                      quiet_interval, settings, attachment, server_recv_unix_ms, input_rate, output_rate)
+            finally:
+                self.hub.detach(session.session_id, attachment)
+                session.stop()
+            return ws
+
+    async def _connected(self, ws, session, api_key, http, base_url, synth, cap, name,
+                         quiet_interval, settings, attachment, server_recv_unix_ms, input_rate, output_rate):
+        await ws.send_json({
+            "type": "ready",
+            "input": {"sample_rate": input_rate, "format": "pcm16", "block_ms": 30},
+            "output": {"sample_rate": output_rate, "format": "pcm16"},
+            "session_id": session.session_id,
+            "conversation_id": session.session_id,
+            "server_recv_unix_ms": server_recv_unix_ms,
+            "server_send_unix_ms": int(time.time() * 1000),
+        })
+        arbitrator = await self._arbitrator_for_settings(settings)
+        # A configured label is a prefix: each socket needs its own candidate identity.
+        device_id = f"{settings.arbitrate_device_id or 'device'}_{uuid.uuid4().hex}"
+        if arbitrator is not None:
+            await arbitrator.register(device_id)
+        client = RunsClient(base_url, api_key, http=http, approval_choice=settings.approval_choice)
+        await _serve(ws, session=session, synth=synth, cap=cap, client=client, settings=settings,
+                     name=name, quiet_interval=quiet_interval, arbitrator=arbitrator,
+                     device_id=device_id, hub=self.hub, attachment=attachment)
+
+    async def output(self, request: web.Request) -> web.Response:
+        header = request.headers.get("Authorization", "")
+        key = header[7:] if header.startswith("Bearer ") else ""
+        async with ClientSession(timeout=HTTP_TIMEOUT) as http:
+            if not await verify_api_key(self._base_url(), key, http=http):
+                raise web.HTTPUnauthorized()
+        try:
+            body = await request.json()
+        except (ValueError, TypeError):
+            raise web.HTTPBadRequest(reason="bad_output")
+        if not isinstance(body, dict):
+            raise web.HTTPBadRequest(reason="bad_output")
+        text, event_id = body.get("text"), body.get("event_id")
+        expires = body.get("expires_at_unix_ms")
+        action = body.get("next_action", "standby")
+        if (not isinstance(text, str) or not text.strip() or len(text) > 20000
+                or not isinstance(event_id, str) or not 1 <= len(event_id) <= 128
+                or isinstance(expires, bool) or not isinstance(expires, (int, float))
+                or not 0 <= expires <= 253402300799999
+                or not math.isfinite(expires) or action not in ("listen", "standby")):
+            raise web.HTTPBadRequest(reason="bad_output")
+        result = self.hub.publish(request.match_info["conversation_id"], text, event_id,
+                                  expires_at=expires / 1000, next_action=action)
+        status = {"accepted": 202, "duplicate": 200, "expired": 410,
+                  "not_attached": 409, "busy": 429}[result]
+        return web.json_response({"status": result, "event_id": event_id}, status=status)
 
 
 def _resolve_session(settings: Settings, input_rate: int, output_rate: int, quiet_interval: float):
@@ -283,12 +358,13 @@ async def _await_start_frame(ws: web.WebSocketResponse, *,
 async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: Any, cap: int,
                  client: RunsClient, settings: Settings, name: str, quiet_interval: float,
                  arbitrator: Optional[Arbitrator] = None,
-                 device_id: str = "") -> None:
+                 device_id: str = "", hub=None, attachment=None) -> None:
     """Run the client pump and the turn driver until the socket ends; always stop the live run."""
     loop = asyncio.get_running_loop()
+    session.enable_turn_control()
     session.start()
     # The Runs API continues this conversation across turns by session id; one per socket.
-    session_id = f"voice_{uuid.uuid4().hex}"
+    session_id = session.session_id
     history: list[dict[str, str]] = []
     allow_signoff = quiet_interval > 0
     wake_tasks: set[asyncio.Task] = set()
@@ -332,11 +408,14 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
         session.stop()
 
     async def _run_turn(transcript: str, on_delta, *, interrupted: bool) -> tuple[str, Optional[str]]:
-        result = await client.run_turn(
-            text=transcript, session_id=session_id, on_delta=on_delta,
-            instructions=voice_system_prompt(name, allow_signoff=allow_signoff, end_phrases=settings.end_phrases),
-            model=settings.model, provider=settings.provider,
-            idempotency_key=f"converse-{session_id}-{uuid.uuid4().hex}")
+        with hub.owned_run(attachment, transcript) if hub is not None else contextlib.nullcontext() as owned:
+            result = await client.run_turn(
+                text=transcript, session_id=session_id, on_delta=on_delta,
+                instructions=voice_system_prompt(name, allow_signoff=allow_signoff, end_phrases=settings.end_phrases),
+                model=settings.model, provider=settings.provider,
+                idempotency_key=f"converse-{session_id}-{uuid.uuid4().hex}")
+            if owned is not None and result.error is None:
+                owned.reply = result.reply
         return result.reply, result.error
 
     def _interrupt_turn() -> None:
@@ -390,7 +469,7 @@ async def _flush_tracing(app: web.Application) -> None:
     await asyncio.to_thread(force_flush)
 
 
-def make_platform_factory(ctx: Any) -> Callable[[Any, Any], None]:
+def make_platform_factory(ctx: Any, *, hub: Optional[ConversationHub] = None) -> Callable[[Any, Any], None]:
     """The ``register_platform_handler("api_server", ...)`` factory: ``factory(app, adapter)``."""
 
     def factory(app: web.Application, adapter: Any) -> None:
@@ -398,7 +477,7 @@ def make_platform_factory(ctx: Any) -> Callable[[Any, Any], None]:
             return loopback_base_url(adapter, str(ctx.get_config("api_base_url", "") or ""))
 
         route = ConverseRoute(settings_getter=ctx.get_config, base_url_resolver=_base_url,
-                              profile_name=getattr(ctx, "profile_name", "default"))
+                              profile_name=getattr(ctx, "profile_name", "default"), hub=hub)
         if route.wire(app):
             logger.info("converse: %s registered on the API server", ROUTE_PATH)
 

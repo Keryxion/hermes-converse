@@ -81,8 +81,8 @@ then live binary PCM16 mono at `input_rate` without a gap or duplication.
 the granted activation, including thinking and playback (sections 4 and 8).
 A client that does not use wake detection may start streaming after `ready`.
 
-The server replies with `ready`, which includes the socket's `session_id`
-and clock-skew timestamps.
+The server replies with `ready` and clock-skew timestamps. Named-device
+attachment IDs and reconnect behavior are defined in section 11.
 
 ## 3. Client control frames (send anytime)
 
@@ -167,11 +167,17 @@ For `next_action = "standby"` or a local decision to end the activation, finish
 playback/drain handling and then stop upstream audio and return to wake
 detection; do not cut off barge-in monitoring during the playback tail.
 
-**Implementation gap:** the current worker has playback-aware barge-in, but
-still captures/transcribes detected speech and can queue it as a new turn.
-Its active-turn flag currently suppresses quiet accounting, not ordinary
-transcription. The interruption-only input mode above requires a server
-change; continuous streaming alone does not implement that restriction.
+The server reserves the request as it hands its transcript to the turn
+driver, binds cancellation before announcing `thinking`, and keeps input in
+control mode through playback drain in both continuous and session modes.
+Speech onset detected by VAD interrupts the active turn without running STT;
+there is no separate keyword recognizer in this mode. If interruption
+arrives during the playback tail after `turn_done`, the server sends
+`interrupted` followed by an updated `turn_done` with `next_action: "listen"`
+for the same turn, replacing its pending standby action before drain. A stale targeted
+`cancel` is ignored. The server discards control-phase buffered audio and
+pre-roll before resuming fresh input. A bounded playback-tail timeout is a
+fallback if the client never sends `drained`.
 
 ### Handling `thinking`
 
@@ -422,7 +428,7 @@ denial or without a wake claim; it does not enforce that client-side gate.
 This does not justify streaming from losing or idle wake-word clients.
 
 
-## 9. Conversation output without user input (proposed extension)
+## 9. Conversation output without user input
 
 Converse is an audio transport attached to a conversation. The conversation
 can produce output without a new user utterance, microphone transcript,
@@ -432,9 +438,16 @@ selection concerns user activations; it must not authorize or gate outbound
 conversation output. The client need not stream ambient audio while idle
 in order to receive outbound events.
 
-The server must subscribe to outbound conversation events, including turns
-started by other producers, rather than only the events of a run started
-from this socket's microphone input. Each delivered turn gets a `turn_id`.
+The server subscribes to **completed final responses** for attached
+conversations through Hermes's public `post_llm_call` hook. It uses the
+transformed final text, skips the `[SILENT]` control marker, and suppresses
+voice-owned runs that already have streaming TTS. Other processes or
+scheduler integrations can publish completed output using the authenticated
+endpoint below. External output does not create a synthetic transcript or
+another LLM run; TTS begins when the final text is available. Each delivered
+output gets a fresh `turn_id` and carries its `event_id` on the initial
+`thinking` / `speaking` frames.
+
 Use the same playback lifecycle as ordinary replies:
 
 | output available | server-to-client sequence |
@@ -458,13 +471,53 @@ Serialize outbound audio on each socket: never interleave the untagged
 binary PCM of two turns. Queue an announcement behind an active turn and
 its playback drain; discard stale announcements instead of replaying them
 late. Ordinary barge-in, `cancel`, and `drained` apply equally to these turns.
-Choose the intended attached recipient before delivery; do not broadcast
-private conversation output to every connected device or run wake elections
-for it. Define authenticated conversation attachment, recipient selection,
-event deduplication, and expiry before enabling this extension. A socket
-connection alone does not grant access to another conversation's output.
+Output is routed to the one attached client for its exact conversation ID,
+within this plugin profile. It is never implicitly broadcast and never runs
+a wake election. Creation and attachment use the client's validated API key
+against `/api/sessions`; only `api_server` conversations are supported.
+Cross-platform/messaging-conversation ownership is not changed by this API.
 
-### Announcement sound and synchronized playback
+### Publishing completed output
+
+An authenticated producer can send a completed conversation response:
+
+```http
+POST /v1/audio/conversations/<conversation_id>/output
+Authorization: Bearer <API_SERVER_KEY>
+Content-Type: application/json
+```
+
+```json
+{"event_id":"followup-42","text":"Your task is finished.","expires_at_unix_ms":1794142860000,"next_action":"standby"}
+```
+
+`event_id` is a nonempty string of at most 128 characters; `text` is nonempty
+and at most 20,000 characters. `expires_at_unix_ms` is required. Optional
+`next_action` defaults to `standby`; choose `listen` to request a follow-up.
+The key must pass the same profile API authentication as a voice socket.
+
+| HTTP result | meaning |
+|---|---|
+| 202 `accepted` | Queued for the attached client; not an acknowledgement of audible playback. |
+| 200 `duplicate` | This attachment has already accepted this event ID; no second playback is queued. |
+| 400 | Invalid payload. |
+| 401 | Authentication failed. |
+| 409 `not_attached` | No live recipient; output is not retained for reconnect. |
+| 410 `expired` | Already expired; not queued. |
+| 429 `busy` | The bounded pending-output queue is full; producer must decide whether to retry before expiry. |
+
+An in-progress user capture takes priority over unsolicited output, even
+when its STT result is empty. Expired queued output is skipped before playback. Deduplication retains the
+last 1024 accepted IDs per attachment; it is not a durable delivery ledger.
+Hook output uses `turn:<turn_id>` IDs and a 60-second delivery lifetime.
+Detaching removes the subscription and pending output; reattachment does
+not replay old conversation responses. The scheduler/producer owns delivery
+policy and must not equate an HTTP acceptance with the user hearing it.
+This endpoint delivers supplied text; it does not append a user/model turn
+to persisted history. Producers that require conversation memory must
+record their completed response through the conversation owner.
+
+### Announcement sound and synchronized playback (proposed extension)
 
 An announcement has a distinct lead-in sound before its speech. The server
 may target one attached client or an explicitly selected, authorized device
@@ -527,22 +580,13 @@ scheduled wait separate from the agent-run timeout. User barge-in or cancel
 stops that client's chime and speech; group-wide cancellation is an explicit
 server operation, not an automatic consequence of one device's interruption.
 
-**Current implementation and Heartbeat 2.** The server currently starts a
-run for each microphone transcript and subscribes to that run's events.
-It has no conversation-wide output subscription. Heartbeat 2 can generate
-later turns, but its documented integration currently targets messaging-
-gateway chats and rejects API-server sessions. Integration must connect
-its conversation output to this transport; a system prompt cannot create
-that missing delivery path. See [Heartbeat 2 compatibility](https://github.com/electricsheephq/heartbeat2#compatibility-and-known-issues).
-
-Once the delivery integration exists, the voice instructions should tell
-the agent to use the installed scheduler tools for later speech, retain
-the originating conversation and recipient, and confirm scheduling or
-cancellation only after the tool acknowledges it. Do not keep a voice run
-open or sleep inside it to wait for a timer. Until that integration is
-available, do not promise later spoken delivery merely because Heartbeat 2
-is installed. A scheduled reminder's timing also follows the scheduler's
-receipt and delivery policy; it is not automatically a precise alarm.
+**Heartbeat 2 integration.** Heartbeat 2 currently schedules turns for
+messaging-gateway chats and rejects API-server sessions. Installing it does
+not by itself schedule future voice output. An integration must explicitly
+publish approved output to an attached API conversation; the endpoint above
+is available for that delivery. Timer/scheduler integration and its policy
+remain in [issue #34](https://github.com/Keryxion/hermes-converse/issues/34).
+The voice system prompt does not claim unsupported scheduling abilities.
 
 ## 10. Server-owned timers and client alarm sounds (proposed extension)
 
