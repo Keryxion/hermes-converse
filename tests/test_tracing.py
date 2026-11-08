@@ -3,10 +3,92 @@ import concurrent.futures
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
 from hermes_converse import tracing
+
+
+@pytest.fixture
+def monitoring(monkeypatch):
+    trace = pytest.importorskip('opentelemetry.trace')
+    pytest.importorskip('opentelemetry.sdk.trace')
+    exporter_module = pytest.importorskip('opentelemetry.exporter.otlp.proto.http.trace_exporter')
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+    config = {'monitoring': {'export': {'otlp': {
+        'enabled': True, 'endpoint': 'http://collector.invalid:4318/v1/traces',
+        'headers_env': {'Authorization': 'CONVERSE_TEST_COLLECTOR_AUTH', 'Missing': 'UNSET_TEST_HEADER'},
+    }}}}
+    exporters = []
+    def make_exporter(**kwargs):
+        exporter = InMemorySpanExporter()
+        exporters.append((kwargs, exporter))
+        return exporter
+    monkeypatch.setattr(exporter_module, 'OTLPSpanExporter', make_exporter)
+    monkeypatch.setattr(trace, 'get_tracer_provider', trace.ProxyTracerProvider)
+    monkeypatch.setitem(sys.modules, 'hermes_cli.config',
+                        SimpleNamespace(load_config_readonly=lambda: config))
+    monkeypatch.setenv('CONVERSE_TEST_COLLECTOR_AUTH', 'fixture-secret')
+    monkeypatch.delenv('UNSET_TEST_HEADER', raising=False)
+    monkeypatch.setattr(tracing, '_providers', {})
+    yield config, exporters
+    for provider in tracing._providers.values():
+        provider.shutdown()
+
+
+def test_monitoring_otlp_opt_in_exports_without_global_provider(monitoring):
+    _, exporters = monitoring
+    recorder = tracing.PhaseRecorder(outcome='empty', **{'session.id': 'configured-session'})
+    with recorder.phase('voice.capture'):
+        pass
+    turn = tracing.start_turn(recorder=recorder, turn_id='configured')
+    assert turn.traceparent is not None
+    turn.end()
+    tracing.force_flush()
+    kwargs, exporter = exporters[0]
+    assert kwargs == {'endpoint': 'http://collector.invalid:4318/v1/traces',
+                      'headers': {'Authorization': 'fixture-secret'}}
+    spans = exporter.get_finished_spans()
+    assert {s.name for s in spans} == {'voice.turn', 'voice.capture'}
+    assert spans[0].resource.attributes['service.name'] == 'hermes-gateway'
+    assert spans[0].resource.attributes['telemetry.scope'] == 'voice'
+    parent = next(s for s in spans if s.name == 'voice.turn')
+    assert parent.attributes['session.id'] == 'configured-session'
+    assert 'fixture-secret' not in repr([dict(s.attributes) for s in spans])
+
+
+@pytest.mark.parametrize('enabled,endpoint', [(False, 'http://collector.invalid'), (True, ''), (None, 'http://collector.invalid')])
+def test_monitoring_requires_explicit_opt_in_and_destination(monitoring, enabled, endpoint):
+    config, exporters = monitoring
+    config['monitoring']['export']['otlp'].update(enabled=enabled, endpoint=endpoint)
+    turn = tracing.start_turn(recorder=None, turn_id='disabled')
+    assert turn.traceparent is None
+    turn.end()
+    assert not exporters
+
+
+def test_monitoring_provider_is_shared_across_workers(monitoring):
+    _, exporters = monitoring
+    with concurrent.futures.ThreadPoolExecutor(4) as pool:
+        providers = list(pool.map(lambda _: tracing._monitoring_provider(), range(8)))
+    assert all(p is providers[0] for p in providers)
+    assert len(exporters) == 1
+
+
+def test_configured_global_provider_keeps_its_sampling_and_exporter(otel, monkeypatch):
+    monkeypatch.setattr(tracing, '_monitoring_provider', lambda: pytest.fail('global provider takes priority'))
+    turn = tracing.start_turn(recorder=None, turn_id='host')
+    turn.end()
+    assert len(otel[2].get_finished_spans()) == 1
+
+
+def test_missing_optional_exporter_does_not_install_or_break_voice(monitoring, monkeypatch):
+    monkeypatch.setitem(sys.modules, 'opentelemetry.exporter.otlp.proto.http.trace_exporter', None)
+    turn = tracing.start_turn(recorder=None, turn_id='no-exporter')
+    assert turn.traceparent is None
+    turn.end()
+    assert not monitoring[1]
 
 
 @pytest.fixture

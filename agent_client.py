@@ -107,8 +107,20 @@ class RunsClient:
             body["model"] = model
         if provider:
             body["provider"] = provider
+        admission = asyncio.ensure_future(self._post_run(body, idempotency_key))
         try:
-            run_id = await self._post_run(body, idempotency_key)
+            run_id = await asyncio.shield(admission)
+        except asyncio.CancelledError:
+            # An accepted POST may not have returned its id yet. Cancelling the HTTP
+            # request here would orphan the accepted run, so finish admission and stop it.
+            async def cancel_admission():
+                try:
+                    accepted_id = await admission
+                except (RunsError, TimeoutError, aiohttp.ClientError):
+                    return
+                await self._post_stop(accepted_id)
+            await self._finish_cleanup(cancel_admission())
+            raise
         except RunsError as exc:
             return TurnResult("", str(exc), "failed", None)
         self._run_id, self._stop_requested = run_id, False
@@ -119,7 +131,7 @@ class RunsClient:
             current = asyncio.current_task()
             if current is not None and current.cancelling():
                 # The host abandoned the turn (deadline / socket closed): never leave it running.
-                await self._abort(run_id, task)
+                await self._finish_cleanup(self._abort(run_id, task))
                 raise
             # stop() cancelled the stream after its settle timeout: the turn is over for us.
             return TurnResult("", None, "interrupted", run_id)
@@ -171,6 +183,17 @@ class RunsClient:
             async with self._http.post(f"{self._base}/v1/runs/{run_id}/stop", headers=self._headers,
                                        allow_redirects=False, timeout=aiohttp.ClientTimeout(total=5)) as resp:
                 await resp.read()
+
+    async def _finish_cleanup(self, cleanup) -> None:
+        """A second cancel/close must not interrupt the bounded HTTP stop cleanup."""
+        task = asyncio.ensure_future(cleanup)
+        while True:
+            try:
+                await asyncio.shield(task)
+                return
+            except asyncio.CancelledError:
+                if task.cancelled():
+                    raise
 
     async def _abort(self, run_id: str, task: asyncio.Task) -> None:
         if not task.done():

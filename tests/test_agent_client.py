@@ -133,3 +133,34 @@ def test_offered_key_protocol_parsing():
     assert offered_key_protocol("hermes-voice-v1, hermes-key.abc") == "abc"
     assert offered_key_protocol("hermes-key.a, hermes-key.b") == ""  # ambiguous: reject
     assert offered_key_protocol("hermes-key.") == ""
+
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_admission_waits_for_id_and_stops_accepted_run():
+    fake = FakeRunsAPI(API_KEY, hang=True)
+    accepted = asyncio.Event()
+    release = asyncio.Event()
+    create = fake.create_run
+
+    async def delayed_response(request):
+        response = await create(request)
+        accepted.set()
+        await release.wait()
+        return response
+
+    fake.create_run = delayed_response
+    async with TestClient(TestServer(fake.app())) as tc:
+        client, http = await _client_for(tc.server)
+        async with http:
+            turn = asyncio.create_task(client.run_turn(text='go', session_id='s', on_delta=lambda _: None))
+            await asyncio.wait_for(accepted.wait(), 2)
+            turn.cancel()
+            await asyncio.sleep(0)
+            turn.cancel()  # socket close while barge-in cleanup is already waiting
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(turn, 2)
+            run_id = next(iter(fake.runs))
+            assert fake.stop_calls == [run_id]
+            assert fake.runs[run_id]['status'] == 'cancelled'

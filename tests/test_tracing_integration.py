@@ -20,6 +20,8 @@ async def test_wire_traceparent_matches_exported_turn(monkeypatch, otel):
     spans = exporter.get_finished_spans()
     parent = next(s for s in spans if s.name == 'voice.turn' and s.attributes.get('outcome') == 'ok')
     assert {s.name for s in spans} >= {'voice.turn', 'voice.capture', 'voice.stt', 'voice.agent', 'voice.tts'}
+    capture = next(s for s in spans if s.name == 'voice.capture')
+    assert capture.attributes['input.audio_ms'] > capture.attributes['endpoint.silence_ms'] > 0
     for frame in frames:
         if frame['type'] in ('transcript', 'thinking', 'speaking'):
             assert int(frame['traceparent'].split('-')[1], 16) == parent.context.trace_id
