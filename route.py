@@ -305,8 +305,15 @@ class ConverseRoute:
     async def _connected(self, ws, session, api_key, http, base_url, synth, cap, name,
                          quiet_interval, settings, attachment, server_recv_unix_ms, input_rate, output_rate,
                          named=None):
+        client = RunsClient(base_url, api_key, http=http, approval_choice=settings.approval_choice)
+        try:
+            catalog = public_model_catalog(await client.model_options())
+        except Exception:
+            logger.warning("converse model catalog unavailable", exc_info=True)
+            catalog = {'providers': []}
         ready = {
             "type": "ready",
+            "model_catalog": catalog,
             "input": {"sample_rate": input_rate, "format": "pcm16", "block_ms": 30},
             "output": {"sample_rate": output_rate, "format": "pcm16"},
             "session_id": session.session_id,
@@ -319,13 +326,13 @@ class ConverseRoute:
             ready.pop('conversation_id')
             ready.update(recipient_id=device.recipient_id, assistant_name=device.assistant_name,
                          device_name=device.device_name)
+        ready["server_send_unix_ms"] = int(time.time() * 1000)
         await ws.send_json(ready)
         arbitrator = await self._arbitrator_for_settings(settings)
         # A configured label is a prefix: each socket needs its own candidate identity.
         device_id = f"{settings.arbitrate_device_id or 'device'}_{uuid.uuid4().hex}"
         if arbitrator is not None:
             await arbitrator.register(device_id)
-        client = RunsClient(base_url, api_key, http=http, approval_choice=settings.approval_choice)
         if named is not None:
             connection.client = client
         await _serve(ws, session=session, synth=synth, cap=cap, client=client, settings=settings,
@@ -468,20 +475,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
     allow_signoff = quiet_interval > 0
     default_model = (settings.model, settings.provider)
     selected_model = default_model
-    control_tasks: set[asyncio.Task] = set()
-    model_catalog_task: Optional[asyncio.Task] = None
-
-    async def _reply_models(frame: dict) -> None:
-        request_id = frame['request_id']
-        try:
-            catalog = await client.model_options(refresh=frame.get('refresh', False))
-            response = {'type': 'model_list', 'request_id': request_id, **public_model_catalog(catalog)}
-        except Exception:
-            response = {'type': 'model_error', 'operation': 'list_models',
-                        'request_id': request_id, 'error': 'model_catalog_unavailable'}
-        with contextlib.suppress(Exception):  # the socket can close while inventory enrichment runs
-            await ws.send_json(response)
-
+    wake_tasks: set[asyncio.Task] = set()
     async def _reply_wake(frame: dict) -> None:
         try:
             reply = await _wake_response(frame, arbitrator=arbitrator, device_id=device_id)
@@ -490,7 +484,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
             logger.debug("converse wake reply failed", exc_info=True)
 
     async def _pump_client() -> None:
-        nonlocal selected_model, model_catalog_task
+        nonlocal selected_model
         try:
             async for msg in ws:
                 if msg.type == web.WSMsgType.BINARY:
@@ -510,22 +504,6 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                         session.notify_drained(frame.get("turn_id"))
                     if frame.get("type") == "cancel":
                         session.cancel(frame.get("turn_id"))
-                    if frame.get('type') == 'list_models':
-                        request_id = frame.get('request_id')
-                        if not isinstance(request_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', request_id):
-                            await ws.send_json({'type': 'model_error', 'operation': 'list_models', 'error': 'bad_request_id'})
-                        elif not isinstance(frame.get('refresh', False), bool):
-                            await ws.send_json({'type': 'model_error', 'operation': 'list_models',
-                                                'request_id': request_id, 'error': 'bad_model_request'})
-                        elif model_catalog_task is not None and not model_catalog_task.done():
-                            await ws.send_json({'type': 'model_error', 'operation': 'list_models',
-                                                'request_id': request_id, 'error': 'model_catalog_busy'})
-                        else:
-                            # Catalog enrichment may take seconds. Never stall input/cancel/wake.
-                            model_catalog_task = asyncio.create_task(_reply_models(frame))
-                            control_tasks.add(model_catalog_task)
-                            model_catalog_task.add_done_callback(control_tasks.discard)
-                        continue
                     if frame.get("type") == "set_model":
                         request_id = frame.get("request_id")
                         if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", request_id):
@@ -544,8 +522,8 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                     if frame.get("type") == "wake":
                         # Do not block PCM, cancel, stop, or a new claim while an election runs.
                         task = asyncio.create_task(_reply_wake(frame))
-                        control_tasks.add(task)
-                        task.add_done_callback(control_tasks.discard)
+                        wake_tasks.add(task)
+                        task.add_done_callback(wake_tasks.discard)
                 elif msg.type in (web.WSMsgType.CLOSE, web.WSMsgType.ERROR):
                     break
         except Exception:
@@ -603,11 +581,11 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
         session.stop()
         pump.cancel()
         driver.cancel()
-        for task in control_tasks:
+        for task in wake_tasks:
             task.cancel()
         if fence is not None:
             fence.cancel()
-        await asyncio.gather(pump, driver, *control_tasks, *([fence] if fence else []), return_exceptions=True)
+        await asyncio.gather(pump, driver, *wake_tasks, *([fence] if fence else []), return_exceptions=True)
         if arbitrator is not None:
             with contextlib.suppress(Exception):
                 await arbitrator.unregister(device_id)

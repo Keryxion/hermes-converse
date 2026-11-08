@@ -97,9 +97,9 @@ class RunsClient:
     def current_run_id(self) -> Optional[str]:
         return self._run_id
 
-    async def model_options(self, *, refresh: bool = False) -> dict[str, Any]:
+    async def model_options(self) -> dict[str, Any]:
         """Reuse the authenticated server inventory behind the voice WebSocket."""
-        params = {"include_unconfigured": "false", "refresh": "true" if refresh else "false"}
+        params = {"include_unconfigured": "false", "refresh": "false"}
         async with asyncio.timeout(8):
             async with self._http.get(f"{self._base}/api/model/options", params=params,
                                       headers=self._headers, allow_redirects=False) as response:

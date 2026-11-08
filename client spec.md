@@ -703,34 +703,20 @@ The requesting device receives confirmation; only the destination rings.
 
 Model discovery and selection both use the existing authenticated voice
 WebSocket. No additional client HTTP request or authentication flow is needed.
-After `ready`, request the configured inventory with:
+The server includes the catalog once in the `ready` frame:
 
 ```json
-{"type":"list_models","request_id":"models-1","refresh":false}
+{"type":"ready","model_catalog":{"model":"agent","provider":"litellm","providers":[{"slug":"litellm","name":"LiteLLM","models":["agent","beta"]}]}}
 ```
 
-The server responds on the same socket:
-
-```json
-{"type":"model_list","request_id":"models-1","model":"agent","provider":"litellm","providers":[{"slug":"litellm","name":"LiteLLM","models":["agent","beta"]}]}
-```
-
+The example omits the other normal `ready` fields. Clients reuse this catalog
+for the connection. There is no catalog request, request ID, or refresh message.
 `model` / `provider` describe the server's default inventory selection; provider
 entries expose only display names, slugs, and model IDs. No upstream credentials
 or provider configuration are returned. Unconfigured providers are excluded.
-`refresh` is an optional boolean; `true` refreshes the server's inventory cache.
-The server may reuse its public `/api/model/options` implementation internally;
-the client stays on its voice socket.
-
-Discovery runs independently of microphone PCM and voice controls. Each socket
-allows one outstanding lookup; another receives `model_error` with
-`operation: "list_models"`, the new `request_id`, and
-`error: "model_catalog_busy"`. Lookup failure/timeout returns the same envelope
-with `error: "model_catalog_unavailable"`. A non-boolean refresh flag returns
-`bad_model_request`. The backend lookup is bounded to eight seconds and is
-cancelled if the socket closes. Catalog errors do not change the active model,
-voice phase, capture, or playback. Clients correlate responses, use a bounded
-acknowledgement timeout, ignore stale results, and refresh after reconnect.
+The server reuses its inventory API internally. If lookup fails or exceeds eight
+seconds, `model_catalog` contains `{"providers":[]}` and voice remains available.
+A new connection receives a new catalog.
 
 On the existing authenticated socket, send:
 

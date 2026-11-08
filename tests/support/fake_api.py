@@ -39,6 +39,7 @@ class FakeRunsAPI:
     def routes(self) -> list:
         return [
             web.get("/v1/capabilities", self.capabilities),
+            web.get("/api/model/options", self.model_options),
             web.post("/api/sessions", self.create_session),
             web.get("/api/sessions", self.list_sessions),
             web.get("/api/sessions/{session_id}", self.get_session),
@@ -50,6 +51,9 @@ class FakeRunsAPI:
             web.post("/v1/runs/{run_id}/approval", self.approval),
             web.post("/v1/runs/{run_id}/clarify", self.clarify),
         ]
+
+    async def model_options(self, request):
+        return web.json_response({'model': 'agent', 'providers': []})
 
     def app(self) -> web.Application:
         app = web.Application()
