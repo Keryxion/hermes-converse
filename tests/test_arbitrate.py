@@ -160,6 +160,33 @@ async def test_proximity_majority_area_wins_over_first_claim():
 
 
 @pytest.mark.asyncio
+async def test_proximity_wins_bookkeeping_tracks_real_winner():
+    """``_wins`` must record the elected device, not the tentative first claimant.
+
+    d3 (living_room) claims first and is recorded tentatively, but a kitchen device
+    wins on area consensus. Unregistering the real winner must release the utterance;
+    unregistering the tentative loser must not.
+    """
+    arb = Arbitrator(bus=LocalBus(), policy=POLICY_PROXIMITY)
+    await arb.register("d1", area="kitchen", person="darrell")
+    await arb.register("d2", area="kitchen", person="darrell")
+    await arb.register("d3", area="living_room", person="darrell")
+    results = await _gather(arb, [("d3", "u1"), ("d1", "u1"), ("d2", "u1")])
+    winner = next(w for g, w in results if g)
+    assert winner in ("d1", "d2")
+    assert "u1" in arb._wins[winner]
+    assert "u1" not in arb._wins.get("d3", set())
+
+    # A losing device's unregister must not release the utterance.
+    await arb.unregister("d3")
+    assert arb.elected_winner("u1") == winner
+
+    # The real winner's unregister releases it.
+    await arb.unregister(winner)
+    assert arb.elected_winner("u1") is None
+
+
+@pytest.mark.asyncio
 async def test_proximity_falls_back_to_first_claim():
     arb = Arbitrator(bus=LocalBus(), policy=POLICY_PROXIMITY)
     await arb.register("d1", area="kitchen")

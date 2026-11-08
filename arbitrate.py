@@ -315,8 +315,9 @@ class Arbitrator:
                     winner = device_id
                 else:
                     # Proximity: tentatively record; finalize below once concurrent claims drain.
+                    # The real winner is added to ``_wins`` in ``_finalize_proximity`` — the
+                    # tentative claimant may not be the one that actually wins.
                     self._elected[utterance_id] = (device_id, False)
-                    self._wins.setdefault(device_id, set()).add(utterance_id)
                     self._finalized[utterance_id] = asyncio.Event()
                     self._proximity_winner[utterance_id] = device_id  # placeholder
                     granted = False  # placeholder; resolved in _finalize_proximity
@@ -356,6 +357,9 @@ class Arbitrator:
             best = await self._best_proximity_match(claim.utterance_id)
             self._elected[claim.utterance_id] = (best, True)
             self._proximity_winner[claim.utterance_id] = best
+            # ``_wins`` tracks utterances a device actually won, so record the real winner
+            # (not the tentative claimant recorded at claim time).
+            self._wins.setdefault(best, set()).add(claim.utterance_id)
             granted = (best == device.device_id)
             winner = best
         self._finalized[claim.utterance_id].set()
