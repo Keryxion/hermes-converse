@@ -301,7 +301,7 @@ A client can submit typed text after `ready`, regardless of `transcripts`:
 `text` must be a nonempty string of at most 20,000 characters. `request_id` is
 a nonempty client-generated string, unique on the socket, of at most 128
 characters. A typed request uses the attached conversation and needs no wake
-claim or microphone audio. When idle, the server accepts it, assigns a `turn_id`,
+claim or microphone audio. The server accepts it, assigns a `turn_id`,
 and, when transcripts are enabled, echoes the text before `thinking`:
 
 ```json
@@ -311,8 +311,8 @@ and, when transcripts are enabled, echoes the text before `thinking`:
 The `thinking` frame for an accepted typed request carries the same `request_id`
 and `turn_id`, whether or not transcripts are enabled.
 
-If a capture or turn is already active, reject the typed request without changing
-it: `{"type":"error","error":"input_busy","request_id":"text-1"}`. Reject invalid
+If a capture or turn is active, typed input interrupts it and starts a new turn
+in the same conversation, using the existing interruption behavior. Reject invalid
 text or request IDs with `error: "bad_transcript"`; echo a valid request ID when
 available. A client must not automatically resend a request after a disconnect:
 its outcome may be unknown. The server must not run a duplicate `request_id` on
