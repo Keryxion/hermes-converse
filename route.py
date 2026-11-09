@@ -645,6 +645,10 @@ def make_platform_factory(ctx: Any, *, hub: Optional[ConversationHub] = None) ->
         route = ConverseRoute(settings_getter=ctx.get_config, base_url_resolver=_base_url,
                               profile_name=getattr(ctx, "profile_name", "default"), hub=hub)
         if route.wire(app):
+            from .compaction import install_voice_compaction
+            uninstall = install_voice_compaction(adapter, route.hub, ctx.get_config)
+            if callable(getattr(ctx, 'on_unload', None)):
+                ctx.on_unload(uninstall)
             logger.info("converse: %s registered on the API server", ROUTE_PATH)
 
     return factory

@@ -46,6 +46,7 @@ class Settings:
     name: str = DEFAULT_NAME
     model: Optional[str] = None
     provider: Optional[str] = None
+    compression_threshold_tokens: int = 0
     turn_timeout: float = DEFAULT_TURN_TIMEOUT
     tail_fallback: float = DEFAULT_TAIL_FALLBACK
     max_tts_chars: int = DEFAULT_MAX_TTS_CHARS
@@ -92,6 +93,11 @@ def _wake_window(raw: Any) -> float:
     return value if math.isfinite(value) and value >= 0 else DEFAULT_ARBITRATE_WAKE_WINDOW_SECONDS
 
 
+def compaction_tokens(raw: Any) -> int:
+    value = _number(raw, 0)
+    return int(value) if math.isfinite(value) and value > 0 and not isinstance(raw, bool) else 0
+
+
 def load_settings(get: Getter) -> Settings:
     """Build :class:`Settings` from ``get(key, default)`` (``ctx.get_config`` or a dict's ``.get``)."""
     approval = str(get("approval_choice", "deny") or "deny").strip().lower()
@@ -99,6 +105,7 @@ def load_settings(get: Getter) -> Settings:
         name=_text(get("name", DEFAULT_NAME)) or DEFAULT_NAME,
         model=_text(get("voice_model", "")),
         provider=_text(get("voice_provider", "")),
+        compression_threshold_tokens=compaction_tokens(get('compression_threshold_tokens', 0)),
         turn_timeout=_number(get("turn_timeout_seconds", DEFAULT_TURN_TIMEOUT), DEFAULT_TURN_TIMEOUT),
         tail_fallback=_number(get("playback_tail_timeout_seconds", DEFAULT_TAIL_FALLBACK), DEFAULT_TAIL_FALLBACK),
         max_tts_chars=int(_number(get("max_tts_chars_per_turn", DEFAULT_MAX_TTS_CHARS), DEFAULT_MAX_TTS_CHARS)),
