@@ -45,6 +45,10 @@ config_schema:
     type: str
     default: ""
     description: "Provider for the voice-only model override ('' = the configured one)."
+  compression_threshold_tokens:
+    type: int
+    default: 0
+    description: "Absolute compaction trigger for live voice conversations only (0 = global policy). A large message or tool result can briefly exceed this trigger."
   turn_timeout_seconds:
     type: float
     default: 120
