@@ -46,7 +46,8 @@ voice protocol, delay audio, grant a wake, or decide that speech is a barge-in.
 | `arbitrating` | Local wake accepted; claim awaiting decision | Orange | Smooth 1 s breath, 35–100% of configured state brightness; no listening cue yet |
 | `wake_denied` | Matching explicit `wake_deny` | Red | Steady for 1.5 s, then standby; a later state cancels the expiry timer |
 | `listening` | Granted activation, manual Talk, or explicit follow-up listening | Green | Steady status accent plus a meter driven by actual input PCM; baseline is static |
-| `thinking` | User transcript endpointed or server `thinking` | Orange | Clearly animated while thinking; spatial displays can orbit, while a single LED can breathe |
+| `transcribing` | Speech capture has ended and transcription is in progress | Yellow | Yellow indication while transcription is in progress; distinct from green listening and orange thinking |
+| `thinking` | Transcription completed and the agent turn has started | Orange | Clearly animated while thinking; spatial displays can orbit, while a single LED can breathe |
 | `speaking` | Reply queued/playing, including its local tail | Blue | Large, prominent animated indication; on LED-only devices use a prominent blue animation, optionally driven by the actual rendered-output envelope |
 | `error` | Connection, authentication, capture, or playback failure requiring attention | Strong red | Pulse persistently to show a fault; show error text or a warning symbol where available. Do not rotate: rotation suggests work is in progress |
 | `ended` | Explicitly ended session | Neutral | A 600 ms fade to idle; this is not wake standby unless local wake remains armed |
@@ -79,7 +80,9 @@ stateDiagram-v2
     arbitrating --> standby: timeout / abandon
     wake_denied --> standby: 1.5 s, if no newer event
     standby --> listening: manual Talk
-    listening --> thinking: transcript / thinking
+    listening --> transcribing: endpoint, if signaled
+    transcribing --> thinking: thinking
+    listening --> thinking: thinking, if no transcribing signal
     thinking --> speaking: speaking / reply audio
     speaking --> listening: drained + next_action listen
     speaking --> standby: drained + next_action standby
@@ -94,6 +97,10 @@ stateDiagram-v2
 ```
 
 This diagram is a presentation summary, not a replacement for `client spec.md`.
+Yellow transcribing is a proposed visual phase: the current protocol does not
+provide a transcription-start or endpoint signal. Do not infer that phase from
+silence or a completed transcript; it needs an explicit reliable signal before
+clients can display it accurately. Until then, retain listening until `thinking`.
 In particular:
 
 - Keep the speaking phase through **local playback drain**, even if `turn_done`
