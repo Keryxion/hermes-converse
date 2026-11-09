@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import OrderedDict
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -27,6 +28,10 @@ class Attachment:
     seen: OrderedDict = field(default_factory=OrderedDict)
     voice_request: VoiceRequest | None = None
     pending: int = 0
+    wake_loop: Any = None
+    wake_handler: Any = None
+    wake_pending: bool = False
+    wake_tasks: set = field(default_factory=set)
 
 
 class ConversationHub:
@@ -56,6 +61,77 @@ class ConversationHub:
             if existing is not None and existing is not attachment:
                 raise ValueError("conversation_in_use")
             self._attachments[conversation_id] = attachment
+
+    def bind_wakes(self, attachment, handler):
+        with self._lock:
+            attachment.wake_loop = asyncio.get_running_loop()
+            attachment.wake_handler = handler
+
+    def unbind_wakes(self, attachment):
+        with self._lock:
+            attachment.wake_handler = None
+            tasks = list(attachment.wake_tasks)
+        for task in tasks:
+            task.cancel()
+        return tasks
+
+    def voice_target(self, session_id):
+        with self._lock:
+            item = self._attachments.get(session_id)
+            if item is None or item.session.stopped or item.wake_handler is None:
+                return None
+            return item.conversation_id
+
+    def owner_message(self, conversation_id, text):
+        with self._lock:
+            item = self._attachments.get(conversation_id)
+            return bool(item and item.voice_request and item.voice_request.text == text)
+
+    def wake_ready(self, conversation_id):
+        with self._lock:
+            item = self._attachments.get(conversation_id)
+            return bool(item and item.wake_handler and not item.session.stopped
+                        and not item.wake_pending and item.voice_request is None
+                        and not item.session._turn_active.is_set()
+                        and not item.session._tail_active and not item.session.capture_pending()
+                        and item.pending == 0)
+
+    def inject_wake(self, conversation_id, text):
+        with self._lock:
+            if not self.wake_ready(conversation_id):
+                return False
+            item = self._attachments[conversation_id]
+            item.wake_pending = True
+            handler = item.wake_handler
+            loop = item.wake_loop
+
+        async def deliver():
+            try:
+                # Recheck after crossing the thread/loop boundary.
+                if item.session.stopped or item.wake_handler is not handler:
+                    return
+                if (item.voice_request is not None or item.session._turn_active.is_set()
+                        or item.session._tail_active or item.session.capture_pending()):
+                    return
+                await handler(text)
+            except Exception:
+                logging.getLogger(__name__).exception('converse: heartbeat wake failed')
+            finally:
+                with self._lock:
+                    item.wake_pending = False
+
+        def start():
+            task = loop.create_task(deliver())
+            item.wake_tasks.add(task)
+            task.add_done_callback(item.wake_tasks.discard)
+
+        try:
+            loop.call_soon_threadsafe(start)
+        except RuntimeError:
+            with self._lock:
+                item.wake_pending = False
+            return False
+        return True
 
     @contextmanager
     def owned_run(self, attachment: Attachment, text: str):

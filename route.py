@@ -475,6 +475,31 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
     default_model = (settings.model, settings.provider)
     selected_model = default_model
     wake_tasks: set[asyncio.Task] = set()
+    turn_lock = asyncio.Lock()
+
+    def _instructions():
+        return voice_system_prompt(
+            name, allow_signoff=allow_signoff, end_phrases=settings.end_phrases,
+            device_name=named_device.device_name if named_device else None,
+            recipient_id=named_device.recipient_id if named_device else None)
+
+    async def _heartbeat_turn(text):
+        async with turn_lock:
+            if session.stopped or session._turn_active.is_set() or session._tail_active or session.capture_pending():
+                return
+            async with asyncio.timeout(settings.turn_timeout if settings.turn_timeout > 0 else None):
+                result = await client.run_turn(
+                    text=text, session_id=session_id, on_delta=lambda delta: None,
+                    instructions=_instructions(), model=settings.model, provider=settings.provider,
+                    idempotency_key='pulse-' + uuid.uuid4().hex)
+            # Only the final transformed post_llm_call response enters the hub. Raw
+            # streaming deltas can contain text a pulse verdict must keep silent.
+            if result.error:
+                logger.warning('converse: heartbeat run ended with status %s', result.status)
+
+    if hub is not None and attachment is not None:
+        hub.bind_wakes(attachment, _heartbeat_turn)
+
     async def _reply_wake(frame: dict) -> None:
         try:
             reply = await _wake_response(frame, arbitrator=arbitrator, device_id=device_id)
@@ -530,6 +555,12 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
         session.stop()
 
     async def _run_turn(transcript: str, on_delta, *, interrupted: bool) -> tuple[str, Optional[str]]:
+        if attachment is not None and attachment.wake_pending:
+            await client.stop()
+        async with turn_lock:
+            return await _foreground_turn(transcript, on_delta)
+
+    async def _foreground_turn(transcript, on_delta):
         model, provider = selected_model  # Snapshot once; do not alter a run already in flight.
         with hub.owned_run(attachment, transcript) if hub is not None else contextlib.nullcontext() as owned:
             result = await client.run_turn(
@@ -578,13 +609,14 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
         logger.exception("converse loop crashed")
     finally:
         session.stop()
+        heartbeat_tasks = hub.unbind_wakes(attachment) if hub is not None and attachment is not None else []
         pump.cancel()
         driver.cancel()
         for task in wake_tasks:
             task.cancel()
         if fence is not None:
             fence.cancel()
-        await asyncio.gather(pump, driver, *wake_tasks, *([fence] if fence else []), return_exceptions=True)
+        await asyncio.gather(pump, driver, *wake_tasks, *heartbeat_tasks, *([fence] if fence else []), return_exceptions=True)
         if arbitrator is not None:
             with contextlib.suppress(Exception):
                 await arbitrator.unregister(device_id)

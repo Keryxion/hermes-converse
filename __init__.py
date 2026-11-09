@@ -17,6 +17,14 @@ def register(ctx) -> None:
     from .route import make_platform_factory
 
     hub = ConversationHub()
+    # The manager is profile-scoped. Do not publish a process-global voice destination.
+    if getattr(ctx, '_manager', None) is not None:
+        ctx._manager._heartbeat2_voice_hub = hub
+        def remove_voice_bridge():
+            if getattr(ctx._manager, '_heartbeat2_voice_hub', None) is hub:
+                del ctx._manager._heartbeat2_voice_hub
+        if callable(getattr(ctx, 'on_unload', None)):
+            ctx.on_unload(remove_voice_bridge)
     ctx.register_hook("post_llm_call", hub.on_response)
     ctx.register_platform_handler("api_server", make_platform_factory(ctx, hub=hub))
     ctx.register_cli_command(
