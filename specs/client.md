@@ -56,7 +56,7 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 | `output_rate` | sample rate of PCM the server sends back (default 24000) |
 | `quiet_interval` | session mode: seconds of silence between turns (0 = off) |
 | `device_name` | The configured device label, such as `Den Echo`; required for named-device connections (section 11). |
-| `reply_transcripts` | Proposed boolean; request assistant reply text when `true`. Defaults to `false`. See section 4. |
+| `reply_transcripts` | Boolean; request assistant reply text when `true`. Defaults to `false`. See section 4. |
 | `assistant_name` | What you call the assistant, normally `Arya`, without “Hey”. Used in the voice system prompt; separate from the device label, such as `Den Echo`. |
 
 **Client profile selection is removed.**
@@ -287,10 +287,10 @@ sign-off in session mode; non-session/continuous mode returns `listen`.
 The server decides the action. Clients must not inspect reply text, detect
 sign-off phrases, or interpret whether the agent expects a follow-up.
 
-### Text input and reply transcripts (implementation required)
+### Text input and reply transcripts
 
-Use `transcript` for text in both directions. These additions require server
-implementation; clients must continue to handle audio if reply text is absent.
+Use `transcript` for text in both directions. Existing servers may not yet support these frames; clients must continue to
+handle audio if reply text is absent.
 
 A client can submit typed text after `ready`, regardless of `reply_transcripts`:
 
