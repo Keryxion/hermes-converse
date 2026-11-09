@@ -4,11 +4,12 @@ Server responsibilities behind the [client contract](client.md).
 
 ## Conversation catch-up
 
-For `catch_up`, return the latest 10 retained turns for the authenticated
-socket's attached conversation as specified in [the client spec](client.md#catch-up-after-backgrounding-or-relaunch).
-Return a consistent snapshot in conversation order, including known outcomes.
-History is scoped to the attached conversation and never triggers a run or audio.
-No cursor or pagination is required.
+After `ready`, answer `start.last_turn_id` with one `catch_up` frame as defined
+in [the client spec](client.md#catching-up-from-start): the turns newer than that
+ID in conversation order, at most 20, `gap: true` when the ID is no longer
+retained, and `truncated: true` when newer turns were dropped. Without
+`last_turn_id`, send the most recent 10 turns. Scope everything to the attached
+conversation; catch-up never runs a turn or delivers audio.
 
 ## Voice lifecycle
 

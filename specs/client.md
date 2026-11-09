@@ -57,6 +57,7 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 | `quiet_interval` | session mode: seconds of silence between turns (0 = off) |
 | `device_name` | The configured device label, such as `Den Echo`; required for named-device connections (section 11). |
 | `transcripts` | Boolean; request user and assistant transcript frames when `true`. Defaults to `false`. See section 4. |
+| `last_turn_id` | Opaque ID of the last turn you displayed, so the server can send only what is newer. Omit on a first connection. See “Catching up from `start`”. |
 | `assistant_name` | What you call the assistant, normally `Arya`, without “Hey”. Used in the voice system prompt; separate from the device label, such as `Den Echo`. |
 
 **Client profile selection is removed.**
@@ -733,41 +734,38 @@ If the conversation cannot be opened, show
 A `conversation_busy` error before ready means retry later while earlier work
 stops. Normal authentication and first-frame errors remain as in section 1.
 
-### Catch up after backgrounding or relaunch
+### Catching up from `start`
 
-On foreground return or relaunch, reconnect to the same named conversation and
-request its latest 10 turns after `ready`:
-
-```json
-{"type":"catch_up"}
-```
-
-The server returns up to 10 recent turns in conversation order:
+A client that has displayed this conversation before sends the last turn it
+showed in `start.last_turn_id`. After `ready`, the server sends one frame
+containing only the newer turns; it sends nothing when there are none:
 
 ```json
-{"type":"catch_up","turns":[{"turn_id":"turn-9","started_at_unix_ms":1794142800000,
- "user_text":"Set a timer","assistant_text":"The timer is set.","outcome":"completed"}]}
+{"type":"catch_up","gap":false,"truncated":false,"turns":[
+ {"turn_id":"turn-9","started_at_unix_ms":1794142800000,"user_text":"Set a timer",
+  "assistant_text":"The timer is set.","outcome":"completed"}]}
 ```
 
-Each turn has a stable `turn_id`, start time, available user and assistant text,
-and an outcome: `running`, `completed`, `failed`, `cancelled`, or `unknown`.
-Use `unknown` when the outcome cannot be established. Text may be absent;
-outbound turns have no user text. Generated text is not proof it was heard.
-Do not expose internal reasoning or raw tool output.
+Each turn has a stable `turn_id`, a start time, available user and assistant
+text, and an outcome: `running`, `completed`, `failed`, `cancelled`, or
+`unknown`. Use `unknown` when the outcome cannot be established. Text may be
+absent; outbound turns have no user text. Generated text is not proof it was
+heard. Do not expose internal reasoning or raw tool output.
 
-The client saves the last server turn it displayed, scoped to the server and
-named conversation. On catch-up, reconcile turns by ID: update existing entries
-and add new ones without duplication. If a saved last turn is absent from the
-returned window, show a gap between the saved history and the returned history;
-do not claim everything was recovered. If there is no saved last turn, show the
-available recent history without claiming it is complete. An absent anchor can
-also mean the server has no retained history; do not invent a cause. An older
-saved turn that changed outside the latest 10 is not refreshed by this request.
+`gap` is `true` only when `last_turn_id` was sent and the server no longer has
+that turn; show the break in the conversation instead of implying full history.
+`truncated` is `true` when older newer turns were dropped to stay within 20
+turns. With no `last_turn_id`, the server sends the most recent 10 turns and
+neither flag claims completeness.
 
-Catch-up is read-only. It does not rerun a request, replay audio, open the
-microphone, or imply a disconnected turn continued. Report actual known outcomes.
-Verify foreground return and relaunch, repeat requests, a matching anchor, a
-missing anchor, empty history, and updates to a turn inside the returned window.
+Reconcile by `turn_id`: update turns already displayed and append the rest,
+without duplicates. A live `transcript` and a `catch_up` entry for the same turn
+update one row. Catching up is read-only: it never reruns a request, replays
+audio, opens the microphone, or implies a disconnected turn continued.
+
+Verify first connect, reconnect with a known anchor, an anchor the server no
+longer has, more than 20 newer turns, no newer turns, and a turn that completed
+while the client was away.
 
 ### Timers on named Aryas
 
