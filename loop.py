@@ -31,9 +31,9 @@ from typing import Any, Awaitable, Callable, Iterator, Optional
 
 from . import speech, vad
 from .speech_detector import DEFAULT_VAD_MODEL, SpeechDetector
-from .phrases import is_end_phrase, is_stop_phrase, strip_end_phrase
+from .phrases import is_end_phrase, strip_end_phrase
 from .settings import (
-    DEFAULT_END_PHRASES, DEFAULT_MAX_TTS_CHARS, DEFAULT_NAME, DEFAULT_STOP_PHRASES,
+    DEFAULT_END_PHRASES, DEFAULT_MAX_TTS_CHARS, DEFAULT_NAME,
     DEFAULT_TAIL_FALLBACK, DEFAULT_TURN_TIMEOUT)
 from .synth import split_text_for_tts_stream
 from .tracing import PhaseRecorder, emit_turn_trace, start_turn
@@ -815,7 +815,6 @@ class _Driver:
     turn_timeout: float
     tail_fallback: float
     max_tts_chars: int
-    stop_phrases: tuple[str, ...]
     end_phrases: tuple[str, ...]
 
 
@@ -864,7 +863,6 @@ async def drive_converse_turns(
     turn_timeout: float = DEFAULT_TURN_TIMEOUT,
     tail_fallback: float = DEFAULT_TAIL_FALLBACK,
     max_tts_chars: int = DEFAULT_MAX_TTS_CHARS,
-    stop_phrases: tuple[str, ...] = DEFAULT_STOP_PHRASES,
     end_phrases: tuple[str, ...] = DEFAULT_END_PHRASES,
 ) -> None:
     """Run the per-transcript incremental-TTS turn loop.
@@ -885,7 +883,7 @@ async def drive_converse_turns(
                 send_bytes=send_bytes, run_turn=run_turn, history=history,
                 quiet_interval=quiet_interval, interrupt_turn=interrupt_turn,
                 turn_timeout=turn_timeout, tail_fallback=tail_fallback, max_tts_chars=max_tts_chars,
-                stop_phrases=tuple(stop_phrases), end_phrases=tuple(end_phrases))
+                end_phrases=tuple(end_phrases))
     session.enable_turn_control()
     async def notify_tail_barge(turn_id):
         await send_json({"type": "interrupted", "turn_id": turn_id})
@@ -960,17 +958,9 @@ async def drive_converse_turns(
             meta["traceparent"] = tt.traceparent
         turn = _Turn(transcript, turn_id, meta)
         turn.input_text = "\n".join([*unsubmitted, str(transcript)])
-        stop_word = is_stop_phrase(transcript, d.stop_phrases)
         try:
-            if not stop_word:
-                session.reserve_turn(turn_id, turn.tts_stop, transcript)
+            session.reserve_turn(turn_id, turn.tts_stop, transcript)
             await send_json({"type": "transcript", "text": transcript, **meta})
-            if stop_word:
-                unsubmitted.clear()
-                await send_json({"type": "stop_word", "text": transcript, "turn_id": turn_id})
-                tt.set(outcome="stop_word")
-                session.release_capture()
-                continue
             action = await _run_turn(d, turn, tt)
             if turn.agent_started:
                 unsubmitted.clear()

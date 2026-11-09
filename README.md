@@ -64,7 +64,6 @@ A non-wake client may stream after `ready`. The server answers:
 | `error` | the turn failed (the message is spoken-safe text) |
 | `turn_done` | the reply is fully sent; `next_action` tells the client to listen or enter standby after drain |
 | `quiet` | session mode: the stream has been silent for another `quiet_interval` seconds |
-| `stop_word` | you said a standalone stop phrase; no turn ran |
 
 Handle `thinking` as an explicit turn boundary even without a preceding `transcript`:
 mark the agent turn active and show "thinking". During the granted activation, keep sending
@@ -138,7 +137,6 @@ plugin settings form):
 | `turn_timeout_seconds` | `120` | a turn with no output for this long is stopped and reported |
 | `playback_tail_timeout_seconds` | `45` | how long to wait for the client's `drained` frame |
 | `max_tts_chars_per_turn` | `1500` | safety cap on how much of one reply is spoken |
-| `stop_phrases` | `[stop, cancel]` | session mode: saying exactly one of these ends the exchange |
 | `end_phrases` | `[over and out]` | session mode: a reply ending with one of these signs off |
 | `vad_model` | `silero` | speech detection with automatic energy fallback; set `energy` to use RMS detection only |
 | `endpoint_model`, `endpoint_threshold` | off, `0.5` | Smart Turn v3 semantic endpointer (see below) |

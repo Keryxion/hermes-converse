@@ -19,14 +19,6 @@ def normalize_phrases(raw: Any, default: Iterable[str]) -> tuple[str, ...]:
     return tuple(default)
 
 
-def is_stop_phrase(transcript: str, stop_phrases: Iterable[str]) -> bool:
-    """True when *transcript* is EXACTLY a stop phrase. Deliberately strict: the whole utterance —
-    lowercased, surrounding punctuation stripped — must equal a phrase, so "stop doing that and try
-    again" still reaches the agent."""
-    cleaned = transcript.strip().lower().strip(".,!?;: \t\n\"'") if transcript else ""
-    return bool(cleaned) and cleaned in tuple(stop_phrases)
-
-
 def is_end_phrase(reply: str, end_phrases: Iterable[str]) -> bool:
     """True when the assistant's *reply* ENDS with a sign-off phrase (e.g. "over and out"). Unlike
     a stop phrase this is a TRAILING match — the model naturally speaks it as the last thing in a

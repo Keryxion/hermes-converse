@@ -27,7 +27,7 @@ Protocol:
            ``{"type":"wake","claim_id":"...","wake_word":"...", ...}`` requests an
            advisory wake recommendation; see ``specs/client.md``. Accepted interruptions are captured as continuations.
   server → ``ready`` (rates, ``session_id``, clock-skew timestamps), ``transcript``, ``thinking``, ``working``,
-           ``speaking`` + binary PCM, ``interrupted``, ``turn_done`` (``next_action``), ``quiet``, ``stop_word``, ``error``.
+           ``speaking`` + binary PCM, ``interrupted``, ``turn_done`` (``next_action``), ``quiet``, ``error``.
 """
 
 from __future__ import annotations
@@ -382,10 +382,9 @@ def _resolve_session(settings: Settings, input_rate: int, output_rate: int, quie
     tts_config = speech.load_tts_config()
     synth = resample_synth(resolve_synthesizer(tts_config), output_rate)
     cap = speech.tts_text_cap(tts_config)
-    stop_phrases = settings.stop_phrases
 
     def _transcribe(wav_path: str) -> str:
-        return speech.transcribe_wav(wav_path, model=stt_model, stop_phrases=stop_phrases)
+        return speech.transcribe_wav(wav_path, model=stt_model)
 
     session = ConverseSession(
         np, input_rate=input_rate, quiet_interval=quiet_interval, transcribe=_transcribe,
@@ -555,7 +554,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
             send_json=ws.send_json, send_bytes=ws.send_bytes, run_turn=_run_turn, history=history,
             quiet_interval=quiet_interval, interrupt_turn=_interrupt_turn,
             turn_timeout=settings.turn_timeout, tail_fallback=settings.tail_fallback,
-            max_tts_chars=settings.max_tts_chars, stop_phrases=settings.stop_phrases,
+            max_tts_chars=settings.max_tts_chars,
             end_phrases=settings.end_phrases,
         )
 

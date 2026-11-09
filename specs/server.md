@@ -62,14 +62,6 @@ An untargeted cancel also abandons a capture in progress. Stop the agent and TTS
 discard that cancelled capture, emit the existing interruption/terminal frames,
 and leave the socket and conversation usable. `stop` closes the attachment.
 
-For spoken cancellation, first stop obsolete output at accepted speech onset,
-then endpoint and transcribe. Match the entire normalized utterance against
-configured stop phrases (defaults: “stop”, “cancel”), in continuous and session
-modes. Emit `stop_word`, preceded by `transcript` when enabled; submit no agent run. This ends the
-microphone activation, not the conversation or a scheduled task. “Cancel the
-kitchen timer” and “stop doing that and try this” are ordinary requests. Do not
-infer cancellation from loudness or a single word embedded in a longer utterance.
-
 ### Endpointing, completion, and recovery
 
 Keep the configured silence window and optional Smart Turn semantic endpoint
@@ -113,7 +105,7 @@ Verify thinking, speaking, and drain continuations; onset pre-roll preservation;
 completion racing a capture; cancellation during capture/STT; multiple queued
 corrections; stale cancellation/drain; ordinary requests containing cancel words;
 noise and soft-speech rejection; detector fallback; same-conversation context;
-stop phrases in both modes; and no overlapping runs or stale PCM after cancellation.
+and no overlapping runs or stale PCM after cancellation.
 Use deterministic PCM and a public speech fixture for automated regression tests.
 Private server recordings may inform local diagnostics but must not be committed.
 

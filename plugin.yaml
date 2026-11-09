@@ -57,10 +57,6 @@ config_schema:
     type: int
     default: 1500
     description: "Safety cap on how much of one reply is spoken aloud."
-  stop_phrases:
-    type: list
-    default: ["stop", "cancel"]
-    description: "Session mode: saying exactly one of these ends the exchange instead of reaching the agent."
   end_phrases:
     type: list
     default: ["over and out"]

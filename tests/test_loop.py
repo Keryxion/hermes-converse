@@ -441,20 +441,12 @@ def test_drive_converse_turns_forwards_quiet_ticks_and_keeps_socket_open():
     assert "turn_done" not in _types(sent)
 
 
-def test_drive_converse_turns_stop_word_ends_exchange():
-    session = _FakeConverseSession(["Goodbye!"])
-    history: list = []
-    sent = _run_driver(session, history, ["SHOULD NOT RUN"], quiet_interval=1.0, stop_phrases=("goodbye",))
-    assert _types(sent) == ["transcript", "stop_word"]
-    assert sent[1]["text"] == "Goodbye!" and history == [] and session.turns_begun == 0
-
-
-def test_drive_converse_turns_stop_word_cancels_in_continuous_mode():
-    history: list = []
-    sent = _run_driver(_FakeConverseSession(["goodbye"]), history, ["Bye!"], quiet_interval=0.0,
-                       stop_phrases=("goodbye",))
-    assert _types(sent) == ["transcript", "stop_word"]
-    assert history == []
+@pytest.mark.parametrize("words", ["stop", "cancel"])
+def test_stop_words_reach_agent(words):
+    history = []
+    sent = _run_driver(_FakeConverseSession([words]), history, ["Okay."])
+    assert "thinking" in _types(sent)
+    assert history[0]["content"] == words
 
 
 def test_drive_converse_turns_times_out_hung_turn():

@@ -120,7 +120,6 @@ wake word again mid-turn and you want to keep the conversation going.
 | `interrupted` | the turn was cancelled (you barged in or sent `cancel`); stop playing |
 | `turn_done` | the reply is fully sent; `next_action` tells the client to listen or enter standby after drain |
 | `quiet` | session mode: the stream has been silent for another `quiet_interval` seconds |
-| `stop_word` | you said a standalone stop phrase; no turn ran; end this activation |
 | `error` | the turn failed (spoken-safe text) |
 
 ### Microphone streaming and barge-in
@@ -170,35 +169,6 @@ Explicit `cancel` stops the matching turn without submitting a user message:
 A stale targeted cancel cannot stop a newer turn. An untargeted
 `{"type":"cancel"}` also abandons a capture in progress. The connection and
 conversation remain usable. `stop` closes the attachment instead.
-
-A standalone spoken stop phrase (defaults: “stop”, “cancel”) produces
-`stop_word` (preceded by `transcript` if enabled), without an agent run, in either session
-or continuous mode. Stop playback, end this activation, and retain the socket
-for later use. Longer requests such as “cancel the kitchen timer” are ordinary
-conversation; the presence of a cancel word is not itself a cancellation.
-
-Do not use an `agentTurn`, thinking, or playback flag to suppress PCM during
-an activation. Play incoming PCM and send microphone PCM concurrently.
-Local echo cancellation may clean the signal, but must preserve user speech.
-Do not replace microphone audio with synthetic silence during playback.
-On unmute, resume live audio only if the activation is still open; never
-replay audio accumulated while muted.
-
-On `interrupted`, stop and discard queued reply audio for that turn. Send
-`drained` after its audio has actually left the speaker or been discarded.
-`turn_done` means the server finished sending, not that playback drained.
-`drained` acknowledges playback completion or discard, not that a person heard
-the reply.
-For `next_action = "standby"` or a local decision to end the activation, finish
-playback/drain handling and then stop upstream audio and return to wake
-detection; do not cut off barge-in monitoring during the playback tail.
-
-The server binds interruption to the old turn before announcing `thinking`.
-If accepted speech interrupts playback after `turn_done`, expect `interrupted`
-followed by an updated `turn_done` with `next_action: "listen"` for the same
-turn, replacing its pending standby action. A continuation receives its own
-turn ID. Send `drained` only for the old playback; it must not discard the
-continuation. A bounded playback-tail timeout handles a missing `drained`.
 
 ### Handling `thinking`
 
@@ -296,8 +266,7 @@ A client requests server-sent user and assistant text with
 `start.transcripts: true`; omitted or false means no `transcript` frames from
 the server. The server confirms support with `ready.transcripts: true` when
 enabled, or `false` otherwise. A client still receives lifecycle frames and
-audio when transcripts are off. Do not include recognized text in `stop_word`
-when off.
+audio when transcripts are off.
 
 When enabled, send at most one assistant frame per turn before `turn_done`:
 
@@ -319,9 +288,7 @@ history or replay; those require a separate contract.
 ## 5. Session mode (`quiet_interval > 0`)
 
 For wake-word devices. The server reports quiet in **received** audio (never
-wall-clock, so a held-open socket never accrues phantom quiet). A recognized
-stop phrase produces `stop_word` and ends the activation without an agent
-run. Otherwise `turn_done.next_action` tells the client whether to continue
+wall-clock, so a held-open socket never accrues phantom quiet). `turn_done.next_action` tells the client whether to continue
 listening or return to standby after playback drain. The mechanism used by
 the server to decide a sign-off is internal; there is no client-side phrase
 contract.
@@ -364,7 +331,7 @@ its transcript.
 A recommendation covers one **wake activation**: the detected wake phrase and
 its ensuing conversation, including follow-up turns. The selected client does
 not request another election for each utterance or `turn_done`. When that
-exchange ends (for example, a stop phrase, `next_action = "standby"`, or the client
+exchange ends (for example, `next_action = "standby"` or the client
 returning to wake detection), a fresh wake detection starts a new activation.
 Other devices may start independent activations while that conversation runs.
 
