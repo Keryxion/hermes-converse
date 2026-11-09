@@ -237,7 +237,9 @@ class ConverseRoute:
                 return ws
             try:
                 await self._connected(ws, session, api_key, http, base_url, synth, cap, name,
-                                      quiet_interval, settings, attachment, server_recv_unix_ms, input_rate, output_rate, transcripts=frame.get("transcripts") is True)
+                                      quiet_interval, settings, attachment, server_recv_unix_ms, input_rate, output_rate,
+                                      transcripts=frame.get("transcripts") is True,
+                                      models=frame.get("models") is True)
             finally:
                 self.hub.detach(session.session_id, attachment)
                 session.stop()
@@ -279,7 +281,8 @@ class ConverseRoute:
                 self._named_connections[device.recipient_id] = connection
             await self._connected(ws, session, api_key, http, base_url, synth, cap, names[0],
                                   quiet_interval, settings, attachment, recv_ms, input_rate, output_rate,
-                                  named=(device, connection, history), transcripts=frame.get("transcripts") is True)
+                                  named=(device, connection, history), transcripts=frame.get("transcripts") is True,
+                                  models=frame.get("models") is True)
         except NamedError as exc:
             await _fail(ws, exc.error, exc.code)
         except (ClientError, TimeoutError, ValueError):
@@ -304,17 +307,11 @@ class ConverseRoute:
 
     async def _connected(self, ws, session, api_key, http, base_url, synth, cap, name,
                          quiet_interval, settings, attachment, server_recv_unix_ms, input_rate, output_rate,
-                         named=None, transcripts=False):
+                         named=None, transcripts=False, models=False):
         client = RunsClient(base_url, api_key, http=http, approval_choice=settings.approval_choice)
-        try:
-            catalog = public_model_catalog(await client.model_options())
-        except Exception:
-            logger.warning("converse model catalog unavailable", exc_info=True)
-            catalog = {'providers': []}
         ready = {
             "type": "ready",
             "transcripts": transcripts,
-            "model_catalog": catalog,
             "input": {"sample_rate": input_rate, "format": "pcm16", "block_ms": 30},
             "output": {"sample_rate": output_rate, "format": "pcm16"},
             "session_id": session.session_id,
@@ -322,6 +319,12 @@ class ConverseRoute:
             "server_recv_unix_ms": server_recv_unix_ms,
             "server_send_unix_ms": int(time.time() * 1000),
         }
+        if models:
+            try:
+                ready["model_catalog"] = public_model_catalog(await client.model_options())
+            except Exception:
+                logger.warning("converse model catalog unavailable", exc_info=True)
+                ready["model_catalog"] = {"providers": []}
         if named is not None:
             device, connection, history = named
             ready.pop('conversation_id')
