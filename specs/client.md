@@ -56,7 +56,7 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 | `output_rate` | sample rate of PCM the server sends back (default 24000) |
 | `quiet_interval` | session mode: seconds of silence between turns (0 = off) |
 | `device_name` | The configured device label, such as `Den Echo`; required for named-device connections (section 11). |
-| `models` | Boolean; include the model catalog in `ready` when `true`. Defaults to `false`. See section 12. |
+| `models` | Boolean; only `true` includes the model catalog in `ready`. Defaults to `false`. See section 12. |
 | `transcripts` | Boolean; request user and assistant transcript frames when `true`. Defaults to `false`. See section 4. |
 | `assistant_name` | What you call the assistant, normally `Arya`, without “Hey”. Used in the voice system prompt; separate from the device label, such as `Den Echo`. |
 
@@ -751,9 +751,11 @@ A client requests the model catalog by setting `models: true` in `start`:
 {"type":"start","assistant_name":"Arya","device_name":"Office Mac","models":true}
 ```
 
-The server includes `model_catalog` once in `ready` only when requested. If
-`models` is omitted or false, skip the catalog lookup and omit `model_catalog`
-from `ready`:
+Only Boolean `models: true` includes `model_catalog` in `ready`. If `models` is
+omitted or false, skip the lookup and omit the catalog. This does not affect
+audio or the ability to select a model with `set_model`.
+
+With `models: true`, the response includes:
 
 
 ```json
