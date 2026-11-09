@@ -41,19 +41,23 @@ voice protocol, delay audio, grant a wake, or decide that speech is a barge-in.
 | `unconfigured` | Connection/settings required | Orange | Clockwise chase, 1.38 s/lap; persist until configured |
 | `connecting` | Opening transport or awaiting `ready` | Blue | Smooth 1.6 s brightness breath; never imply readiness to speak |
 | `reconnecting` | Lost transport; retry scheduled/in progress | Orange | Two 180 ms pulses separated by 180 ms, then a 1.46 s rest; show retry text where possible |
-| `idle` | No active session or wake detector | Neutral | Static dim mark / inactive face; microphone availability is stated separately |
-| `standby` | Connected; waiting for wake or manual Talk | Neutral | Static mark; optional ambient decoration must not look like an input meter |
+| `idle` | No active session or wake detector | White | Small, gently breathing or twinkling mark to show the device is alive; microphone availability is stated separately |
+| `standby` | Connected; waiting for wake or manual Talk | White | Small, gently breathing or twinkling mark; ambient motion must not look like an input meter |
 | `arbitrating` | Local wake accepted; claim awaiting decision | Orange | Smooth 1 s breath, 35–100% of configured state brightness; no listening cue yet |
 | `wake_denied` | Matching explicit `wake_deny` | Red | Steady for 1.5 s, then standby; a later state cancels the expiry timer |
 | `listening` | Granted activation, manual Talk, or explicit follow-up listening | Green | Steady status accent plus a meter driven by actual input PCM; baseline is static |
-| `thinking` | User transcript endpointed or server `thinking` | Amber | One clockwise orbit every 1.92 s, with a short fading trail; non-spatial fallback is a 1.92 s breath |
-| `speaking` | Reply queued/playing, including its local tail | Cyan/blue | Status accent plus actual rendered-output envelope; static while waiting for queued audio to become audible |
-| `error` | Connection, authentication, capture, or playback failure requiring attention | Red | Three gentle 250 ms pulses with 250 ms gaps, then a 2 s rest; persistent error text/symbol |
+| `thinking` | User transcript endpointed or server `thinking` | Orange | Clearly animated while thinking; spatial displays can orbit, while a single LED can breathe |
+| `speaking` | Reply queued/playing, including its local tail | Blue | Large, prominent animated indication; on LED-only devices use a prominent blue animation, optionally driven by the actual rendered-output envelope |
+| `error` | Connection, authentication, capture, or playback failure requiring attention | Strong red | Pulse persistently to show a fault; show error text or a warning symbol where available. Do not rotate: rotation suggests work is in progress |
 | `ended` | Explicitly ended session | Neutral | A 600 ms fade to idle; this is not wake standby unless local wake remains armed |
 
+Muted uses a softer steady red than the strong pulsing red used for faults.
+LED-only devices communicate these distinctions through color, brightness, and
+motion; icons and text are optional supplements on devices that have screens.
+
 Palette tokens, expressed in display sRGB: neutral `#FFFFFF` on dark surfaces
-and `#111111` on light surfaces; orange `#FF9500`; amber `#FFB000`; green
-`#34C759`; speaking cyan/blue `#32ADFF`; blue `#3478F6`; red `#FF3B30`;
+and `#111111` on light surfaces; orange/thinking `#FF9500`; amber `#FFB000`; green
+`#34C759`; speaking blue `#32ADFF`; blue `#3478F6`; fault red `#FF3B30`;
 auxiliary violet `#AF52DE`. Hardware applies its calibrated brightness/gamma;
 these values are not raw PWM duties or instructions to run LEDs at full power.
 
@@ -112,11 +116,12 @@ In particular:
 `muted`, `wake_armed`, `connected`, and `do_not_disturb` are orthogonal flags.
 They must not be collapsed into the primary voice phase.
 
-- **Muted:** persistent solid red mute indication and explicit microphone-off
+- **Muted:** persistent, soft, steady red mute indication and explicit microphone-off
   label where text is available. Never show a green listening claim while muted.
   Stop input meters and decorative speech-like motion. Reply playback can remain
   possible; a screen can retain a separate cyan output meter with a persistent
   red mute badge. A single LED uses the privacy red, not a misleading green.
+  Muted is visually distinct from the stronger pulsing red fault indication.
 - **Unmute:** remove privacy red only after the microphone is actually available.
   Restore the current state, not a cached pre-mute animation. An optional red
   fade-out must not postpone capture or hide a new error.
@@ -144,7 +149,7 @@ proposal, not a statement that they already implement it.
 |---|---|
 | macOS mark | Keep the neutral `)` arc visible in every phase; color/animate only the dot. Retain the dot beside the live meter. Use a white arc with a thin dark edge where a colored non-template image is needed; app appearance alone does not determine menu-bar contrast. Provide 1x/2x assets. |
 | iOS orb | Apply the phase color to the orb/rings; show a real input envelope only during listening and a real output envelope during speaking. Keep labels and microphone status visible. Decorative breathing must not masquerade as measured speech. |
-| Voice PE ring | Use the ring geometry for orbit/chase; green listening, amber thinking, cyan/blue speaking. Preserve a visible privacy marker and avoid high-rate writes that affect audio. |
+| Voice PE ring | Use the ring geometry for orbit/chase; green listening, orange thinking, blue speaking. Preserve a visible privacy marker and avoid high-rate writes that affect audio. |
 | Pyramid groups | Treat four seven-pixel groups as a mapped surface; repeated groups may mirror the same phase. A hardware-limited static color is an explicit fallback, not a different semantic state. Retain the volume bar and its restore behavior. |
 | Echo native ring | Use the board/firmware's actual LED count and orientation; preserve talker direction where available. A theme supplies geometry, not permission to swap listening and speaking meanings. |
 | Echo screen band | Unroll the ring with the talker at the center, preserving phase, duration, and colors. Keep the level band tied to real audio. |
@@ -152,7 +157,8 @@ proposal, not a statement that they already implement it.
 | Echo Input / one RGB LED | Replace spatial motion with its documented breath/pulse fallback. Never rotate a single lit pixel out of view. No directional indication or multi-pixel volume precision is claimed. |
 
 When Reduce Motion is enabled, use static state color plus text/icon/shape and a
-non-animated measured level where practical. Do not depend on color alone.
+non-animated measured level where practical. Where available, use text, icons, or
+shapes in addition to color; LED-only devices rely on color, brightness, and motion.
 Brightness, night mode, and ambient-light adjustment scale output without
 changing state meaning. Use monotonic time for animation periods, independent
 of frame rate; cap rendering to hardware capacity. No animation work may block
