@@ -82,7 +82,9 @@ continued speech after endpoint must still be handled as continuation.
 
 Emit `transcript`, `thinking`, optional `speaking` and PCM, then the turn's terminal
 frames in order. Interrupted, failed, or superseded replies return `listen`.
-Distinguish generated text, PCM sent, and client playback drain. `turn_done`
+Implement the `assistant_transcript` reply-text frame defined in [the client spec](client.md),
+for both voice replies and outbound output. Send it before `turn_done` without
+delaying PCM for text delivery. Distinguish generated text, PCM sent, and client playback drain. `turn_done`
 means sending finished. `drained` means playback finished or was discarded; it
 cannot prove the user heard the response. An interruption records that a reply
 was cut short, not that a device acknowledged failed delivery. Agent-facing
