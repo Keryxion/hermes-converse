@@ -1,9 +1,5 @@
 # Arya state animations
 
-Status: proposed shared visual contract, with a source audit dated 2026-11-08.
-This PR documents a target; it does not change client behavior or add server frames.
-The current implementation inventory is retained below, including differences that
-cannot safely be treated as duplicates.
 
 ## Scope and audit snapshots
 
