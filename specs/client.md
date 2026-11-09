@@ -752,11 +752,12 @@ text, and an outcome: `running`, `completed`, `failed`, `cancelled`, or
 absent; outbound turns have no user text. Generated text is not proof it was
 heard. Do not expose internal reasoning or raw tool output.
 
-`gap` is `true` only when `last_turn_id` was sent and the server no longer has
-that turn; show the break in the conversation instead of implying full history.
-`truncated` is `true` when some of those newer turns were dropped to stay within 20
-turns. With no `last_turn_id`, the server sends the most recent 10 turns and
-neither flag claims completeness.
+`gap` is `true` when `last_turn_id` was sent and the server does not recognize
+it. In that case the frame carries no turns: the server does not guess at
+history or substitute an unrelated window, and the client shows the break
+instead of implying full history. `truncated` is `true` when some newer turns
+were dropped to stay within 20. With no `last_turn_id`, the server sends the
+most recent 10 turns and neither flag claims completeness.
 
 Reconcile by `turn_id`: update turns already displayed and append the rest,
 without duplicates. A live `transcript` and a `catch_up` entry for the same turn
