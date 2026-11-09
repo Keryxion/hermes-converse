@@ -163,14 +163,19 @@ changing state meaning. Use monotonic time for animation periods, independent
 of frame rate; cap rendering to hardware capacity. No animation work may block
 capture, network audio, TTS, or playback acknowledgments.
 
-Listening confirmation is audible only once a device may accept the utterance:
-manual Talk, matching grant, or actual follow-up readiness. Preserve the current
-Mac rising pair (523 then 784 Hz, 70 ms each) as the proposed shared cue; the
-falling pair (784 then 523 Hz) acknowledges endpointing. Cue loudness is bounded
-and configurable; do not let a cue cause a local wake or server interruption.
-No cue is played merely because a losing device heard a wake. iOS selection
-haptics and existing device earcons remain inventoried below until explicitly
-mapped or replaced; equal names do not establish equal sounds.
+The winning device plays a brief, quiet wake confirmation locally immediately
+on a matching `wake_grant`. A denied, timed-out, or stale claim makes no sound;
+manual Talk does not play the wake-grant cue. The cue must not wait for server
+TTS or cause a local wake or server interruption. Keep the cue unobtrusive.
+The falling pair (784 then 523 Hz) acknowledges endpointing. Listening
+confirmation may also sound for manual Talk or actual follow-up readiness; it
+must not be mistaken for a wake-grant cue.
+
+While thinking, play a quiet thinking sound so a listener without a screen or
+visible LEDs knows work is in progress. Stop it promptly when thinking ends,
+including on speaking, interruption, cancellation, or error. It must not delay,
+mask, or overlap the assistant's speech, block audio processing, or cause a wake
+or interruption. Keep sound volume bounded and configurable.
 
 ## Current implementation inventory
 
