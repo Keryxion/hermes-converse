@@ -56,6 +56,7 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 | `output_rate` | sample rate of PCM the server sends back (default 24000) |
 | `quiet_interval` | session mode: seconds of silence between turns (0 = off) |
 | `device_name` | The configured device label, such as `Den Echo`; required for named-device connections (section 11). |
+| `models` | Boolean; include `ready.model_catalog` when true (default). Send false to omit the catalog and skip its lookup. |
 | `transcripts` | Boolean; request user and assistant transcript frames when `true`. Defaults to `false`. See section 4. |
 | `assistant_name` | What you call the assistant, normally `Arya`, without “Hey”. Used in the voice system prompt; separate from the device label, such as `Den Echo`. |
 
@@ -744,7 +745,18 @@ The requesting device receives confirmation; only the destination rings.
 
 Model discovery and selection both use the existing authenticated voice
 WebSocket. No additional client HTTP request or authentication flow is needed.
-The server includes the catalog once in the `ready` frame:
+The server includes the catalog once in the `ready` frame by default. Devices
+without a model picker can send `"models": false` in `start` to skip inventory
+lookup and omit `model_catalog`. `"models": true` or omission preserves catalog
+delivery. This flag does not affect model selection or audio.
+
+Example start for a device without a picker:
+
+```json
+{"type":"start","models":false,"input_rate":16000,"output_rate":16000,"assistant_name":"Arya","device_name":"master"}
+```
+
+A catalog-enabled connection receives:
 
 ```json
 {"type":"ready","model_catalog":{"model":"agent","provider":"litellm","providers":[{"slug":"litellm","name":"LiteLLM","models":["agent","beta"]}]}}

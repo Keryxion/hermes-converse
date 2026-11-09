@@ -44,6 +44,10 @@ unique within this server/profile. The server opens the Hermes conversation titl
 `Arya: Den Echo`, reusing its history across reconnects and gateway restarts. The voice prompt
 explains both names, the default device destination, and proactive output through available
 scheduling tools. Configure the same names on reconnect; changing names does not migrate history.
+Devices without a model picker can send `"models": false` in `start` to skip
+the model inventory lookup and omit `ready.model_catalog`. Omission keeps the
+default catalog delivery.
+
 Wait for `ready` before streaming audio. It returns `assistant_name`, `device_name`, and
 `recipient_id` directly.
 
