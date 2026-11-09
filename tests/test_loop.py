@@ -900,3 +900,32 @@ def test_signoff_preserves_queued_conversation_output_in_arrival_order():
     ids = [frame['event_id'] for frame in sent if isinstance(frame, dict)
            and frame.get('type') == 'thinking' and 'event_id' in frame]
     assert ids == ['first', 'second']
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_voice_transcripts_are_opt_in(monkeypatch, enabled):
+    import threading
+    from hermes_converse import speech
+
+    monkeypatch.setattr(speech, "spawn_context_thread", lambda target, name, args: threading.Thread(target=target, args=args, daemon=True))
+    monkeypatch.setattr(speech, "strip_markdown", lambda text: text)
+    class Chunker:
+        buf = ""
+        def feed(self, text):
+            return [text]
+        def flush(self):
+            return []
+    monkeypatch.setattr(speech, "sentence_chunker", Chunker)
+    monkeypatch.setattr("hermes_converse.loop.split_text_for_tts_stream", lambda text, cap: [text])
+    sent = _run_driver(_FakeConverseSession(["Hello"]), [], ["Hello there."], transcripts=enabled)
+    records = [frame for frame in sent if isinstance(frame, dict) and frame.get("type") == "transcript"]
+    if enabled:
+        assert [(record["role"], record["text"]) for record in records] == [("user", "Hello"), ("assistant", "Hello there.")]
+        assert records[0]["turn_id"] == records[1]["turn_id"]
+        assert sent.index(records[1]) < next(i for i, frame in enumerate(sent) if isinstance(frame, dict) and frame.get("type") == "turn_done")
+    else:
+        assert records == []
+    assert "bytes" in _types(sent)
+    from hermes_converse.loop import ConversationOutput
+    outbound = _run_driver(_FakeConverseSession([ConversationOutput("Reminder.", "event-1")]), [], [], transcripts=enabled)
+    outbound_text = [f for f in outbound if isinstance(f, dict) and f.get("type") == "transcript"]
+    assert [(f["role"], f["text"]) for f in outbound_text] == ([("assistant", "Reminder.")] if enabled else [])

@@ -816,6 +816,7 @@ class _Driver:
     tail_fallback: float
     max_tts_chars: int
     end_phrases: tuple[str, ...]
+    transcripts: bool
 
 
 class _Turn:
@@ -830,6 +831,7 @@ class _Turn:
         self.pcm_q: asyncio.Queue[Optional[bytes]] = asyncio.Queue()  # PCM out; None = done
         self.tts_stop = threading.Event()
         self.reply_parts: list[str] = []
+        self.spoken_parts: list[str] = []
         self.result: dict[str, str] = {}
         self.ns: dict[str, int] = {"turn_start": time.time_ns()}
         self.output: Optional[ConversationOutput] = None
@@ -864,6 +866,7 @@ async def drive_converse_turns(
     tail_fallback: float = DEFAULT_TAIL_FALLBACK,
     max_tts_chars: int = DEFAULT_MAX_TTS_CHARS,
     end_phrases: tuple[str, ...] = DEFAULT_END_PHRASES,
+    transcripts: bool = False,
 ) -> None:
     """Run the per-transcript incremental-TTS turn loop.
 
@@ -883,7 +886,7 @@ async def drive_converse_turns(
                 send_bytes=send_bytes, run_turn=run_turn, history=history,
                 quiet_interval=quiet_interval, interrupt_turn=interrupt_turn,
                 turn_timeout=turn_timeout, tail_fallback=tail_fallback, max_tts_chars=max_tts_chars,
-                end_phrases=tuple(end_phrases))
+                end_phrases=tuple(end_phrases), transcripts=transcripts)
     session.enable_turn_control()
     async def notify_tail_barge(turn_id):
         await send_json({"type": "interrupted", "turn_id": turn_id})
@@ -960,7 +963,8 @@ async def drive_converse_turns(
         turn.input_text = "\n".join([*unsubmitted, str(transcript)])
         try:
             session.reserve_turn(turn_id, turn.tts_stop, transcript)
-            await send_json({"type": "transcript", "text": transcript, **meta})
+            if d.transcripts:
+                await send_json({"type": "transcript", "role": "user", "text": transcript, **meta})
             action = await _run_turn(d, turn, tt)
             if turn.agent_started:
                 unsubmitted.clear()
@@ -1067,6 +1071,9 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
     )
     if completed and turn.output:
         next_action = turn.output.next_action
+    if d.transcripts and turn.spoken_parts:
+        await d.send_json({"type": "transcript", "role": "assistant",
+                           "turn_id": turn.turn_id, "text": " ".join(turn.spoken_parts)})
     # Arm before turn_done so an immediate drained acknowledgement cannot be lost.
     if session.finish_turn(turn.turn_id, d.tail_fallback if turn.pcm_chunks else 0):
         next_action = "listen"
@@ -1141,6 +1148,9 @@ def _produce_speech(d: _Driver, turn: _Turn) -> None:
                 continue
             turn.ns.setdefault("first_sentence", time.time_ns())
             for piece in split_text_for_tts_stream(cleaned, d.cap):
+                if turn.tts_stop.is_set() or d.session.stopped:
+                    return
+                turn.spoken_parts.append(piece)
                 for chunk in d.synth.synth(piece):
                     if turn.tts_stop.is_set() or d.session.stopped:
                         return

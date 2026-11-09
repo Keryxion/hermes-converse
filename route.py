@@ -237,7 +237,7 @@ class ConverseRoute:
                 return ws
             try:
                 await self._connected(ws, session, api_key, http, base_url, synth, cap, name,
-                                      quiet_interval, settings, attachment, server_recv_unix_ms, input_rate, output_rate)
+                                      quiet_interval, settings, attachment, server_recv_unix_ms, input_rate, output_rate, transcripts=frame.get("transcripts") is True)
             finally:
                 self.hub.detach(session.session_id, attachment)
                 session.stop()
@@ -279,7 +279,7 @@ class ConverseRoute:
                 self._named_connections[device.recipient_id] = connection
             await self._connected(ws, session, api_key, http, base_url, synth, cap, names[0],
                                   quiet_interval, settings, attachment, recv_ms, input_rate, output_rate,
-                                  named=(device, connection, history))
+                                  named=(device, connection, history), transcripts=frame.get("transcripts") is True)
         except NamedError as exc:
             await _fail(ws, exc.error, exc.code)
         except (ClientError, TimeoutError, ValueError):
@@ -304,7 +304,7 @@ class ConverseRoute:
 
     async def _connected(self, ws, session, api_key, http, base_url, synth, cap, name,
                          quiet_interval, settings, attachment, server_recv_unix_ms, input_rate, output_rate,
-                         named=None):
+                         named=None, transcripts=False):
         client = RunsClient(base_url, api_key, http=http, approval_choice=settings.approval_choice)
         try:
             catalog = public_model_catalog(await client.model_options())
@@ -313,6 +313,7 @@ class ConverseRoute:
             catalog = {'providers': []}
         ready = {
             "type": "ready",
+            "transcripts": transcripts,
             "model_catalog": catalog,
             "input": {"sample_rate": input_rate, "format": "pcm16", "block_ms": 30},
             "output": {"sample_rate": output_rate, "format": "pcm16"},
@@ -339,7 +340,7 @@ class ConverseRoute:
                      name=name, quiet_interval=quiet_interval, arbitrator=arbitrator,
                      device_id=device_id, hub=self.hub, attachment=attachment,
                      named_device=named[0] if named else None, history=history if named else None,
-                     named_connection=named[1] if named else None)
+                     named_connection=named[1] if named else None, transcripts=transcripts)
 
     async def output(self, request: web.Request) -> web.Response:
         header = request.headers.get("Authorization", "")
@@ -463,7 +464,8 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                  client: RunsClient, settings: Settings, name: str, quiet_interval: float,
                  arbitrator: Optional[Arbitrator] = None,
                  device_id: str = "", hub=None, attachment=None, named_device=None,
-                 history: Optional[list[dict[str, str]]] = None, named_connection=None) -> None:
+                 history: Optional[list[dict[str, str]]] = None, named_connection=None,
+                 transcripts: bool = False) -> None:
     """Run the client pump and the turn driver until the socket ends; always stop the live run."""
     loop = asyncio.get_running_loop()
     session.enable_turn_control()
@@ -552,7 +554,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
         await drive_converse_turns(
             session=session, synth=synth, cap=cap, loop=loop,
             send_json=ws.send_json, send_bytes=ws.send_bytes, run_turn=_run_turn, history=history,
-            quiet_interval=quiet_interval, interrupt_turn=_interrupt_turn,
+            quiet_interval=quiet_interval, interrupt_turn=_interrupt_turn, transcripts=transcripts,
             turn_timeout=settings.turn_timeout, tail_fallback=settings.tail_fallback,
             max_tts_chars=settings.max_tts_chars,
             end_phrases=settings.end_phrases,
