@@ -56,6 +56,7 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 | `output_rate` | sample rate of PCM the server sends back (default 24000) |
 | `quiet_interval` | session mode: seconds of silence between turns (0 = off) |
 | `device_name` | The configured device label, such as `Den Echo`; required for named-device connections (section 11). |
+| `models` | Boolean; only `true` includes the model catalog in `ready`. Defaults to `false`. See section 12. |
 | `transcripts` | Boolean; request user and assistant transcript frames when `true`. Defaults to `false`. See section 4. |
 | `assistant_name` | What you call the assistant, normally `Arya`, without “Hey”. Used in the voice system prompt; separate from the device label, such as `Den Echo`. |
 
@@ -744,20 +745,31 @@ The requesting device receives confirmation; only the destination rings.
 
 Model discovery and selection both use the existing authenticated voice
 WebSocket. No additional client HTTP request or authentication flow is needed.
-The server includes the catalog once in the `ready` frame:
+A client requests the model catalog by setting `models: true` in `start`:
+
+```json
+{"type":"start","assistant_name":"Arya","device_name":"Office Mac","models":true}
+```
+
+Only Boolean `models: true` includes `model_catalog` in `ready`. If `models` is
+omitted or false, skip the lookup and omit the catalog. This does not affect
+audio or the ability to select a model with `set_model`.
+
+With `models: true`, the response includes:
+
 
 ```json
 {"type":"ready","model_catalog":{"model":"agent","provider":"litellm","providers":[{"slug":"litellm","name":"LiteLLM","models":["agent","beta"]}]}}
 ```
 
 The example omits the other normal `ready` fields. Clients reuse this catalog
-for the connection. There is no catalog request, request ID, or refresh message.
+for the connection. There is no separate catalog request, request ID, or refresh message.
 `model` / `provider` describe the server's default inventory selection; provider
 entries expose only display names, slugs, and model IDs. No upstream credentials
 or provider configuration are returned. Unconfigured providers are excluded.
 The server reuses its inventory API internally. If lookup fails or exceeds eight
 seconds, `model_catalog` contains `{"providers":[]}` and voice remains available.
-A new connection receives a new catalog.
+A new connection receives a new catalog only if its `start` requests one.
 
 On the existing authenticated socket, send:
 
