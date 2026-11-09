@@ -56,6 +56,7 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 | `output_rate` | sample rate of PCM the server sends back (default 24000) |
 | `quiet_interval` | session mode: seconds of silence between turns (0 = off) |
 | `device_name` | The configured device label, such as `Den Echo`; required for named-device connections (section 11). |
+| `reply_transcripts` | Proposed boolean; request assistant reply text when `true`. Defaults to `false`. See section 4. |
 | `assistant_name` | What you call the assistant, normally `Arya`, without “Hey”. Used in the voice system prompt; separate from the device label, such as `Den Echo`. |
 
 **Client profile selection is removed.**
@@ -95,6 +96,7 @@ All are JSON text frames:
 
 | frame | meaning |
 |---|---|
+| `{"type":"transcript","role":"user","text":"Set a timer","request_id":"text-1"}` | Submit typed input; see section 4. |
 | `{"stop": true}` | Stops live work and closes the socket. Preserves the device's Hermes conversation and its history for reconnection (section 11). |
 | `{"commit": true}` | Forces the current utterance to endpoint now (runs a turn on it). |
 | `{"type": "cancel", "turn_id": "..."}` | Cancels the **current** turn — stops TTS and the agent — but keeps the socket, session, and history alive. |
@@ -112,8 +114,7 @@ wake word again mid-turn and you want to keep the conversation going.
 | `ready` | rates, `session_id`, clock-skew timestamps |
 | `wake_grant` | recommends this client handle the wake activation; echoes its `claim_id` and `wake_word`. |
 | `wake_deny` | recommends this client stand down for the activation; echoes its `claim_id` and `wake_word`. |
-| `transcript` | what the server heard; carries a `turn_id` repeated on later frames of the turn |
-| `assistant_transcript` | complete assistant reply text for this turn, when available; see below |
+| `transcript` | user input or assistant reply text, identified by `role` and `turn_id`; see below |
 | `thinking` | the agent turn is running (show "thinking", not "listening") |
 | `working` | every 15 seconds during an active turn; refresh its inactivity timer without changing thinking/speaking state |
 | `speaking` + binary frames | the reply as PCM16 at `output_rate` |
@@ -286,30 +287,58 @@ sign-off in session mode; non-session/continuous mode returns `listen`.
 The server decides the action. Clients must not inspect reply text, detect
 sign-off phrases, or interpret whether the agent expects a follow-up.
 
-### Assistant reply text (implementation required)
+### Text input and reply transcripts (implementation required)
 
-Send the text of each voice reply as well as its PCM, so screen-equipped clients
-can display it. This is an additive protocol change; current servers may not yet
-send it. Clients must continue to play audio when reply text is absent.
+Use `transcript` for text in both directions. These additions require server
+implementation; clients must continue to handle audio if reply text is absent.
+
+A client can submit typed text after `ready`, regardless of `reply_transcripts`:
 
 ```json
-{"type":"assistant_transcript","turn_id":"turn-42","text":"The timer is set."}
+{"type":"transcript","role":"user","request_id":"text-1","text":"Set a timer"}
 ```
 
-Send one frame per turn containing the complete user-facing text submitted for
-speech, before `turn_done`. This applies to ordinary replies and outbound
-conversation output. It may arrive before or after `speaking` and PCM; clients
-must associate it by `turn_id`, display it once, and continue audio playback.
-It is a complete text value, not a delta. The existing `transcript` frame is
-the user's recognized speech and retains its existing meaning.
+`text` must be a nonempty string of at most 20,000 characters. `request_id` is
+a nonempty client-generated string, unique on the socket, of at most 128
+characters. A typed request uses the attached conversation and needs no wake
+claim or microphone audio. When idle, the server accepts it, assigns a `turn_id`,
+and echoes the text before `thinking`:
 
-The text describes what was prepared for speech, not what the user heard: audio
-may fail, be interrupted, or still be playing after `turn_done`. For an
-interrupted or failed turn, send only text already submitted to speech if it is
-available, and keep the interruption or error visible. Do not fabricate text for
-silent turns. Do not send reasoning, tool payloads, credentials, or internal
-errors as reply text. Existing clients can ignore the new frame. This change
-does not provide reconnect history or replay; those require a separate contract.
+```json
+{"type":"transcript","role":"user","source":"typed","request_id":"text-1","turn_id":"turn-42","text":"Set a timer"}
+```
+
+If a capture or turn is already active, reject the typed request without changing
+it: `{"type":"error","error":"input_busy","request_id":"text-1"}`. Reject invalid
+text or request IDs with `error: "bad_transcript"`; echo a valid request ID when
+available. A client must not automatically resend a request after a disconnect:
+its outcome may be unknown. The server must not run a duplicate `request_id` on
+the same socket. Existing speech recognition continues to send user `transcript`
+frames; add `role: "user"` and `source: "speech"` to those frames. Legacy user
+frames without `role` remain valid and mean user speech.
+
+A client requests assistant text with `start.reply_transcripts: true`; omitted or
+false means no assistant transcript frames. The server confirms support with
+`ready.reply_transcripts: true` when enabled, or `false` otherwise. An absent
+field means support is unknown; clients still play audio. User speech transcripts
+are unaffected by this setting.
+
+When enabled, send at most one assistant frame per turn before `turn_done`:
+
+```json
+{"type":"transcript","role":"assistant","turn_id":"turn-42","text":"The timer is set."}
+```
+
+The text is the complete user-facing text submitted for speech, not a delta. It
+applies to ordinary replies and outbound conversation output, and may arrive
+before or after `speaking` and PCM. Clients associate it by `turn_id`, display
+it once, and continue audio playback. Silent turns need no assistant frame.
+
+The text describes what was prepared for speech, not what the user heard. For
+an interrupted or failed turn, send only text already submitted to speech if
+available, and keep the interruption or error visible. Do not send reasoning,
+tool payloads, credentials, or internal errors. This does not provide reconnect
+history or replay; those require a separate contract.
 
 ## 5. Session mode (`quiet_interval > 0`)
 
@@ -341,7 +370,7 @@ the client must enter the active-turn state even without a preceding
 ## 7. turn_id
 
 Every turn gets a `turn_id`. It appears on `transcript`, `thinking`,
-`speaking`, `assistant_transcript`, `interrupted`, `error`, and `turn_done` frames of that turn, so
+`speaking`, `interrupted`, `error`, and `turn_done` frames of that turn, so
 you can match frames to a turn. `cancel` and `drained` accept an optional
 `turn_id` to target a specific turn.
 
