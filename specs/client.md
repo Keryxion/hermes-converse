@@ -170,6 +170,29 @@ A stale targeted cancel cannot stop a newer turn. An untargeted
 `{"type":"cancel"}` also abandons a capture in progress. The connection and
 conversation remain usable. `stop` closes the attachment instead.
 
+Do not use an `agentTurn`, thinking, or playback flag to suppress PCM during
+an activation. Play incoming PCM and send microphone PCM concurrently.
+Local echo cancellation may clean the signal, but must preserve user speech.
+Do not replace microphone audio with synthetic silence during playback.
+On unmute, resume live audio only if the activation is still open; never
+replay audio accumulated while muted.
+
+On `interrupted`, stop and discard queued reply audio for that turn. Send
+`drained` after its audio has actually left the speaker or been discarded.
+`turn_done` means the server finished sending, not that playback drained.
+`drained` acknowledges playback completion or discard, not that a person heard
+the reply.
+For `next_action = "standby"` or a local decision to end the activation, finish
+playback/drain handling and then stop upstream audio and return to wake
+detection; do not cut off barge-in monitoring during the playback tail.
+
+The server binds interruption to the old turn before announcing `thinking`.
+If accepted speech interrupts playback after `turn_done`, expect `interrupted`
+followed by an updated `turn_done` with `next_action: "listen"` for the same
+turn, replacing its pending standby action. A continuation receives its own
+turn ID. Send `drained` only for the old playback; it must not discard the
+continuation. A bounded playback-tail timeout handles a missing `drained`.
+
 ### Handling `thinking`
 
 `thinking` is the server's explicit signal that the agent turn has started.
@@ -182,7 +205,7 @@ For example:
 Treat it as a turn boundary even if the client has not received a
 `transcript` for that turn. Mark the agent turn active and show "thinking".
 During an active activation, keep sending microphone PCM so the server can
-accept a continuation or recognize a spoken cancellation. The UI state
+accept a continuation. The UI state
 and microphone transport are independent. See section 9 for outbound turns
 that start while the client is otherwise idle.
 
