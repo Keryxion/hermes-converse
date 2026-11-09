@@ -56,6 +56,7 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 | `output_rate` | sample rate of PCM the server sends back (default 24000) |
 | `quiet_interval` | session mode: seconds of silence between turns (0 = off) |
 | `device_name` | The configured device label, such as `Den Echo`; required for named-device connections (section 11). |
+| `transcripts` | Boolean; request user and assistant transcript frames when `true`. Defaults to `false`. See section 4. |
 | `assistant_name` | What you call the assistant, normally `Arya`, without “Hey”. Used in the voice system prompt; separate from the device label, such as `Den Echo`. |
 
 **Client profile selection is removed.**
@@ -112,7 +113,7 @@ wake word again mid-turn and you want to keep the conversation going.
 | `ready` | rates, `session_id`, clock-skew timestamps |
 | `wake_grant` | recommends this client handle the wake activation; echoes its `claim_id` and `wake_word`. |
 | `wake_deny` | recommends this client stand down for the activation; echoes its `claim_id` and `wake_word`. |
-| `transcript` | what the server heard; carries a `turn_id` repeated on later frames of the turn |
+| `transcript` | user input or assistant reply text, identified by `role` and `turn_id`; see below |
 | `thinking` | the agent turn is running (show "thinking", not "listening") |
 | `working` | every 15 seconds during an active turn; refresh its inactivity timer without changing thinking/speaking state |
 | `speaking` + binary frames | the reply as PCM16 at `output_rate` |
@@ -157,7 +158,7 @@ provide clean microphone audio without suppressing user speech.
 Barge-in yields the floor to the user. For example, after “turn on the light”,
 the user may add “and make it warm white” while the reply is thinking. Expect
 `interrupted` and `turn_done` with `next_action: "listen"` for the old turn,
-then a new `transcript` and reply turn for the additional instruction. The
+then a new reply turn for the additional instruction (and a `transcript` if enabled). The
 new turn uses the same conversation and includes the original request as context.
 
 Explicit `cancel` stops the matching turn without submitting a user message:
@@ -171,7 +172,7 @@ A stale targeted cancel cannot stop a newer turn. An untargeted
 conversation remain usable. `stop` closes the attachment instead.
 
 A standalone spoken stop phrase (defaults: “stop”, “cancel”) produces
-`transcript` followed by `stop_word`, without an agent run, in either session
+`stop_word` (preceded by `transcript` if enabled), without an agent run, in either session
 or continuous mode. Stop playback, end this activation, and retain the socket
 for later use. Longer requests such as “cancel the kitchen timer” are ordinary
 conversation; the presence of a cancel word is not itself a cancellation.
@@ -285,6 +286,36 @@ sign-off in session mode; non-session/continuous mode returns `listen`.
 The server decides the action. Clients must not inspect reply text, detect
 sign-off phrases, or interpret whether the agent expects a follow-up.
 
+### User and assistant transcripts
+
+The server uses `transcript` for recognized user speech and assistant reply
+text. User frames carry `role: "user"`; assistant frames carry
+`role: "assistant"`.
+
+A client requests server-sent user and assistant text with
+`start.transcripts: true`; omitted or false means no `transcript` frames from
+the server. The server confirms support with `ready.transcripts: true` when
+enabled, or `false` otherwise. A client still receives lifecycle frames and
+audio when transcripts are off. Do not include recognized text in `stop_word`
+when off.
+
+When enabled, send at most one assistant frame per turn before `turn_done`:
+
+```json
+{"type":"transcript","role":"assistant","turn_id":"turn-42","text":"The timer is set."}
+```
+
+The text is the complete user-facing text submitted for speech, not a delta. It
+applies to ordinary replies and outbound conversation output, and may arrive
+before or after `speaking` and PCM. Clients associate it by `turn_id`, display
+it once, and continue audio playback. Silent turns need no assistant frame.
+
+The text describes what was prepared for speech, not what the user heard. For
+an interrupted or failed turn, send only text already submitted to speech if
+available, and keep the interruption or error visible. Do not send reasoning,
+tool payloads, credentials, or internal errors. This does not provide reconnect
+history or replay; those require a separate contract.
+
 ## 5. Session mode (`quiet_interval > 0`)
 
 For wake-word devices. The server reports quiet in **received** audio (never
@@ -301,7 +332,7 @@ contract.
 2. Detect the wake word locally; send `wake` and buffer PCM while awaiting
    the matching grant for up to 1000 ms. On denial/timeout, discard the buffer.
 3. On grant, flush the buffered PCM and continue with live PCM. Server VAD
-   endpoints the user request, then emits `transcript` → `thinking`.
+   endpoints the user request, then emits `thinking` (preceded by `transcript` if enabled).
 4. Keep sending live PCM during thinking, `speaking` + reply PCM, and queued
    playback. The server captures accepted interruptions as continuations.
 5. Receive `turn_done`; send `drained` after actual speaker drain/discard.

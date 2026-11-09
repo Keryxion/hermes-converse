@@ -65,7 +65,7 @@ and leave the socket and conversation usable. `stop` closes the attachment.
 For spoken cancellation, first stop obsolete output at accepted speech onset,
 then endpoint and transcribe. Match the entire normalized utterance against
 configured stop phrases (defaults: “stop”, “cancel”), in continuous and session
-modes. Emit `transcript` and `stop_word`; submit no agent run. This ends the
+modes. Emit `stop_word`, preceded by `transcript` when enabled; submit no agent run. This ends the
 microphone activation, not the conversation or a scheduled task. “Cancel the
 kitchen timer” and “stop doing that and try this” are ordinary requests. Do not
 infer cancellation from loudness or a single word embedded in a longer utterance.
@@ -80,9 +80,12 @@ run and releases capture ownership. Continue listening within an open activation
 Do not claim a VAD or endpoint model can eliminate every premature endpoint:
 continued speech after endpoint must still be handled as continuation.
 
-Emit `transcript`, `thinking`, optional `speaking` and PCM, then the turn's terminal
+Emit `thinking`, optional `speaking` and PCM, then the turn's terminal
 frames in order. Interrupted, failed, or superseded replies return `listen`.
-Distinguish generated text, PCM sent, and client playback drain. `turn_done`
+Send opt-in user and assistant `transcript` frames as defined in
+[the client spec](client.md), for both voice replies and outbound output. Send
+reply text before `turn_done` without delaying PCM. Distinguish generated text,
+PCM sent, and client playback drain. `turn_done`
 means sending finished. `drained` means playback finished or was discarded; it
 cannot prove the user heard the response. An interruption records that a reply
 was cut short, not that a device acknowledged failed delivery. Agent-facing
