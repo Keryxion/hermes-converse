@@ -96,7 +96,6 @@ All are JSON text frames:
 
 | frame | meaning |
 |---|---|
-| `{"type":"transcript","role":"user","text":"Set a timer","request_id":"text-1"}` | Submit typed input; see section 4. |
 | `{"stop": true}` | Stops live work and closes the socket. Preserves the device's Hermes conversation and its history for reconnection (section 11). |
 | `{"commit": true}` | Forces the current utterance to endpoint now (runs a turn on it). |
 | `{"type": "cancel", "turn_id": "..."}` | Cancels the **current** turn — stops TTS and the agent — but keeps the socket, session, and history alive. |
@@ -287,45 +286,18 @@ sign-off in session mode; non-session/continuous mode returns `listen`.
 The server decides the action. Clients must not inspect reply text, detect
 sign-off phrases, or interpret whether the agent expects a follow-up.
 
-### Text input and reply transcripts
+### User and assistant transcripts
 
-Use `transcript` for text in both directions. Existing servers may not yet support these frames; clients must continue to
-handle audio if reply text is absent.
-
-A client can submit typed text after `ready`, regardless of `transcripts`:
-
-```json
-{"type":"transcript","role":"user","request_id":"text-1","text":"Set a timer"}
-```
-
-`text` must be a nonempty string of at most 20,000 characters. `request_id` is
-a nonempty client-generated string, unique on the socket, of at most 128
-characters. A typed request uses the attached conversation and needs no wake
-claim or microphone audio. The server accepts it, assigns a `turn_id`,
-and, when transcripts are enabled, echoes the text before `thinking`:
-
-```json
-{"type":"transcript","role":"user","source":"typed","request_id":"text-1","turn_id":"turn-42","text":"Set a timer"}
-```
-
-The `thinking` frame for an accepted typed request carries the same `request_id`
-and `turn_id`, whether or not transcripts are enabled.
-
-If a capture or turn is active, typed input interrupts it and starts a new turn
-in the same conversation, using the existing interruption behavior. Reject invalid
-text or request IDs with `error: "bad_transcript"`; echo a valid request ID when
-available. A client must not automatically resend a request after a disconnect:
-its outcome may be unknown. The server must not run a duplicate `request_id` on
-the same socket. When transcripts are enabled, send recognized speech in a user `transcript`
-frame with `role: "user"` and `source: "speech"`. Legacy user frames without
-`role` remain valid and mean user speech.
+The server uses `transcript` for recognized user speech and assistant reply
+text. User frames carry `role: "user"`; existing frames without `role` also mean
+user speech. Existing servers may not yet send assistant frames, so clients must
+continue to handle audio if reply text is absent.
 
 A client requests server-sent user and assistant text with
 `start.transcripts: true`; omitted or false means no `transcript` frames from
 the server. The server confirms support with `ready.transcripts: true` when
 enabled, or `false` otherwise. An absent field means support is unknown. A client
-can still submit typed text, receive lifecycle frames, and play audio when
-transcripts are off. Do not include recognized text in `stop_word` when off.
+still receives lifecycle frames and audio when transcripts are off. Do not include recognized text in `stop_word` when off.
 
 When enabled, send at most one assistant frame per turn before `turn_done`:
 

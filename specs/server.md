@@ -82,7 +82,7 @@ continued speech after endpoint must still be handled as continuation.
 
 Emit `thinking`, optional `speaking` and PCM, then the turn's terminal
 frames in order. Interrupted, failed, or superseded replies return `listen`.
-Implement typed input and opt-in user and assistant `transcript` frames as defined in
+Send opt-in user and assistant `transcript` frames as defined in
 [the client spec](client.md), for both voice replies and outbound output. Send
 reply text before `turn_done` without delaying PCM. Distinguish generated text,
 PCM sent, and client playback drain. `turn_done`
