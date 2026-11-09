@@ -15,7 +15,6 @@ from .arbitrate import DEFAULT_WAKE_WINDOW, POLICY_FIRST_TO_ENDPOINT, POLICY_WAK
 from .speech_detector import DEFAULT_VAD_MODEL
 
 DEFAULT_NAME = "Arya"
-DEFAULT_STOP_PHRASES = ("stop", "cancel")
 DEFAULT_END_PHRASES = ("over and out",)
 # ── cross-device voice arbitration ────────────────────────────────────────────────────────
 DEFAULT_ARBITRATE_POLICY = POLICY_WAKE_SIGNAL
@@ -50,7 +49,6 @@ class Settings:
     turn_timeout: float = DEFAULT_TURN_TIMEOUT
     tail_fallback: float = DEFAULT_TAIL_FALLBACK
     max_tts_chars: int = DEFAULT_MAX_TTS_CHARS
-    stop_phrases: tuple[str, ...] = DEFAULT_STOP_PHRASES
     end_phrases: tuple[str, ...] = DEFAULT_END_PHRASES
     endpoint_model: bool = False
     endpoint_threshold: float = DEFAULT_ENDPOINT_THRESHOLD
@@ -104,7 +102,6 @@ def load_settings(get: Getter) -> Settings:
         turn_timeout=_number(get("turn_timeout_seconds", DEFAULT_TURN_TIMEOUT), DEFAULT_TURN_TIMEOUT),
         tail_fallback=_number(get("playback_tail_timeout_seconds", DEFAULT_TAIL_FALLBACK), DEFAULT_TAIL_FALLBACK),
         max_tts_chars=int(_number(get("max_tts_chars_per_turn", DEFAULT_MAX_TTS_CHARS), DEFAULT_MAX_TTS_CHARS)),
-        stop_phrases=normalize_phrases(get("stop_phrases", DEFAULT_STOP_PHRASES), DEFAULT_STOP_PHRASES),
         end_phrases=normalize_phrases(get("end_phrases", DEFAULT_END_PHRASES), DEFAULT_END_PHRASES),
         endpoint_model=_model_enabled(get("endpoint_model", "")),
         vad_model="energy" if str(get("vad_model", DEFAULT_VAD_MODEL)).strip().lower() == "energy" else "silero",

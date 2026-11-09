@@ -12,7 +12,6 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Iterable, Iterator, Optional
 
-from .phrases import is_stop_phrase
 
 logger = logging.getLogger(__name__)
 
@@ -33,11 +32,9 @@ def stt_model_override() -> Optional[str]:
     return stt.get("model")
 
 
-def transcribe_wav(wav_path: str, *, model: Optional[str] = None,
-                   stop_phrases: Iterable[str] = ()) -> str:
+def transcribe_wav(wav_path: str, *, model: Optional[str] = None) -> str:
     """Transcribe one captured WAV through the configured STT provider and apply the plugin's
-    transcript policy: a Whisper hallucination on silence is dropped (unless it is a configured stop
-    phrase — "bye"/"okay" overlap the blocklist and must still end the chat), ``no_speech`` is an
+    transcript policy: a Whisper hallucination on silence is dropped, ``no_speech`` is an
     empty transcript rather than an error, and a failure is logged and treated as nothing heard."""
     from tools.transcription_tools import transcribe_audio
     from tools.voice_mode_transcript import is_whisper_hallucination
@@ -50,7 +47,7 @@ def transcribe_wav(wav_path: str, *, model: Optional[str] = None,
             logger.debug("converse transcription failed: %s", result.get("error"))
         return ""
     transcript = str(result.get("transcript") or "").strip()
-    if transcript and is_whisper_hallucination(transcript) and not is_stop_phrase(transcript, stop_phrases):
+    if transcript and is_whisper_hallucination(transcript):
         logger.info("converse: filtered Whisper hallucination %r", transcript)
         return ""
     return transcript

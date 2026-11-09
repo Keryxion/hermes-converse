@@ -120,7 +120,6 @@ wake word again mid-turn and you want to keep the conversation going.
 | `interrupted` | the turn was cancelled (you barged in or sent `cancel`); stop playing |
 | `turn_done` | the reply is fully sent; `next_action` tells the client to listen or enter standby after drain |
 | `quiet` | session mode: the stream has been silent for another `quiet_interval` seconds |
-| `stop_word` | you said a standalone stop phrase; no turn ran; end this activation |
 | `error` | the turn failed (spoken-safe text) |
 
 ### Microphone streaming and barge-in
@@ -171,12 +170,6 @@ A stale targeted cancel cannot stop a newer turn. An untargeted
 `{"type":"cancel"}` also abandons a capture in progress. The connection and
 conversation remain usable. `stop` closes the attachment instead.
 
-A standalone spoken stop phrase (defaults: “stop”, “cancel”) produces
-`stop_word` (preceded by `transcript` if enabled), without an agent run, in either session
-or continuous mode. Stop playback, end this activation, and retain the socket
-for later use. Longer requests such as “cancel the kitchen timer” are ordinary
-conversation; the presence of a cancel word is not itself a cancellation.
-
 Do not use an `agentTurn`, thinking, or playback flag to suppress PCM during
 an activation. Play incoming PCM and send microphone PCM concurrently.
 Local echo cancellation may clean the signal, but must preserve user speech.
@@ -212,7 +205,7 @@ For example:
 Treat it as a turn boundary even if the client has not received a
 `transcript` for that turn. Mark the agent turn active and show "thinking".
 During an active activation, keep sending microphone PCM so the server can
-accept a continuation or recognize a spoken cancellation. The UI state
+accept a continuation. The UI state
 and microphone transport are independent. See section 9 for outbound turns
 that start while the client is otherwise idle.
 
@@ -296,8 +289,7 @@ A client requests server-sent user and assistant text with
 `start.transcripts: true`; omitted or false means no `transcript` frames from
 the server. The server confirms support with `ready.transcripts: true` when
 enabled, or `false` otherwise. A client still receives lifecycle frames and
-audio when transcripts are off. Do not include recognized text in `stop_word`
-when off.
+audio when transcripts are off.
 
 When enabled, send at most one assistant frame per turn before `turn_done`:
 
@@ -319,9 +311,7 @@ history or replay; those require a separate contract.
 ## 5. Session mode (`quiet_interval > 0`)
 
 For wake-word devices. The server reports quiet in **received** audio (never
-wall-clock, so a held-open socket never accrues phantom quiet). A recognized
-stop phrase produces `stop_word` and ends the activation without an agent
-run. Otherwise `turn_done.next_action` tells the client whether to continue
+wall-clock, so a held-open socket never accrues phantom quiet). `turn_done.next_action` tells the client whether to continue
 listening or return to standby after playback drain. The mechanism used by
 the server to decide a sign-off is internal; there is no client-side phrase
 contract.
@@ -364,7 +354,7 @@ its transcript.
 A recommendation covers one **wake activation**: the detected wake phrase and
 its ensuing conversation, including follow-up turns. The selected client does
 not request another election for each utterance or `turn_done`. When that
-exchange ends (for example, a stop phrase, `next_action = "standby"`, or the client
+exchange ends (for example, `next_action = "standby"` or the client
 returning to wake detection), a fresh wake detection starts a new activation.
 Other devices may start independent activations while that conversation runs.
 
