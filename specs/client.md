@@ -101,6 +101,7 @@ All are JSON text frames:
 | `{"type": "cancel", "turn_id": "..."}` | Cancels the **current** turn — stops TTS and the agent — but keeps the socket, session, and history alive. |
 | `{"type": "wake", "claim_id": "...", "wake_word": "Hey Arya"}` | request an advisory wake decision while buffering the new activation locally; see section 8. |
 | `{"type": "drained", "turn_id": "..."}` | Tells the server the reply's last audio has left the speaker, so the server won't transcribe its own echo as a new turn. |
+| `{"type": "approval_response", "turn_id": "...", "request_id": "...", "choice": "once"}` | Approve or deny the matching pending tool request; see approval handling below. |
 
 **`cancel` vs `stop`:** `stop` tears down the session; `cancel` only kills the
 current turn. Use `cancel` when the user hits the action button or says the
@@ -116,6 +117,8 @@ wake word again mid-turn and you want to keep the conversation going.
 | `transcript` | user input or assistant reply text, identified by `role` and `turn_id`; see below |
 | `thinking` | the agent turn is running (show "thinking", not "listening") |
 | `working` | every 15 seconds during an active turn; refresh its inactivity timer without changing thinking/speaking state |
+| `approval_request` | an agent action needs the user's explicit decision; see below |
+| `approval_resolved` | the matching request is no longer pending |
 | `speaking` + binary frames | the reply as PCM16 at `output_rate` |
 | `interrupted` | the turn was cancelled (you barged in or sent `cancel`); stop playing |
 | `turn_done` | the reply is fully sent; `next_action` tells the client to listen or enter standby after drain |
@@ -249,6 +252,39 @@ clients stop refreshing the inactivity timer when their turn ends. Clients that
 ignore unknown frame types remain compatible, but need this handling to avoid
 abandoning long turns prematurely. Network delays can still deliver an old frame
 after local cancellation, so clients must check the active turn ID.
+
+### Approval requests
+
+When a tool action requires approval, the server keeps the originating turn
+pending and sends a request to the device that owns it:
+
+```json
+{"type":"approval_request","turn_id":"turn-42","request_id":"req-7","summary":"Connect to the VPE log stream","details":"TCP connection to the device's log port"}
+```
+
+`summary` and `details` identify the actual action and its consequences, not
+merely the tool name. Treat them as untrusted display text; never execute them.
+Do not expose secrets. Show the request on screen where available and speak it
+on voice-only devices. Ask for an explicit approval or denial; do not infer
+consent from silence, an unrelated utterance, or the original task request.
+An ambiguous spoken answer is not approval: ask again while the request remains
+pending. Users can deny or cancel without approving.
+
+The originating device submits the user's decision using the matching IDs:
+
+```json
+{"type":"approval_response","turn_id":"turn-42","request_id":"req-7","choice":"once"}
+```
+
+`choice` is `once` to approve only this request, or `deny` to refuse. When
+voice is used, the server interprets the answer in the context of this pending
+request and submits the decision without treating it as a new task or cancelling
+the waiting run. The server sends `approval_resolved` with the same IDs and an
+`outcome` of `approved`, `denied`, `expired`, or `cancelled`; clients clear the
+prompt only for matching IDs and display the outcome. `working` continues while
+the request is pending. On cancellation, timeout, disconnect, or an unrecognized
+answer, never approve by default. A reconnect must not silently approve or
+resubmit an old decision. Clients without this capability must never auto-approve.
 
 ### Handling `turn_done.next_action`
 

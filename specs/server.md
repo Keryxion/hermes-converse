@@ -62,6 +62,35 @@ An untargeted cancel also abandons a capture in progress. Stop the agent and TTS
 discard that cancelled capture, emit the existing interruption/terminal frames,
 and leave the socket and conversation usable. `stop` closes the attachment.
 
+### Tool approvals
+
+Bridge each agent approval request to the originating voice turn and attachment
+using the approval frames in [the client spec](client.md). Preserve the Runs API
+request identity and execution generation internally; only a matching, currently
+pending request on the authorized owning attachment can resolve it. Do not
+broadcast requests to other devices or apply a decision to another turn. Submit
+the explicit decision once to the original Runs API request, then send the
+resolved outcome; a duplicate, stale, malformed, or unauthorized response cannot
+change the result. Never silently convert a missing or ambiguous answer to
+approval. Reject or expire pending requests on cancellation, timeout, and
+disconnect; prevent late replies from authorizing a subsequent action.
+
+Keep receiving audio and sending `working` while awaiting a decision. A spoken
+answer to the approval prompt is captured and resolved as control input to the
+waiting run, not admitted as an ordinary continuation that cancels it. Protect
+against playback echo and require an unambiguous affirmative or denial. Other
+speech is not approval. Deliver a concise spoken prompt identifying the action
+and consequences, and a matching visual prompt on capable clients. Preserve
+sensitive-data redaction. If a client cannot present a prompt or the request
+expires, fail closed and tell the user the action did not run; do not silently
+withdraw it. Pending approvals must be bounded, and the agent run must remain
+alive long enough for an answer or explicitly report timeout.
+
+Verify approval and denial by voice and UI; ambiguous input, silence, stale and
+duplicate responses, wrong device/turn/request, cancellation, disconnect,
+timeout, prompt playback echo, and clients without approval support. Verify the
+original action runs only once after approval and never on the failure paths.
+
 ### Endpointing, completion, and recovery
 
 Keep the configured silence window and optional Smart Turn semantic endpoint
