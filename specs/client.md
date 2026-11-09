@@ -56,7 +56,7 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 | `output_rate` | sample rate of PCM the server sends back (default 24000) |
 | `quiet_interval` | session mode: seconds of silence between turns (0 = off) |
 | `device_name` | The configured device label, such as `Den Echo`; required for named-device connections (section 11). |
-| `reply_transcripts` | Boolean; request assistant reply text when `true`. Defaults to `false`. See section 4. |
+| `transcripts` | Boolean; request user and assistant transcript frames when `true`. Defaults to `false`. See section 4. |
 | `assistant_name` | What you call the assistant, normally `Arya`, without “Hey”. Used in the voice system prompt; separate from the device label, such as `Den Echo`. |
 
 **Client profile selection is removed.**
@@ -159,7 +159,7 @@ provide clean microphone audio without suppressing user speech.
 Barge-in yields the floor to the user. For example, after “turn on the light”,
 the user may add “and make it warm white” while the reply is thinking. Expect
 `interrupted` and `turn_done` with `next_action: "listen"` for the old turn,
-then a new `transcript` and reply turn for the additional instruction. The
+then a new reply turn for the additional instruction (and a `transcript` if enabled). The
 new turn uses the same conversation and includes the original request as context.
 
 Explicit `cancel` stops the matching turn without submitting a user message:
@@ -173,7 +173,7 @@ A stale targeted cancel cannot stop a newer turn. An untargeted
 conversation remain usable. `stop` closes the attachment instead.
 
 A standalone spoken stop phrase (defaults: “stop”, “cancel”) produces
-`transcript` followed by `stop_word`, without an agent run, in either session
+`stop_word` (preceded by `transcript` if enabled), without an agent run, in either session
 or continuous mode. Stop playback, end this activation, and retain the socket
 for later use. Longer requests such as “cancel the kitchen timer” are ordinary
 conversation; the presence of a cancel word is not itself a cancellation.
@@ -292,7 +292,7 @@ sign-off phrases, or interpret whether the agent expects a follow-up.
 Use `transcript` for text in both directions. Existing servers may not yet support these frames; clients must continue to
 handle audio if reply text is absent.
 
-A client can submit typed text after `ready`, regardless of `reply_transcripts`:
+A client can submit typed text after `ready`, regardless of `transcripts`:
 
 ```json
 {"type":"transcript","role":"user","request_id":"text-1","text":"Set a timer"}
@@ -302,26 +302,30 @@ A client can submit typed text after `ready`, regardless of `reply_transcripts`:
 a nonempty client-generated string, unique on the socket, of at most 128
 characters. A typed request uses the attached conversation and needs no wake
 claim or microphone audio. When idle, the server accepts it, assigns a `turn_id`,
-and echoes the text before `thinking`:
+and, when transcripts are enabled, echoes the text before `thinking`:
 
 ```json
 {"type":"transcript","role":"user","source":"typed","request_id":"text-1","turn_id":"turn-42","text":"Set a timer"}
 ```
+
+The `thinking` frame for an accepted typed request carries the same `request_id`
+and `turn_id`, whether or not transcripts are enabled.
 
 If a capture or turn is already active, reject the typed request without changing
 it: `{"type":"error","error":"input_busy","request_id":"text-1"}`. Reject invalid
 text or request IDs with `error: "bad_transcript"`; echo a valid request ID when
 available. A client must not automatically resend a request after a disconnect:
 its outcome may be unknown. The server must not run a duplicate `request_id` on
-the same socket. Existing speech recognition continues to send user `transcript`
-frames; add `role: "user"` and `source: "speech"` to those frames. Legacy user
-frames without `role` remain valid and mean user speech.
+the same socket. When transcripts are enabled, send recognized speech in a user `transcript`
+frame with `role: "user"` and `source: "speech"`. Legacy user frames without
+`role` remain valid and mean user speech.
 
-A client requests assistant text with `start.reply_transcripts: true`; omitted or
-false means no assistant transcript frames. The server confirms support with
-`ready.reply_transcripts: true` when enabled, or `false` otherwise. An absent
-field means support is unknown; clients still play audio. User speech transcripts
-are unaffected by this setting.
+A client requests server-sent user and assistant text with
+`start.transcripts: true`; omitted or false means no `transcript` frames from
+the server. The server confirms support with `ready.transcripts: true` when
+enabled, or `false` otherwise. An absent field means support is unknown. A client
+can still submit typed text, receive lifecycle frames, and play audio when
+transcripts are off. Do not include recognized text in `stop_word` when off.
 
 When enabled, send at most one assistant frame per turn before `turn_done`:
 
@@ -356,7 +360,7 @@ contract.
 2. Detect the wake word locally; send `wake` and buffer PCM while awaiting
    the matching grant for up to 1000 ms. On denial/timeout, discard the buffer.
 3. On grant, flush the buffered PCM and continue with live PCM. Server VAD
-   endpoints the user request, then emits `transcript` → `thinking`.
+   endpoints the user request, then emits `thinking` (preceded by `transcript` if enabled).
 4. Keep sending live PCM during thinking, `speaking` + reply PCM, and queued
    playback. The server captures accepted interruptions as continuations.
 5. Receive `turn_done`; send `drained` after actual speaker drain/discard.
