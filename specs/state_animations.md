@@ -80,9 +80,9 @@ stateDiagram-v2
     arbitrating --> standby: timeout / abandon
     wake_denied --> standby: 1.5 s, if no newer event
     standby --> listening: manual Talk
-    listening --> transcribing: endpoint, if signaled
+    listening --> transcribing: transcribing
     transcribing --> thinking: thinking
-    listening --> thinking: thinking, if no transcribing signal
+    transcribing --> listening: listening / no request
     thinking --> speaking: speaking / reply audio
     speaking --> listening: drained + next_action listen
     speaking --> standby: drained + next_action standby
@@ -97,10 +97,6 @@ stateDiagram-v2
 ```
 
 This diagram is a presentation summary, not a replacement for `client spec.md`.
-Yellow transcribing is a proposed visual phase: the current protocol does not
-provide a transcription-start or endpoint signal. Do not infer that phase from
-silence or a completed transcript; it needs an explicit reliable signal before
-clients can display it accurately. Until then, retain listening until `thinking`.
 In particular:
 
 - Keep the speaking phase through **local playback drain**, even if `turn_done`
