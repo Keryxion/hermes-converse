@@ -735,55 +735,39 @@ stops. Normal authentication and first-frame errors remain as in section 1.
 
 ### Catch up after backgrounding or relaunch
 
-When iOS returns to the foreground, reconnect with the same names and load the
-conversation changes since its last saved cursor. The same request works on an
-already-open socket after `ready`:
+On foreground return or relaunch, reconnect to the same named conversation and
+request its latest 10 turns after `ready`:
 
 ```json
-{"type":"catch_up","after":"cursor-42"}
+{"type":"catch_up"}
 ```
 
-Omit `after` to load the most recent 50 turns and a cursor for later changes. The server returns:
+The server returns up to 10 recent turns in conversation order:
 
 ```json
-{"type":"catch_up","cursor":"cursor-45","has_more":false,"reset":false,
- "turns":[{"turn_id":"turn-9","started_at_unix_ms":1794142800000,
-           "user_text":"Set a timer",
-           "assistant_text":"The timer is set.","outcome":"completed"}]}
+{"type":"catch_up","turns":[{"turn_id":"turn-9","started_at_unix_ms":1794142800000,
+ "user_text":"Set a timer","assistant_text":"The timer is set.","outcome":"completed"}]}
 ```
 
-Each entry contains a `turn_id`, `started_at_unix_ms` for display order,
-available user and assistant text, and an
-`outcome`: `running`, `completed`, `failed`, `cancelled`, or `unknown`. Use
-`unknown` when the outcome cannot be established. Text may be absent; an
-outbound turn has no user text. Text describes conversation content, not proof
-that audio was heard. Do not include internal reasoning or raw tool output.
+Each turn has a stable `turn_id`, start time, available user and assistant text,
+and an outcome: `running`, `completed`, `failed`, `cancelled`, or `unknown`.
+Use `unknown` when the outcome cannot be established. Text may be absent;
+outbound turns have no user text. Generated text is not proof it was heard.
+Do not expose internal reasoning or raw tool output.
 
-Cursors are opaque and belong to the attached conversation. Return at most 50
-entries per response, in server change order. When `has_more` is true, request
-the next page using the returned cursor. Send one catch-up request at a time. Capture a consistent page so changes
-made during synchronization remain available on the next request. An update to
-an existing turn must be returned even if its original message predates `after`.
+The client saves the last server turn it displayed, scoped to the server and
+named conversation. On catch-up, reconcile turns by ID: update existing entries
+and add new ones without duplication. If a saved last turn is absent from the
+returned window, show a gap between the saved history and the returned history;
+do not claim everything was recovered. If there is no saved last turn, show the
+available recent history without claiming it is complete. An absent anchor can
+also mean the server has no retained history; do not invent a cause. An older
+saved turn that changed outside the latest 10 is not refreshed by this request.
 
-If the cursor is invalid or expired, return the most recent 50 entries with
-`reset: true` and a fresh cursor. The client refreshes its recent view and does
-not claim it recovered all older messages. Never read another conversation
-through its cursor.
-
-The client adds or updates entries by `turn_id`, then saves the cursor with the
-updated view. Live transcripts and catch-up entries update the same turn rather
-than creating duplicate rows. Keep the saved cursor and view scoped to the
-server and named device, including across app relaunches.
-
-Catch-up only reads conversation data. It never resubmits a request, starts a
-run, replays audio, or opens the microphone. It is independent of live
-`transcripts` delivery. A disconnected turn is reported with its actual outcome;
-reconnecting does not resume a cancelled turn.
-
-Verify background/foreground and terminate/relaunch while a turn completes,
-fails, or is cancelled. Repeating catch-up must not duplicate messages or rerun
-the request. Also verify an updated running turn, multiple pages, an expired
-cursor, and a turn changing while catch-up is in progress.
+Catch-up is read-only. It does not rerun a request, replay audio, open the
+microphone, or imply a disconnected turn continued. Report actual known outcomes.
+Verify foreground return and relaunch, repeat requests, a matching anchor, a
+missing anchor, empty history, and updates to a turn inside the returned window.
 
 ### Timers on named Aryas
 

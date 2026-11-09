@@ -4,11 +4,11 @@ Server responsibilities behind the [client contract](client.md).
 
 ## Conversation catch-up
 
-Handle `catch_up` for the authenticated socket's attached conversation as defined
-in [the client spec](client.md#catch-up-after-backgrounding-or-relaunch). Retain
-conversation text and turn outcomes independently of the socket. Cursor pages
-must include updates to earlier turns and must not lose changes made during
-synchronization. Returning history does not execute a turn or deliver audio.
+For `catch_up`, return the latest 10 retained turns for the authenticated
+socket's attached conversation as specified in [the client spec](client.md#catch-up-after-backgrounding-or-relaunch).
+Return a consistent snapshot in conversation order, including known outcomes.
+History is scoped to the attached conversation and never triggers a run or audio.
+No cursor or pagination is required.
 
 ## Voice lifecycle
 
