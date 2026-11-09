@@ -80,7 +80,9 @@ async def test_switch_does_not_interrupt_current_run_and_reset_restores_default(
 
 
 @pytest.mark.parametrize('unavailable', [False, True])
-async def test_ready_includes_public_catalog_without_client_request(monkeypatch, unavailable):
+@pytest.mark.parametrize('named', [False, True])
+@pytest.mark.parametrize('models', [None, False, True])
+async def test_ready_catalog_is_opt_in(monkeypatch, unavailable, named, models):
     import numpy as np
     from aiohttp import web
     from tests.test_route import API_KEY, Harness, _FakeStreamer, _patch_speech
@@ -103,9 +105,19 @@ async def test_ready_includes_public_catalog_without_client_request(monkeypatch,
     fake.model_options = inventory
     async with Harness(fake) as client:
         ws = await client.ws_connect('/v1/audio/converse')
-        await ws.send_json({'type': 'start', 'key': API_KEY})
+        start = {'type': 'start', 'key': API_KEY}
+        if models is not None:
+            start['models'] = models
+        if named:
+            start.update(assistant_name='Arya', device_name='Office Mac')
+        await ws.send_json(start)
         ready = await ws.receive_json()
         assert ready['type'] == 'ready'
+        if models is not True:
+            assert 'model_catalog' not in ready
+            assert queries == []
+            await ws.close()
+            return
         assert ready['model_catalog'] == ({'providers': []} if unavailable else {
             'model': 'agent', 'provider': 'litellm',
             'providers': [{'slug': 'litellm', 'name': 'LiteLLM', 'models': ['agent', 'beta']}]})
