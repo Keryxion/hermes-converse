@@ -733,6 +733,58 @@ If the conversation cannot be opened, show
 A `conversation_busy` error before ready means retry later while earlier work
 stops. Normal authentication and first-frame errors remain as in section 1.
 
+### Catch up after backgrounding or relaunch
+
+When iOS returns to the foreground, reconnect with the same names and load the
+conversation changes since its last saved cursor. The same request works on an
+already-open socket after `ready`:
+
+```json
+{"type":"catch_up","after":"cursor-42"}
+```
+
+Omit `after` to load the most recent 50 turns and a cursor for later changes. The server returns:
+
+```json
+{"type":"catch_up","cursor":"cursor-45","has_more":false,"reset":false,
+ "turns":[{"turn_id":"turn-9","started_at_unix_ms":1794142800000,
+           "user_text":"Set a timer",
+           "assistant_text":"The timer is set.","outcome":"completed"}]}
+```
+
+Each entry contains a `turn_id`, `started_at_unix_ms` for display order,
+available user and assistant text, and an
+`outcome`: `running`, `completed`, `failed`, `cancelled`, or `unknown`. Use
+`unknown` when the outcome cannot be established. Text may be absent; an
+outbound turn has no user text. Text describes conversation content, not proof
+that audio was heard. Do not include internal reasoning or raw tool output.
+
+Cursors are opaque and belong to the attached conversation. Return at most 50
+entries per response, in server change order. When `has_more` is true, request
+the next page using the returned cursor. Send one catch-up request at a time. Capture a consistent page so changes
+made during synchronization remain available on the next request. An update to
+an existing turn must be returned even if its original message predates `after`.
+
+If the cursor is invalid or expired, return the most recent 50 entries with
+`reset: true` and a fresh cursor. The client refreshes its recent view and does
+not claim it recovered all older messages. Never read another conversation
+through its cursor.
+
+The client adds or updates entries by `turn_id`, then saves the cursor with the
+updated view. Live transcripts and catch-up entries update the same turn rather
+than creating duplicate rows. Keep the saved cursor and view scoped to the
+server and named device, including across app relaunches.
+
+Catch-up only reads conversation data. It never resubmits a request, starts a
+run, replays audio, or opens the microphone. It is independent of live
+`transcripts` delivery. A disconnected turn is reported with its actual outcome;
+reconnecting does not resume a cancelled turn.
+
+Verify background/foreground and terminate/relaunch while a turn completes,
+fails, or is cancelled. Repeating catch-up must not duplicate messages or rerun
+the request. Also verify an updated running turn, multiple pages, an expired
+cursor, and a turn changing while catch-up is in progress.
+
 ### Timers on named Aryas
 
 "Set a timer" targets the requesting device. "Set a timer on Bedroom" targets

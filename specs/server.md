@@ -2,6 +2,14 @@
 
 Server responsibilities behind the [client contract](client.md).
 
+## Conversation catch-up
+
+Handle `catch_up` for the authenticated socket's attached conversation as defined
+in [the client spec](client.md#catch-up-after-backgrounding-or-relaunch). Retain
+conversation text and turn outcomes independently of the socket. Cursor pages
+must include updates to earlier turns and must not lose changes made during
+synchronization. Returning history does not execute a turn or deliver audio.
+
 ## Voice lifecycle
 
 The server receives microphone PCM continuously throughout a granted activation,
