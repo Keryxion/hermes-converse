@@ -289,15 +289,15 @@ sign-off phrases, or interpret whether the agent expects a follow-up.
 ### User and assistant transcripts
 
 The server uses `transcript` for recognized user speech and assistant reply
-text. User frames carry `role: "user"`; existing frames without `role` also mean
-user speech. Existing servers may not yet send assistant frames, so clients must
-continue to handle audio if reply text is absent.
+text. User frames carry `role: "user"`; assistant frames carry
+`role: "assistant"`.
 
 A client requests server-sent user and assistant text with
 `start.transcripts: true`; omitted or false means no `transcript` frames from
 the server. The server confirms support with `ready.transcripts: true` when
-enabled, or `false` otherwise. An absent field means support is unknown. A client
-still receives lifecycle frames and audio when transcripts are off. Do not include recognized text in `stop_word` when off.
+enabled, or `false` otherwise. A client still receives lifecycle frames and
+audio when transcripts are off. Do not include recognized text in `stop_word`
+when off.
 
 When enabled, send at most one assistant frame per turn before `turn_done`:
 
