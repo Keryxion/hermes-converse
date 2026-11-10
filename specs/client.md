@@ -737,11 +737,12 @@ stops. Normal authentication and first-frame errors remain as in section 1.
 ### Catching up from `start`
 
 A client that has displayed this conversation before sends the last turn it
-showed in `start.last_turn_id`. After `ready`, the server sends one frame
-containing only the newer turns; it sends nothing when there are none:
+showed in `start.last_turn_id`. After `ready`, if the server recognizes that
+turn, it sends one frame containing only newer turns; it sends nothing when
+there are none:
 
 ```json
-{"type":"catch_up","gap":false,"truncated":false,"turns":[
+{"type":"catch_up","truncated":false,"turns":[
  {"turn_id":"turn-9","started_at_unix_ms":1794142800000,"user_text":"Set a timer",
   "assistant_text":"The timer is set.","outcome":"completed"}]}
 ```
@@ -752,12 +753,10 @@ text, and an outcome: `running`, `completed`, `failed`, `cancelled`, or
 absent; outbound turns have no user text. Generated text is not proof it was
 heard. Do not expose internal reasoning or raw tool output.
 
-`gap` is `true` when `last_turn_id` was sent and the server does not recognize
-it. In that case the frame carries no turns: the server does not guess at
-history or substitute an unrelated window, and the client shows the break
-instead of implying full history. `truncated` is `true` when some newer turns
-were dropped to stay within 20. With no `last_turn_id`, the server sends the
-most recent 10 turns and neither flag claims completeness.
+`truncated` is `true` when some newer turns were dropped to stay within 20.
+When `last_turn_id` is absent or unrecognized, the server sends the most recent
+10 turns with `truncated: false`. This recent window does not claim to contain
+the full history.
 
 Reconcile by `turn_id`: update turns already displayed and append the rest,
 without duplicates. A live `transcript` and a `catch_up` entry for the same turn
