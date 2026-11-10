@@ -292,7 +292,7 @@ the server. The server confirms support with `ready.transcripts: true` when
 enabled, or `false` otherwise. A client still receives lifecycle frames and
 audio when transcripts are off.
 
-For a live turn, send at most one assistant frame before `turn_done`:
+When enabled, send at most one assistant frame per turn before `turn_done`:
 
 ```json
 {"type":"transcript","role":"assistant","turn_id":"turn-42","text":"The timer is set."}
