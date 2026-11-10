@@ -57,7 +57,7 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 | `quiet_interval` | session mode: seconds of silence between turns (0 = off) |
 | `device_name` | The configured device label, such as `Den Echo`; required for named-device connections (section 11). |
 | `transcripts` | Boolean; request user and assistant transcript frames when `true`. Defaults to `false`. See section 4. |
-| `last_turn_id` | Opaque ID of the last turn you displayed, so the server can send only what is newer. Omit on a first connection. See “Catching up from `start`”. |
+| `last_turn_id` | ID of the last turn you displayed. With transcripts enabled, the server sends transcripts from that turn onward after reconnecting. Omit on a first connection. |
 | `assistant_name` | What you call the assistant, normally `Arya`, without “Hey”. Used in the voice system prompt; separate from the device label, such as `Den Echo`. |
 
 **Client profile selection is removed.**
@@ -292,7 +292,7 @@ the server. The server confirms support with `ready.transcripts: true` when
 enabled, or `false` otherwise. A client still receives lifecycle frames and
 audio when transcripts are off.
 
-When enabled, send at most one assistant frame per turn before `turn_done`:
+For a live turn, send at most one assistant frame before `turn_done`:
 
 ```json
 {"type":"transcript","role":"assistant","turn_id":"turn-42","text":"The timer is set."}
@@ -737,35 +737,14 @@ stops. Normal authentication and first-frame errors remain as in section 1.
 ### Catching up from `start`
 
 A client that has displayed this conversation before sends the last turn it
-showed in `start.last_turn_id`. After `ready`, if the server recognizes that
-turn, it sends one frame containing only newer turns; it sends nothing when
-there are none:
+showed in `start.last_turn_id` and enables transcripts. After `ready`, the
+server sends the available user and assistant `transcript` frames for that turn
+and subsequent turns in conversation order. Including the last displayed turn
+lets the client recover its reply if it disconnected after the user transcript.
+The client reconciles frames by `turn_id` and `role` to avoid duplicates.
 
-```json
-{"type":"catch_up","truncated":false,"turns":[
- {"turn_id":"turn-9","started_at_unix_ms":1794142800000,"user_text":"Set a timer",
-  "assistant_text":"The timer is set.","outcome":"completed"}]}
-```
-
-Each turn has a stable `turn_id`, a start time, available user and assistant
-text, and an outcome: `running`, `completed`, `failed`, `cancelled`, or
-`unknown`. Use `unknown` when the outcome cannot be established. Text may be
-absent; outbound turns have no user text. Generated text is not proof it was
-heard. Do not expose internal reasoning or raw tool output.
-
-`truncated` is `true` when some newer turns were dropped to stay within 20.
-When `last_turn_id` is absent or unrecognized, the server sends the most recent
-10 turns with `truncated: false`. This recent window does not claim to contain
-the full history.
-
-Reconcile by `turn_id`: update turns already displayed and append the rest,
-without duplicates. A live `transcript` and a `catch_up` entry for the same turn
-update one row. Catching up is read-only: it never reruns a request, replays
-audio, opens the microphone, or implies a disconnected turn continued.
-
-Verify first connect, reconnect with a known anchor, an anchor the server no
-longer has, more than 20 newer turns, no newer turns, and a turn that completed
-while the client was away.
+If the ID is absent or unrecognized, the server sends no catch-up transcripts.
+Catch-up never reruns a request or replays audio.
 
 ### Timers on named Aryas
 

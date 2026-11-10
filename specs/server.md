@@ -4,12 +4,9 @@ Server responsibilities behind the [client contract](client.md).
 
 ## Conversation catch-up
 
-After `ready`, answer `start.last_turn_id` with one `catch_up` frame as defined
-in [the client spec](client.md#catching-up-from-start): the turns newer than that
-ID in conversation order, at most 20, and `truncated: true` when newer turns
-were dropped. If `last_turn_id` is absent or unrecognized, send the most recent
-10 turns with `truncated: false`. Scope everything to the attached conversation;
-catch-up never runs a turn or delivers audio.
+After `ready`, send available `transcript` frames starting with `start.last_turn_id`
+as defined in [the client spec](client.md#catching-up-from-start). Scope catch-up
+to the attached conversation; never run a turn or deliver audio for catch-up.
 
 ## Voice lifecycle
 
