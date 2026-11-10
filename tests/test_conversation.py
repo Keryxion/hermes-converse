@@ -89,6 +89,10 @@ async def test_second_output_waits_for_matching_speaker_drain(monkeypatch):
         await publish(client, cid)
         frames, _ = await _collect_turn(ws, drain=False)
         await publish(client, cid, event_id='second')
+        for fields in ({}, {'turn_id': None}, {'turn_id': ''}, {'turn_id': '  '},
+                       {'turn_id': 1}, {'turn_id': []}, {'turn_id': {}}):
+            await ws.send_json({'type': 'drained', **fields})
+            assert await ws.receive_json(timeout=2) == {'type': 'error', 'error': 'bad_turn_id'}
         await ws.send_json({'type': 'drained', 'turn_id': 'stale'})
         with pytest.raises(TimeoutError):
             await ws.receive_json(timeout=.1)
@@ -141,12 +145,16 @@ async def test_cancel_thinking_stale_id_ignored_and_run_stopped(monkeypatch):
     fake = FakeRunsAPI(API_KEY, deltas=(), hang=True)
     _patch_speech(monkeypatch, _FakeStreamer([b'\x01\x02']))
     async with Harness(fake) as client:
-        ws, _ = await connect(client)
+        ws, _ = await connect(client, transcripts=True)
         for frame in _speech_then_silence_pcm():
             await ws.send_bytes(frame)
         transcript = await ws.receive_json(timeout=2)
         assert transcript['type'] == 'transcript'
         assert (await ws.receive_json(timeout=2))['type'] == 'thinking'
+        for fields in ({}, {'turn_id': None}, {'turn_id': ''}, {'turn_id': '  '},
+                       {'turn_id': 1}, {'turn_id': []}, {'turn_id': {}}):
+            await ws.send_json({'type': 'cancel', **fields})
+            assert await ws.receive_json(timeout=2) == {'type': 'error', 'error': 'bad_turn_id'}
         await ws.send_json({'type': 'cancel', 'turn_id': 'stale'})
         with pytest.raises(TimeoutError):
             await ws.receive_json(timeout=.1)

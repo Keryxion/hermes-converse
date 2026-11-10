@@ -22,8 +22,8 @@ Protocol:
   client → ``{"type":"start", "key":?, "input_rate":?, "output_rate":?, "quiet_interval":?,
              "name":?}`` then binary PCM16 mono frames at ``input_rate`` (30 ms blocks preferred),
            ``{"stop": true}`` to end, ``{"commit": true}`` to force an endpoint,
-           ``{"type":"cancel","turn_id":?}`` to cancel the current turn and keep the session,
-           ``{"type":"drained","turn_id":?}`` when the reply's last audio has left the speaker,
+           ``{"type":"cancel","turn_id":"..."}`` to cancel the matching turn and keep the session,
+           ``{"type":"drained","turn_id":"..."}`` when the reply's last audio has left the speaker,
            ``{"type":"wake","claim_id":"...","wake_word":"...", ...}`` requests an
            advisory wake recommendation; see ``specs/client.md``. Accepted interruptions are captured as continuations.
   server → ``ready`` (rates, ``session_id``, clock-skew timestamps), ``transcript``, ``thinking``, ``working``,
@@ -501,10 +501,15 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                         break
                     if frame.get("commit"):
                         session.commit()
-                    if frame.get("type") == "drained":
-                        session.notify_drained(frame.get("turn_id"))
-                    if frame.get("type") == "cancel":
-                        session.cancel(frame.get("turn_id"))
+                    if frame.get("type") in ("drained", "cancel"):
+                        turn_id = frame.get("turn_id")
+                        if not isinstance(turn_id, str) or not turn_id.strip():
+                            await ws.send_json({"type": "error", "error": "bad_turn_id"})
+                            continue
+                        if frame["type"] == "drained":
+                            session.notify_drained(turn_id)
+                        else:
+                            session.cancel(turn_id)
                     if frame.get("type") == "set_model":
                         request_id = frame.get("request_id")
                         if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", request_id):

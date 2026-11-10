@@ -167,8 +167,7 @@ Explicit `cancel` stops the matching turn without submitting a user message:
 {"type":"cancel","turn_id":"turn-1"}
 ```
 
-A stale targeted cancel cannot stop a newer turn. An untargeted
-`{"type":"cancel"}` also abandons a capture in progress. The connection and
+A stale targeted cancel cannot stop a newer turn. The connection and
 conversation remain usable. `stop` closes the attachment instead.
 
 Do not use an `agentTurn`, thinking, or playback flag to suppress PCM during
@@ -338,8 +337,11 @@ the client must enter the active-turn state even without a preceding
 
 Every turn gets a `turn_id`. It appears on `transcript`, `thinking`,
 `speaking`, `interrupted`, `error`, and `turn_done` frames of that turn, so
-you can match frames to a turn. `cancel` and `drained` accept an optional
-`turn_id` to target a specific turn.
+you can match frames to a turn. `cancel` and `drained` require a nonempty string
+`turn_id` targeting a specific turn. A missing, blank, or non-string ID returns
+`{"type":"error","error":"bad_turn_id"}` without applying the control or
+closing the connection. A well-formed ID that does not match the current turn
+is ignored.
 
 
 ## 8. Cooperative wake selection
