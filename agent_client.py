@@ -92,6 +92,7 @@ class RunsClient:
         # Keep admission/stop uncertainty visible until a public terminal status confirms it.
         self.unsettled_run_ids: set[str] = set()
         self.admission_uncertain = False
+        self.tool_calls = 0  # Observed tool starts for the most recent run; retained through TTS.
 
     @property
     def current_run_id(self) -> Optional[str]:
@@ -116,6 +117,7 @@ class RunsClient:
                        provider: Optional[str] = None, idempotency_key: Optional[str] = None) -> TurnResult:
         """Start a run and stream it to completion. Returns the reply for the history and the error
         (if any) the client should hear about; ``status`` is the run's terminal status."""
+        self.tool_calls = 0
         if self.admission_uncertain:
             return TurnResult("", "Previous request admission is unresolved; reconnect before retrying.", "failed", None)
         for previous in tuple(self.unsettled_run_ids):
@@ -330,6 +332,9 @@ class RunsClient:
     async def _dispatch(self, run_id: str, event: dict[str, Any], on_delta: Callable[[str], None],
                         ) -> Optional[TurnResult]:
         name = event.get("event")
+        if name == "tool.started":
+            self.tool_calls += 1
+            return None
         if name == "message.delta":
             delta = event.get("delta")
             if isinstance(delta, str) and delta:
@@ -351,7 +356,7 @@ class RunsClient:
             self.unsettled_run_ids.discard(run_id)
             error = None if self._stop_requested else str(event.get("error") or "agent run was cancelled")
             return TurnResult(str(event.get("output") or ""), error, name.split(".", 1)[1], run_id)
-        return None  # message.interim, tool.*, reasoning.*, replay.truncated, run.steered, ...
+        return None  # message.interim, other tool.*, reasoning.*, replay.truncated, run.steered, ...
 
     def _from_status(self, status: dict[str, Any]) -> TurnResult:
         state = str(status.get("status") or "")

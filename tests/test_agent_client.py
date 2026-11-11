@@ -195,3 +195,25 @@ async def test_a_run_that_never_settles_does_not_poison_future_turns():
             result = await client.run_turn(text='and make it warm white', session_id='s', on_delta=lambda _: None)
             assert client.unsettled_run_ids == set()  # the stuck run is dropped, not left poisoning the client
             assert not result.error and len(fake.runs) == 1  # this turn still gets to run
+
+
+@pytest.mark.asyncio
+async def test_tool_count_survives_sse_reconnect_and_resets_for_next_turn():
+    fake = FakeRunsAPI(API_KEY, pre_events=(
+        ('tool.started', {'tool_call_id': 'a', 'tool': 'read_file'}),
+        ('tool.completed', {'tool_call_id': 'a', 'tool': 'read_file'}),
+        ('tool.started', {'tool_call_id': 'b', 'tool': 'read_file'}),
+        ('tool.completed', {'tool_call_id': 'b', 'error': True}),
+    ), drop_after=1)
+    async with TestClient(TestServer(fake.app())) as tc:
+        client, http = await _client_for(tc.server)
+        async with http:
+            result = await client.run_turn(text='go', session_id='s', on_delta=lambda _: None)
+            assert result.error is None
+            assert client.tool_calls == 2
+            assert len(fake.subscriptions) >= 2
+            fake.pre_events = ()
+            fake.drop_after = None
+            result = await client.run_turn(text='hello', session_id='s', on_delta=lambda _: None)
+            assert result.error is None
+            assert client.tool_calls == 0

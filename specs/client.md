@@ -115,8 +115,7 @@ wake word again mid-turn and you want to keep the conversation going.
 | `wake_grant` | recommends this client handle the wake activation; echoes its `claim_id` and `wake_word`. |
 | `wake_deny` | recommends this client stand down for the activation; echoes its `claim_id` and `wake_word`. |
 | `transcript` | user input or assistant reply text, identified by `role` and `turn_id`; see below |
-| `thinking` | the agent turn is running (show "thinking", not "listening") |
-| `working` | every 15 seconds during an active turn; refresh its inactivity timer without changing thinking/speaking state |
+| `thinking` | starts a turn, then repeats every 5 seconds with its cumulative `tool_calls` count; refresh inactivity without resetting speaking/playback |
 | `speaking` + binary frames | the reply as PCM16 at `output_rate` |
 | `interrupted` | the turn was cancelled (you barged in or sent `cancel`); stop playing |
 | `turn_done` | the reply is fully sent; `next_action` tells the client to listen or enter standby after drain |
@@ -196,60 +195,44 @@ continuation. A bounded playback-tail timeout handles a missing `drained`.
 
 ### Handling `thinking`
 
-`thinking` is the server's explicit signal that the agent turn has started.
-For example:
+The server sends `thinking` at turn start, then approximately every **5 seconds**
+until the turn ends, including agent/TTS waits and speech:
 
 ```json
-{"type": "thinking", "turn_id": "<turn_id>"}
+{"type": "thinking", "turn_id": "turn-42", "tool_calls": 3}
 ```
 
-Treat it as a turn boundary even if the client has not received a
-`transcript` for that turn. Mark the agent turn active and show "thinking".
+The initial frame has `tool_calls: 0`. Subsequent frames contain the cumulative
+number of `tool.started` events observed from the Runs API for this turn. SSE
+replays are not counted again. The count includes calls that later fail; it is
+not a count of completed or currently running calls, or a percentage complete.
+It resets for each turn. Replies prepared without an agent run report zero.
+No tool names, arguments, results, or reasoning text are included. When tracing
+is active, frames also carry the turn's `traceparent`.
+
+The first `thinking` starts the turn even without a preceding user `transcript`.
+Mark the turn active and show thinking. Repeated frames with the same active
+`turn_id` update the count and refresh the inactivity timer; preserve any existing
+speaking/playback state. Do not treat them as new turns or restart playback.
+Ignore late frames for completed/cancelled turns and stale IDs. An unfamiliar ID
+may start a server-originated turn as described in section 9.
+
 During an active activation, keep sending microphone PCM so the server can
-accept a continuation. The UI state
-and microphone transport are independent. See section 9 for outbound turns
-that start while the client is otherwise idle.
+accept a continuation. UI state and microphone transport are independent.
 
-If the client uses a turn deadline, arm it on `thinking` when `transcript`
-has not already armed it; do not restart an existing deadline. Record the
-event in the turn trace if tracing is enabled. When both frames arrive,
-`transcript` identifies what was heard and `thinking` confirms that the
-agent has started; they belong to the same `turn_id`.
+Arm an inactivity timer on the initial `thinking` if `transcript` has not already
+armed it. Refresh it on repeated frames for the active turn. Allow more than five
+seconds plus network/scheduling delays (for example, 15 seconds). Record frames in
+the turn trace when tracing is enabled. A short turn may send only the initial frame.
+An unchanged count still indicates turn liveness, not proof that model/tool work
+has advanced.
 
-This is a lifecycle status notification, not streamed reasoning text.
-Continue handling `working`, `speaking`, `interrupted`, `error`, and `turn_done` as
-usual to play the reply or finish the turn.
-
-### Handling `working`
-
-During an active turn, the server sends a keepalive approximately every **15 seconds**,
-starting 15 seconds after `thinking`. It continues through agent and TTS waits,
-including speaking, until the turn completes or is interrupted/cancelled. For example:
-
-```json
-{"type":"working","turn_id":"turn-42"}
-```
-
-When tracing is active, the frame also carries the turn's `traceparent`, as on
-`thinking` and `speaking`. There is no tool name or reasoning text in this frame.
-Shorter turns normally send no `working` frames.
-
-If `turn_id` matches the client's active turn, refresh that turn's **inactivity**
-deadline from receipt time. Choose an inactivity allowance longer than 15 seconds
-with room for network/scheduling delays; a 30-second allowance permits a normal
-keepalive before expiry. Keep the existing thinking/speaking/playback state and
-continue handling PCM and control frames normally. `working` does not begin a turn,
-restart a completed/cancelled turn, or imply that model/tool output has advanced.
-Ignore frames for inactive, stale, or unknown turn IDs.
-
-An optional absolute client turn limit remains independent; do not extend that
-limit on `working`. These frames never extend the server's
-`turn_timeout_seconds` (default 120 seconds). The server stops sending them before
-terminal `interrupted`, `error`, or `turn_done` frames and when the socket closes;
-clients stop refreshing the inactivity timer when their turn ends. Clients that
-ignore unknown frame types remain compatible, but need this handling to avoid
-abandoning long turns prematurely. Network delays can still deliver an old frame
-after local cancellation, so clients must check the active turn ID.
+Keep any absolute client turn limit independent: repeated `thinking` frames
+never extend it or the server's `turn_timeout_seconds` (default 120 seconds).
+The server stops these updates before terminal `interrupted`, `error`, or
+`turn_done` frames and on disconnect. Network delays can still deliver an old
+frame after local cancellation, so check its turn ID before refreshing timers.
+Continue handling `speaking`, PCM, `interrupted`, `error`, and `turn_done` normally.
 
 ### Handling `turn_done.next_action`
 
