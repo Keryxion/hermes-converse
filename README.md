@@ -61,15 +61,14 @@ A non-wake client may stream after `ready`. The server answers:
 |---|---|
 | `ready` | rates, the socket's `session_id`, and two server timestamps for clock-skew estimation |
 | `transcript` | what it heard; carries a `turn_id` every later frame of the turn repeats |
-| `thinking` | the agent turn is running (show "thinking", not "listening") |
-| `working` | active-turn keepalive every 15 seconds; refresh the matching turn’s inactivity timer |
+| `thinking` | turn start, then progress every 5 seconds with a cumulative `tool_calls` count |
 | `speaking` + binary frames | the reply as PCM16 at `output_rate` |
 | `interrupted` | you spoke over the reply: stop playing, the turn is cancelled |
 | `error` | the turn failed (the message is spoken-safe text) |
 | `turn_done` | the reply is fully sent; `next_action` tells the client to listen or enter standby after drain |
 | `quiet` | session mode: the stream has been silent for another `quiet_interval` seconds |
 
-Handle `thinking` as an explicit turn boundary even without a preceding `transcript`:
+Handle the first `thinking` for a turn as an explicit boundary even without a preceding `transcript`:
 mark the agent turn active and show "thinking". During the granted activation, keep sending
 microphone PCM through thinking, speaking, and playback drain for server-side interruption/control
 detection. Accepted speech interrupts obsolete output and is captured as a continuation in the
@@ -79,12 +78,13 @@ deadline if it is not already running; do not restart it. This frame reports lif
 not reasoning text. See
 [the client spec](specs/client.md#handling-thinking) for the frame format and tracing behavior.
 
-During a long agent/TTS turn, `working` frames carry the same `turn_id` (and
-`traceparent` when available) every 15 seconds. Clients can refresh that turn's
-inactivity timer without changing thinking/speaking state. Ignore stale IDs and
-keep any absolute turn limit; keepalives do not extend the server's 120-second
-default turn timeout. They stop before terminal frames and on disconnect. See
-[specs/client.md](specs/client.md) for the full deadline contract.
+During a long agent/TTS turn, `thinking` repeats every 5 seconds with the same
+`turn_id` (and `traceparent` when available) and the number of tool calls started
+so far. Refresh the active turn's inactivity timer and count without changing
+speaking/playback state. Ignore stale/completed turn IDs and keep any absolute
+turn limit; progress frames do not extend the server's 120-second default timeout.
+They stop before terminal frames and on disconnect. See
+[specs/client.md](specs/client.md#handling-thinking) for the full contract.
 
 Client control frames: `{"stop": true}` ends the audio attachment (persisted conversation history remains), `{"commit": true}` forces the current
 utterance to endpoint, `{"type": "cancel", "turn_id": "..."}` cancels the current turn while
