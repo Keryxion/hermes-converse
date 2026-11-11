@@ -172,3 +172,38 @@ The prompt supplies both names and the routing identity, explains proactive outp
 another wake word, and requires successful scheduling receipts before confirming timers.
 Heartbeat 2's current API-session restriction still requires an integration change; a prompt
 does not bypass a scheduling tool's refusal.
+
+## Timer service
+
+Agent tools and client requests use the same server timer service. Persist each
+timer's identity, owner, source Arya, originating Hermes session reference,
+destination recipient, label, deadline, and state. Resolve the spoken target
+through the authorized device directory and keep the original destination.
+
+Default to the trusted requesting Arya. Authenticated clients may target or
+manage another Arya on the same server. Reject ambiguous names before mutation.
+Check destination availability before confirming creation; never substitute
+another speaker. Source devices cannot claim playback on behalf
+of the destination.
+
+Commit mutations and same-request retry results together. Recover a committed
+creation after a lost reply without creating another timer; retries must keep
+the original destination. Cancellation and expiry must have
+one authoritative winner, with an explicit already-expired outcome.
+
+Reuse installed Hermes scheduling facilities where suitable. An alarm must not
+wait for an LLM run or depend on a sleeping agent. Persist expiry/delivery state
+so a restart cannot lose a deadline or create duplicate alarm occurrences. Use
+one serialized audio path per destination; bound ringing and stop on dismissal.
+Do not mistake a sent frame for proof that a speaker sounded or stopped.
+
+Synchronize active and missed/unconfirmed timers on reconnect. Never replay
+stale alarms. Destination deduplication must survive reconnects/restarts; when
+playback cannot be established, report uncertainty rather than ring again.
+Define server retention/retry bounds before implementation. Those details and
+the backing store are server responsibilities, not additional client modes.
+
+Acceptance scenarios: Kitchen requests a Bedroom timer and keeps its own
+conversation; only Bedroom rings. Exercise ambiguous/unauthorized and
+offline destinations, lost create replies, expiry/cancel races, restart,
+duplicate alarms, local/remote dismissal, and reconnect without stale playback.

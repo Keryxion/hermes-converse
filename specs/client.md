@@ -58,6 +58,7 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 | `device_name` | The configured device label, such as `Den Echo`; required for named-device connections (section 11). |
 | `models` | Boolean; only `true` includes the model catalog in `ready`. Defaults to `false`. See section 12. |
 | `transcripts` | Boolean; request user and assistant transcript frames when `true`. Defaults to `false`. See section 4. |
+| `sound_ids` | Bundled alarm sounds this client can play, such as `["timer-v1"]`; omitted or empty uses server PCM (section 10). |
 | `assistant_name` | What you call the assistant, normally `Arya`, without “Hey”. Used in the voice system prompt; separate from the device label, such as `Den Echo`. |
 
 **Client profile selection is removed.**
@@ -102,6 +103,7 @@ All are JSON text frames:
 | `{"type": "cancel", "turn_id": "..."}` | Cancels the **current** turn — stops TTS and the agent — but keeps the socket, session, and history alive. |
 | `{"type": "wake", "claim_id": "...", "wake_word": "Hey Arya"}` | request an advisory wake decision while buffering the new activation locally; see section 8. |
 | `{"type": "drained", "turn_id": "..."}` | Tells the server the reply's last audio has left the speaker, so the server won't transcribe its own echo as a new turn. |
+| `timer_request` | Set, update, cancel, dismiss, or synchronize timers (section 10). |
 
 **`cancel` vs `stop`:** `stop` tears down the session; `cancel` only kills the
 current turn. Use `cancel` when the user hits the action button or says the
@@ -122,6 +124,7 @@ wake word again mid-turn and you want to keep the conversation going.
 | `turn_done` | the reply is fully sent; `next_action` tells the client to listen or enter standby after drain |
 | `quiet` | session mode: the stream has been silent for another `quiet_interval` seconds |
 | `error` | the turn failed (spoken-safe text) |
+| `timer_result`, `timer_snapshot`, `alarm` | Timer results, state, and playback (section 10). |
 
 ### Microphone streaming and barge-in
 
@@ -272,7 +275,9 @@ Continue interruption/control monitoring until queued playback has actually
 finished or been discarded. Send `drained` for that turn, then apply its
 pending action. Do not apply a late completion/action from an abandoned
 turn to a newer activation. Cancellation, interruption, errors, and timeouts
-return `listen`; a partial or failed reply cannot put the client in standby.
+return `listen` for ordinary activation turns; a partial or failed reply cannot
+put the client in standby. Timer alarms restore the prior idle/listening state
+after drain (section 10).
 A normal reply also returns `listen`, even when it does not ask a question.
 The current server requests `standby` only for a successful server-side
 sign-off in session mode; non-session/continuous mode returns `listen`.
@@ -630,58 +635,109 @@ is available for that delivery. Timer/scheduler integration and its policy
 remain in [issue #34](https://github.com/Keryxion/hermes-converse/issues/34).
 The voice system prompt does not claim unsupported scheduling abilities.
 
-## 10. Server-owned timers and client alarm sounds (proposed extension)
+## 10. Timers on named Aryas
 
-The server owns timer creation, deadlines, updates, cancellation, and expiry.
-The client may display a countdown, but does not schedule an independent
-offline alarm. An expiry delivered by the server makes the client play a
-bundled alarm sound; it need not wait for an LLM response or TTS to hear the
-alarm. Spoken context, such as "Your pasta timer is done," can follow using
-the outbound-turn lifecycle in section 9. A scheduling confirmation does
-not play the expiry alarm.
+Timers belong to the server and survive disconnects. Clients display countdowns
+and play alarms; they do not schedule independent offline alarms. Each timer
+has one destination Arya.
 
-A draft expiry frame, sent only after alarm support is negotiated:
+### Alarm sounds
+
+Include `sound_ids` in `start` to list the bundled alarm sounds this client can play:
 
 ```json
-{"type":"alarm","event_id":"expiry-42","timer_id":"timer-7","turn_id":"turn-9","sound":"timer"}
+{"type":"start","key":"<API_SERVER_KEY>","input_rate":16000,"output_rate":24000,
+ "assistant_name":"Arya","device_name":"Bedroom","sound_ids":["timer-v1"]}
 ```
 
-`event_id` identifies one delivery event for deduplication; reconnect or
-retry must not ring it twice. `timer_id` identifies the server timer across
-connections and lets the user cancel the intended timer. `sound` names a
-bundled client asset, not an arbitrary URL or audio file. A client without
-alarm-sound support needs a server-rendered audio fallback using the normal
-`speaking` + PCM path. Negotiate support explicitly before sending new frame
-types; these fields are not supported by the current `start` / `ready`.
+Omit `sound_ids` or send an empty array if the bundled alarm is unavailable;
+the server then sends alarm PCM through the ordinary playback path.
 
-During the alarm, stream microphone PCM for interruption/control detection,
-even if previously idle, unless explicitly muted. Restore the previous idle
-state after dismissal/drain if no user activation is open.
-Treat its local sound as playback for echo handling. Specify playback-start
-notification to the server, stop/dismiss acknowledgement, bounded ringing,
-and `drained` coordination before implementation; an unannounced local
-alarm must not be transcribed as a new user request. An alarm has priority
-over queued speech, but the server must finish or interrupt the current
-turn before delivering it, so local sound and PCM replies do not overlap.
+### Set and manage timers
 
-Cancellation changes the server record and succeeds only on server
-acknowledgement. If expiry already won the race, report that result and
-allow dismissal of the ringing alarm. Dismissal silences that occurrence;
-it does not cancel another timer. Use correlated, idempotent operations
-and explicit accepted / already-expired / not-found results; do not infer
-success from a spoken promise or from the socket accepting a write.
+A timer defaults to this Arya. Supply `target` to set it on another named Arya:
 
-When disconnected, the client can silence audio already playing, but it
-cannot create, update, or cancel a server timer. Show cancellation as
-unavailable or unconfirmed until acknowledged; do not claim offline
-success. The server keeps its timer state. On reconnect, synchronize active
-and missed timers before displaying them. Report expiries missed during
-the disconnect without automatically replaying stale alarms. There is no
-promise of an audible alarm while the client is disconnected.
+```json
+{"type":"timer_request","request_id":"create-1","operation":"create","duration_seconds":300,"label":"tea","target":"Bedroom"}
+```
 
-Exact alarm capability negotiation, timer-operation frames, acknowledgements,
-recipient attachment, and playback signalling remain implementation work.
-These proposed extensions do not change the current wire protocol by themselves.
+```json
+{"type":"timer_result","request_id":"create-1","status":"created","timer":{"timer_id":"timer-7","label":"tea","target":"Bedroom","deadline_unix_ms":1794143100000,"state":"active"}}
+```
+
+Kitchen receives that result and says "Five-minute timer set on Bedroom."
+Only Bedroom rings. Choosing Bedroom does not change Kitchen's conversation.
+Room names and aliases may resolve to an Arya; ask which one if ambiguous.
+An unauthorized or unavailable target returns an error before creation; do not
+silently ring another device or claim an offline speaker will sound.
+
+Use the returned `timer_id` for subsequent operations:
+
+```json
+{"type":"timer_request","request_id":"update-1","operation":"update","timer_id":"timer-7","duration_seconds":120,"label":"tea"}
+```
+
+```json
+{"type":"timer_request","request_id":"cancel-1","operation":"cancel","timer_id":"timer-7"}
+```
+
+```json
+{"type":"timer_request","request_id":"dismiss-1","operation":"dismiss","timer_id":"timer-7"}
+```
+
+`update` takes `timer_id`, a new `duration_seconds` starting from confirmation,
+and optionally `label`. `cancel` stops a pending timer. `dismiss` stops its
+ringing occurrence. Authorized clients can manage timers on another Arya by ID;
+the destination is fixed when created. Show success only after `timer_result`.
+If expiry beats cancellation, the result is `already_expired`; use `dismiss`.
+Errors return `status: "error"` and an explanatory `error` field. Ambiguous
+names return `target_ambiguous`; inaccessible/offline targets return
+`target_unavailable` without disclosing unauthorized devices.
+
+Use a new `request_id` per action. Retry the same request with the same ID after
+a lost reply; it must not create a second timer. Never change a retry's payload.
+
+### Alarm playback
+
+The destination receives an alarm without a wake word or user transcript:
+
+```json
+{"type":"alarm","timer_id":"timer-7","turn_id":"alarm-9","sound":"timer-v1"}
+```
+
+Play the bundled sound named in `alarm.sound`, or the following `speaking`/PCM
+when the client did not list that sound in `start.sound_ids`. Use the ordinary
+`turn_done`, interruption, and `drained` lifecycle. Do not overlap it with another reply. `turn_done` finishes transport,
+not local ringing: send `drained` only after actual playback stops. Ring for at
+most 60 seconds; stop immediately on local dismissal or server interruption.
+A local dismissal stops sound immediately and sends `dismiss` when connected.
+Remote dismissal is confirmed as physically stopped only after destination drain.
+
+Keep microphone upload available for interruption/control during playback unless
+muted. Alarm audio must not become a new request. After drain, restore the prior
+idle/listening state; an alarm does not by itself open a user activation.
+Recognize duplicate `timer_id` alarms across reconnects and never ring them twice.
+
+### Reconnect
+
+After `ready`, request `operation: "sync"` with a new `request_id`. The server
+returns `timer_snapshot` with `timers` (active timers) and `missed` (timer IDs and
+labels for missed or unconfirmed alarms). Replace the displayed timer state;
+a snapshot never instructs playback. Do this before new timer operations.
+
+```json
+{"type":"timer_request","request_id":"sync-1","operation":"sync"}
+```
+
+```json
+{"type":"timer_snapshot","request_id":"sync-1","timers":[],"missed":[{"timer_id":"timer-6","label":"pasta"}]}
+```
+
+Do not ring expired timers on reconnect or fire an alarm when a local countdown
+reaches zero. Mark disconnected countdowns unconfirmed. There is no promise of
+an audible alarm while the destination is offline. A disconnected client can
+silence its speaker, but must not claim a server mutation succeeded. Neither
+reconnect nor changing conversation moves a timer to a different Arya.
 
 
 ## 11. Named Aryas
