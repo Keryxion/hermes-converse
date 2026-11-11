@@ -54,14 +54,15 @@ class Harness:
     """One app serving the fake Runs API and the plugin route; the route's loopback URL is this
     server's own URL once it has started."""
 
-    def __init__(self, fake: FakeRunsAPI, settings: dict | None = None):
+    def __init__(self, fake: FakeRunsAPI, settings: dict | None = None, *, device_store=None):
         self.fake = fake
         self.settings = settings or {}
         self.base = {"url": ""}
         app = web.Application()
         app.add_routes(fake.routes())
-        ConverseRoute(settings_getter=lambda key, default=None: self.settings.get(key, default),
-                      base_url_resolver=lambda: self.base["url"], profile_name="default").wire(app)
+        self.route = ConverseRoute(settings_getter=lambda key, default=None: self.settings.get(key, default),
+                      base_url_resolver=lambda: self.base["url"], profile_name="default", device_store=device_store)
+        self.route.wire(app)
         self.app = app
 
     async def __aenter__(self):
@@ -102,7 +103,7 @@ async def _recv(ws, timeout=6.0):
     return await asyncio.wait_for(ws.receive(), timeout)
 
 
-async def _collect_turn(ws, timeout=8.0):
+async def _collect_turn(ws, timeout=8.0, *, drain=True):
     """Frames until turn_done: (json frames, pcm chunks)."""
     frames, pcm = [], []
     while True:
@@ -114,6 +115,8 @@ async def _collect_turn(ws, timeout=8.0):
             payload = json.loads(msg.data)
             frames.append(payload)
             if payload["type"] == "turn_done":
+                if drain:
+                    await ws.send_json({"type": "drained", "turn_id": payload["turn_id"]})
                 break
             continue
         break
@@ -136,6 +139,7 @@ async def _drive_full_turn(ws, streamer):
     assert pcm == [b"\x01\x02\x03\x04", b"\x05\x06"]
     assert streamer.requests
     assert [f["type"] for f in frames] == ["transcript", "thinking", "speaking", "turn_done"]
+    assert frames[-1]["next_action"] == "listen"
     return frames
 
 
@@ -160,7 +164,7 @@ async def test_subprotocol_key_accept_full_turn_through_the_runs_api(monkeypatch
     (run,) = fake.runs.values()
     assert run["body"]["input"] == "turn it on"
     assert run["body"]["session_id"].startswith("voice_")
-    assert run["body"]["instructions"] == voice_system_prompt("Sakura")
+    assert run["body"]["instructions"] == voice_system_prompt("Arya")
     assert "model" not in run["body"] and "provider" not in run["body"]
     assert run["idempotency_key"].startswith("converse-" + run["body"]["session_id"])
     assert streamer.requests == ["Turn it on."]
@@ -594,6 +598,7 @@ async def test_run_refusal_is_spoken_as_an_error_frame(monkeypatch):
             errors = [f for f in frames if f["type"] == "error"]
             assert errors and "409" in errors[0]["error"] and "another surface" in errors[0]["error"]
             assert pcm == [] and frames[-1]["type"] == "turn_done"
+            assert frames[-1]["next_action"] == "listen"
         finally:
             await _end(ws)
 

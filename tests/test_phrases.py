@@ -2,26 +2,8 @@
 
 import pytest
 
-from hermes_converse.phrases import is_end_phrase, is_stop_phrase, normalize_phrases, strip_end_phrase
-from hermes_converse.settings import DEFAULT_END_PHRASES, DEFAULT_STOP_PHRASES, load_settings
-
-
-class TestStopPhrase:
-    def test_defaults_are_stop_and_cancel(self):
-        assert DEFAULT_STOP_PHRASES == ("stop", "cancel")
-
-    @pytest.mark.parametrize("utterance", [
-        "cancel", "Cancel", "CANCEL", "cancel.", "Cancel!", " cancel ", '"Cancel."', "cancel?", "stop",
-    ])
-    def test_whole_utterance_matches(self, utterance):
-        assert is_stop_phrase(utterance, DEFAULT_STOP_PHRASES) is True
-
-    def test_phrase_inside_a_sentence_is_not_a_stop(self):
-        assert is_stop_phrase("cancel my 3pm meeting", DEFAULT_STOP_PHRASES) is False
-        assert is_stop_phrase("stop doing that and try again", DEFAULT_STOP_PHRASES) is False
-
-    def test_empty_list_disables(self):
-        assert is_stop_phrase("stop", ()) is False
+from hermes_converse.phrases import is_end_phrase, normalize_phrases, strip_end_phrase
+from hermes_converse.settings import DEFAULT_END_PHRASES, load_settings
 
 
 class TestEndPhrase:
@@ -76,21 +58,21 @@ class TestNormalizePhrases:
 class TestSettings:
     def test_defaults_without_any_config(self):
         s = load_settings(lambda key, default=None: default)
-        assert s.name == "Sakura" and s.model is None and s.provider is None
+        assert s.name == "Arya" and s.model is None and s.provider is None
         assert s.turn_timeout == 120.0 and s.tail_fallback == 45.0 and s.max_tts_chars == 1500
-        assert s.stop_phrases == ("stop", "cancel") and s.end_phrases == ("over and out",)
+        assert s.end_phrases == ("over and out",)
         assert s.endpoint_model is False and s.endpoint_threshold == 0.5
         assert s.approval_choice == "deny" and s.api_base_url == ""
 
     def test_values_are_coerced_and_clamped(self):
         cfg = {"name": "  Hal ", "voice_model": "gpt-x", "voice_provider": "", "turn_timeout_seconds": "30",
                "playback_tail_timeout_seconds": "not a number", "max_tts_chars_per_turn": 200.7,
-               "stop_phrases": "Goodbye", "end_phrases": [], "endpoint_model": "smart-turn-v3",
+               "end_phrases": [], "endpoint_model": "smart-turn-v3",
                "endpoint_threshold": 5, "approval_choice": "ONCE", "api_base_url": "http://127.0.0.1:9000/"}
         s = load_settings(lambda key, default=None: cfg.get(key, default))
         assert s.name == "Hal" and s.model == "gpt-x" and s.provider is None
         assert s.turn_timeout == 30.0 and s.tail_fallback == 45.0 and s.max_tts_chars == 200
-        assert s.stop_phrases == ("goodbye",) and s.end_phrases == ()
+        assert s.end_phrases == ()
         assert s.endpoint_model is True and s.endpoint_threshold == 1.0
         assert s.approval_choice == "once" and s.api_base_url == "http://127.0.0.1:9000"
 

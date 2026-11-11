@@ -15,20 +15,26 @@ license: MIT
 homepage: https://github.com/Keryxion/hermes-converse
 tags: [voice, api_server, realtime, websocket, esp32]
 requires_hermes: ">=0.21.6"
-# The VAD and the PCM resampler are numpy + PyAV; Smart Turn (onnxruntime backend) additionally
-# needs transformers + huggingface_hub, declared here so Hermes's package manager can admit them
-# when Smart Turn is opted in. onnxruntime arrives with the Silero VAD issue (#2).
+# ONNX Runtime supports default Silero VAD and optional Smart Turn endpointing.
 python_dependencies:
   - "numpy>=2,<3"
   - "av>=14,<20"
-  - "transformers>=4,<5"
-  - "huggingface_hub>=0,<1"
+  # ONNX Runtime has no current Intel macOS or Android wheels. Those hosts keep the
+  # fixed endpoint; do not make the whole voice plugin uninstallable there.
+  - "onnxruntime>=1.20,<2; (sys_platform != 'darwin' or platform_machine != 'x86_64') and sys_platform != 'android'"
+  - "transformers>=4.46,<6"
+  - "huggingface_hub>=0.26,<2"
 provides_tools: []
-provides_hooks: []
+provides_hooks: [post_llm_call]
 config_schema:
+  vad_model:
+    type: str
+    choices: [silero, energy]
+    default: silero
+    description: "Speech detection: Silero with automatic energy fallback, or energy only. Smart Turn is configured separately."
   name:
     type: str
-    default: "Sakura"
+    default: "Arya"
     label: "Assistant name"
     description: "Name the voice prompt uses when a client's start frame carries none."
   voice_model:
@@ -51,14 +57,10 @@ config_schema:
     type: int
     default: 1500
     description: "Safety cap on how much of one reply is spoken aloud."
-  stop_phrases:
-    type: list
-    default: ["stop", "cancel"]
-    description: "Session mode: saying exactly one of these ends the exchange instead of reaching the agent."
   end_phrases:
     type: list
     default: ["over and out"]
-    description: "Session mode: a reply ending with one of these signs off (turn_done.expects_more=false)."
+    description: "Session mode: a reply ending with one of these signs off (turn_done.next_action=standby)."
   endpoint_model:
     type: str
     default: ""
@@ -70,15 +72,7 @@ config_schema:
   capture_no_data_seconds:
     type: float
     default: 5
-    description: "Seconds of wall-clock silence in a capture before the capture is abandoned and dropped, rather than left open for a later stream to complete and merge two unrelated utterances."
-  mic_during_playback:
-    type: bool
-    default: false
-    description: "Whether the client streams mic audio while its reply plays (enables voice barge-in during playback). AEC-capable clients need less barge margin."
-  barge_multiplier:
-    type: float
-    default: ""
-    description: "Per-client barge multiplier for playback trigger (overrides the detector default when set). Lower = less margin needed, e.g. AEC devices."
+    description: "Drop a partial capture after this many seconds without incoming audio; 0 disables. Received silence and idle quiet accounting are unaffected."
   approval_choice:
     type: str
     choices: [deny, once]
@@ -88,3 +82,20 @@ config_schema:
     type: str
     default: ""
     description: "Loopback base URL of this API server ('' = derived from the listener, e.g. http://127.0.0.1:8642)."
+  arbitrate_enabled:
+    type: bool
+    default: false
+    description: "Enable advisory wake selection for cooperating clients; streamed audio is always processed."
+  arbitrate_policy:
+    type: str
+    choices: [first_to_endpoint, wake_signal]
+    default: wake_signal
+    description: "wake_signal ranks exact-phrase wake claims by confidence, normalized volume, detection time, then arrival order. Legacy first_to_endpoint grants immediately."
+  arbitrate_device_id:
+    type: str
+    default: ""
+    description: "Optional label prefix for unique server-generated socket device ids."
+  arbitrate_wake_window_seconds:
+    type: float
+    default: 0.75
+    description: "How long the arbitrator collects concurrent wake claims for the same wake word before electing the primary device."

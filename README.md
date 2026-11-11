@@ -31,7 +31,7 @@ Dial `ws://<host>:<port>/v1/audio/converse` and send one `start` frame first:
 
 ```json
 {"type": "start", "key": "<API_SERVER_KEY>", "input_rate": 16000, "output_rate": 24000,
- "quiet_interval": 0, "name": "Sakura"}
+ "quiet_interval": 0, "assistant_name": "Arya", "device_name": "Den Echo"}
 ```
 
 A browser client can put the key in the WebSocket subprotocols instead (`hermes-voice-v1` plus
@@ -39,28 +39,95 @@ A browser client can put the key in the WebSocket subprotocols instead (`hermes-
 Either way the key is verified against the API server itself, so your existing key is the only
 secret.
 
-Then stream binary PCM16 mono frames at `input_rate` (30 ms blocks are ideal). The server answers:
+`assistant_name` is what you call the assistant. `device_name` is the microphone/speaker label,
+unique within this server/profile. The server opens the Hermes conversation titled
+`Arya: Den Echo`, reusing its history across reconnects and gateway restarts. The voice prompt
+explains both names, the default device destination, and proactive output through available
+scheduling tools. Configure the same names on reconnect; changing names does not migrate history.
+Send `"models": true` in `start` to receive the model catalog in `ready`.
+Omitted or false skips the lookup and omits `model_catalog`; audio and model
+selection remain available.
+
+Wait for `ready` before streaming audio. It returns `assistant_name`, `device_name`, and
+`recipient_id` directly.
+
+For wake-word clients, detect the wake word locally, send `wake`, and buffer all microphone
+PCM while awaiting arbitration for up to **1000 ms**. Only a matching grant starts streaming:
+flush the buffered audio in capture order, then continue live PCM16 mono at `input_rate`
+(30 ms blocks are ideal). Denial or timeout discards the buffer and returns to local wake detection.
+A non-wake client may stream after `ready`. The server answers:
 
 | frame | meaning |
 |---|---|
 | `ready` | rates, the socket's `session_id`, and two server timestamps for clock-skew estimation |
 | `transcript` | what it heard; carries a `turn_id` every later frame of the turn repeats |
-| `thinking` | the agent turn is running (show "thinking", not "listening") |
+| `thinking` | turn start, then progress every 5 seconds with a cumulative `tool_calls` count |
 | `speaking` + binary frames | the reply as PCM16 at `output_rate` |
 | `interrupted` | you spoke over the reply: stop playing, the turn is cancelled |
 | `error` | the turn failed (the message is spoken-safe text) |
-| `turn_done` | the reply is fully sent; in session mode `expects_more` says whether to keep listening |
+| `turn_done` | the reply is fully sent; `next_action` tells the client to listen or enter standby after drain |
 | `quiet` | session mode: the stream has been silent for another `quiet_interval` seconds |
-| `stop_word` | session mode: you said a stop phrase; no turn ran |
 
-Client control frames: `{"stop": true}` ends the session, `{"commit": true}` forces the current
-utterance to endpoint, `{"type": "drained", "turn_id": "..."}` says the reply's last audio has left
-the speaker (the server holds the VAD until then so its own echo is never transcribed).
+Handle the first `thinking` for a turn as an explicit boundary even without a preceding `transcript`:
+mark the agent turn active and show "thinking". During the granted activation, keep sending
+microphone PCM through thinking, speaking, and playback drain for server-side interruption/control
+detection. Accepted speech interrupts obsolete output and is captured as a continuation in the
+same conversation, preserving the original request. Standalone spoken stop phrases cancel without
+starting another agent run. Arm the client's turn
+deadline if it is not already running; do not restart it. This frame reports lifecycle status,
+not reasoning text. See
+[the client spec](specs/client.md#handling-thinking) for the frame format and tracing behavior.
+
+During a long agent/TTS turn, `thinking` repeats every 5 seconds with the same
+`turn_id` (and `traceparent` when available) and the number of tool calls started
+so far. Refresh the active turn's inactivity timer and count without changing
+speaking/playback state. Ignore stale/completed turn IDs and keep any absolute
+turn limit; progress frames do not extend the server's 120-second default timeout.
+They stop before terminal frames and on disconnect. See
+[specs/client.md](specs/client.md#handling-thinking) for the full contract.
+
+Client control frames: `{"stop": true}` ends the audio attachment (persisted conversation history remains), `{"commit": true}` forces the current
+utterance to endpoint, `{"type": "cancel", "turn_id": "..."}` cancels the current turn while
+keeping the socket, session and history alive, `{"type": "drained", "turn_id": "..."}` says the
+reply's last audio has left the speaker (or queued audio was discarded), ending the server's
+playback-tail tracking; keep sending microphone audio throughout playback,
+`{"type": "wake", "claim_id": "...", "wake_word": "..."}` requests an advisory wake decision
+(see below) — send it when the local detector fires, then buffer audio until a matching grant.
+
+Every `turn_done` includes `next_action: "listen"` or `"standby"`. After speaker drain and
+`drained`, `listen` keeps the microphone stream open for a fresh user utterance; `standby` stops
+upstream audio and returns to local wake detection while keeping the socket open. The server
+chooses the action; clients never interpret sign-off phrases. Normal completions, cancellations,
+interruptions, and errors return `listen`; only a successful sign-off in session mode requests
+`standby`.
 
 **Session mode** (`quiet_interval` > 0) is for wake-word devices: the server reports quiet in
-*received* audio (never wall-clock, so a held-open socket never accrues phantom quiet), ends the
-exchange on a stop phrase, and lets the agent sign off by ending a reply with an end phrase
-("over and out"), which arrives as `turn_done.expects_more = false`.
+*received* audio, recognizes stop phrases, and decides when to return the client to standby.
+Keep streaming through playback drain, then follow `next_action`. An open socket does not
+require sending idle ambient audio. See [the client spec](specs/client.md#handling-turn_donenext_action)
+for the full action contract.
+
+Named clients send names and the API key, without a conversation override or another credential.
+`ready.session_id` identifies this socket; `ready.recipient_id` identifies the
+device for routing. A replacement closes the old socket with `4409 attachment_replaced` and
+settles its run before accepting new work. Uncertain admission or unfinished cancellation returns
+`conversation_busy`; retry rather than replaying an utterance whose outcome is unknown.
+The server keeps device identities/session references in profile-local
+`plugin-data/hermes-converse/devices.db`. Messages, compression, and retention stay in Hermes.
+
+Completed responses for the underlying conversation can play without microphone input or a wake word. The public
+final-response hook suppresses voice-owned duplicates and `[SILENT]` output; producers outside
+the process can use authenticated `POST /v1/audio/conversations/<id>/output` with `event_id`,
+`text`, and `expires_at_unix_ms`. Delivery is connected-only and waits for prior speaker drain.
+See [client spec section 9](specs/client.md#9-conversation-output-without-user-input).
+
+Announcement/alarm capabilities and playback acknowledgements, server-owned timers, and
+synchronized group announcements remain in [issue #34](https://github.com/Keryxion/hermes-converse/issues/34).
+Heartbeat 2 scheduling still needs integration with API conversations; installing it alone does
+not enable later voice delivery. Its installed `pulse` tool may refuse API-server sessions;
+the prompt requires the assistant to report that refusal and to confirm only successful scheduling
+receipts. It explains that cancelling speech does not cancel a scheduled timer. Clients do not
+schedule offline alarms.
 
 ## Settings
 
@@ -69,24 +136,142 @@ plugin settings form):
 
 | key | default | what it does |
 |---|---|---|
-| `name` | `Sakura` | the assistant's name in the voice prompt when the start frame has none |
+| `name` | `Arya` | the assistant's name in the voice prompt when the start frame has none |
 | `voice_model`, `voice_provider` | `""` | a voice-only model override sent with every run |
 | `turn_timeout_seconds` | `120` | a turn with no output for this long is stopped and reported |
 | `playback_tail_timeout_seconds` | `45` | how long to wait for the client's `drained` frame |
 | `max_tts_chars_per_turn` | `1500` | safety cap on how much of one reply is spoken |
-| `stop_phrases` | `[stop, cancel]` | session mode: saying exactly one of these ends the exchange |
 | `end_phrases` | `[over and out]` | session mode: a reply ending with one of these signs off |
+| `vad_model` | `silero` | speech detection with automatic energy fallback; set `energy` to use RMS detection only |
 | `endpoint_model`, `endpoint_threshold` | off, `0.5` | Smart Turn v3 semantic endpointer (see below) |
 | `approval_choice` | `deny` | what a voice turn answers when the agent asks for a command approval |
 | `api_base_url` | `""` | loopback URL of the API server when it cannot be derived from the listener |
+| `arbitrate_enabled` | `false` | enable advisory wake selection for cooperating clients |
+| `arbitrate_policy` | `wake_signal` | rank wake claims with `wake_signal` |
+| `arbitrate_device_id` | `""` | optional label prefix for server-generated unique socket identifiers |
+| `arbitrate_wake_window_seconds` | `0.75` | how long the arbitrator collects concurrent wake claims for the same wake word before electing the primary device |
 
 STT and TTS come from your normal Hermes `stt.*` and `tts.*` configuration.
 
+**Cooperative wake selection.** With `arbitrate_enabled: true` and the default
+`wake_signal` policy, devices send a `wake` frame with a client-generated `claim_id`,
+the exact detected `wake_word` phrase, and optional `confidence` (0–1), normalized
+RMS `volume` (0–1), and `heard_at` (Unix milliseconds). Reports for the same phrase
+within a 750 ms window compete: highest confidence, then highest volume, then
+earliest detection time, then arrival order. The server echoes the request ID
+in `wake_grant` or `wake_deny`. Different phrases and claims arriving after the
+window elect independently; the larger window mitigates detector skew without
+making selection exclusive.
+
+The **1000 ms** client timeout starts when each client sends its own claim. A
+750 ms collection leaves a nominal 250 ms for transit and scheduling for the
+earliest claimant. Measure decision latency on the deployed network before
+assuming that margin is sufficient. Existing explicit `0.25` settings must be
+changed to `0.75` to use the larger window; changing the default does not override
+saved configuration.
+
+At INFO level, arbitration logs include claim receipt timestamps, election IDs,
+claim/device IDs, election age, winners, and decision wait times, without audio,
+wake phrases, or transcripts. Use election IDs to distinguish a shared election
+from a late claim opening a second one. After deployment, verify that only one
+physical device responds and the loser silently resumes wake detection.
+
+Clients buffer audio while waiting for up to **1000 ms** and ignore late decisions. On a grant,
+send the complete buffer before live audio so the beginning of the utterance is preserved.
+On denial or timeout, discard the buffer without streaming. The grant covers the activation
+and its follow-up conversation, including uninterrupted upstream audio during thinking and
+playback for barge-in/control detection. The server's selection is advisory: it still accepts
+audio sent by noncooperating clients after a denial or without a claim. Cooperating clients
+must follow the gate; idle and losing devices do not stream their ambient audio.
+With arbitration disabled, requests receive immediate grants. See [specs/client.md](specs/client.md) for the full protocol,
+and examples.
+
+**Speech detection.** Silero VAD is the default for speech onset, barge-in, and
+capture silence. It runs locally on CPU through ONNX Runtime without PyTorch.
+On first use, the plugin downloads the ~1.3 MB MIT-licensed Silero v6.2.3 model
+from its pinned upstream tag, verifies its SHA-256, and caches it under
+`<HERMES_HOME>/cache/voice/silero_vad_16k_op15.onnx`. A verified cache supports
+offline use. Run `hermes converse doctor` before restarting the gateway to
+prepare the cache and check the selected detector.
+
+Missing ONNX Runtime, unavailable weights, or inference failures fall back to
+the energy detector and log the reason. `vad_model: energy` skips model loading
+and downloads entirely. Doctor reports the fallback as a failed Silero check.
+Intel macOS and Android installations without ONNX Runtime use energy detection.
+Silero distinguishes speech from non-speech; it can also hear speaker echo as
+speech, so playback uses an echo-relative level guard. Detection alone does not
+prevent a spoken wake phrase from becoming an utterance.
+
+Active-turn interruption also requires sustained energy above the existing
+barge-in level floor (1500 RMS, adjusted for the quiet floor and capped at 4000).
+That applies while waiting for a turn, thinking, speaking, and draining playback:
+high speech probability from soft mumbling is insufficient, as is a brief loud
+burst over quiet speech. Idle input remains sensitive to quiet voices. This is
+an audibility/sustain guard, not semantic recognition of whether speech was
+addressed to the assistant.
+
+Silero and Smart Turn work together: Silero finds candidate pauses; Smart Turn,
+when enabled, decides whether the person has finished their thought. Speech
+onset needs at least 250 ms above Silero's speech threshold (0.5, continuing down
+to 0.35). The existing silence window and utterance cap still apply.
+
 **Smart Turn v3** (optional): with `endpoint_model: smart-turn-v3` the fixed silence endpoint
 becomes adaptive — on each candidate pause the model estimates whether the utterance sounds
-finished and keeps listening when you trailed off. It needs `onnxruntime`, `transformers` and
-`huggingface_hub` importable in the Hermes environment; `hermes converse doctor` names what is
-missing, and the loop falls back to the fixed endpoint if it cannot load.
+finished and keeps listening when you trailed off. The plugin declares `onnxruntime`,
+`transformers` and `huggingface_hub` as runtime dependencies, so Hermes installs them alongside
+`numpy` and `av` even when Smart Turn is off. Model loading stays opt-in and uses the NumPy
+feature-extraction path without requiring PyTorch. ONNX Runtime is omitted on Intel macOS and
+Android, which have no current wheels; those hosts keep fixed silence endpointing.
+
+For an existing install, update/reinstall hermes-converse through Hermes's plugin manager so it
+installs the new manifest dependencies. Set the following under
+`plugins.entries.hermes-converse.settings` in `config.yaml`, then run `hermes converse doctor`
+and restart the gateway:
+
+```yaml
+endpoint_model: smart-turn-v3
+endpoint_threshold: 0.5
+```
+
+With Smart Turn enabled, doctor checks the dependencies **and loads the model**, returning a
+failure if either is unavailable. The first load downloads `smart-turn-v3.2-cpu.onnx` from
+`pipecat-ai/smart-turn-v3` on Hugging Face into its normal Hub cache. For offline use, populate
+that cache first, then set `HF_HUB_OFFLINE=1`. Missing packages, incompatible runtimes, and
+unavailable weights all retain the fixed silence endpoint and log the reason once per process.
+Doctor leaves the model untouched when Smart Turn is off. A successful doctor check confirms
+model loading, not the quality of endpointing on real speech; tune the threshold with real audio.
+
+If a client stops sending audio during a capture, the partial utterance is dropped after
+`capture_no_data_seconds` (default 5; 0 disables) without transcription or an agent run.
+The next utterance starts a fresh capture on the same socket. This timeout applies to
+both endpointers; received silence still ends utterances normally, and idle session quiet
+continues to count only received audio.
+
+**Voice tracing** (optional): when the host registers a global OpenTelemetry tracer provider,
+the plugin emits a `voice.turn` span with `voice.capture`, `voice.stt`, `voice.agent`, and
+`voice.tts` children through that provider. It uses the host's sampling and exporter settings,
+including OTLP, and adds no plugin tracing settings or required OTEL dependencies. Install
+Hermes's `otlp` extra for its OTEL SDK/exporter support. Importing this plugin does not import
+OTEL; missing packages or disabled/unconfigured export keep tracing inert. Provider
+initialization after the plugin loads is supported.
+
+A global provider takes priority, including its sampling decisions. Without one, enabling
+Hermes's `monitoring.export.otlp.enabled` with an explicit `endpoint` also enables voice
+spans through a private provider using that destination and its `headers_env` mapping.
+This fallback requires the installed OTLP/HTTP exporter; it never installs dependencies,
+changes the global provider, or writes configuration. It uses `service.name=hermes-gateway`
+and `telemetry.scope=voice`. No plugin-specific collector settings are needed.
+
+Capture/STT timestamps survive the worker-thread handoff and remain children of the right
+turn, even when turns queue. Smart Turn decisions appear as `endpoint.decision` events with
+probabilities, thresholds, and hold/commit reasons. Spans carry only allowlisted metadata
+such as timings, counts, outcome, session/turn IDs, and endpoint mode; audio, transcripts,
+reply text, and exception messages are excluded. A valid W3C `traceparent` is forwarded on
+the existing transcript/thinking/speaking frames, preserving the host's sampling flags.
+Disconnected turns are closed, and app cleanup attempts a bounded five-second flush in a
+worker thread. Tracing failures do not interrupt voice operation.
+Capture spans include `input.audio_ms` and `endpoint.silence_ms` so buffered audio duration
+can be distinguished from elapsed processing time when investigating early endpoints.
 
 **Browser clients and CORS.** The API server's origin guard runs before any route. A browser or
 Electron client (which sends `Origin: null`) must have its origin listed in
@@ -99,13 +284,15 @@ API-server client.
 |---|---|
 | `route.py` | the WebSocket handler, auth flow and the per-connection wiring |
 | `loop.py` | the mic shim, the VAD/STT session worker, the turn driver (sentence-by-sentence TTS, barge-in, session mode) |
+| `arbitrate.py` | advisory selection among wake claims; audio processing is independent |
 | `agent_client.py` | the Runs API client: idempotent run creation, SSE with replay-safe sequence tracking, stop, approval answers |
 | `auth.py` | key verification through the API server's own `/v1/capabilities` |
-| `vad.py` | the barge/onset detector, endpointer and WAV capture |
+| `vad.py`, `speech_detector.py`, `silero_vad.py` | energy/Silero speech detection, verified model cache, endpointing and WAV capture |
 | `synth.py` | one `text → int16 PCM` seam over streaming or one-shot TTS, plus resampling |
 | `speech.py` | the only module that imports Hermes core speech helpers |
 | `phrases.py`, `settings.py` | stop/end phrase policy and the settings schema |
-| `turn_detector.py`, `tracing.py` | the optional Smart Turn endpointer and the no-op tracing seam |
+| `named.py` | named-device routing records and public Hermes conversation lookup/continuation |
+| `turn_detector.py`, `tracing.py` | the optional Smart Turn endpointer and host-configured OTEL tracing backend |
 
 `speech.py` imports a handful of core helpers that are not yet on Hermes's public plugin API
 (`transcribe_audio`, `resolve_streaming_provider`, `text_to_speech_tool` and the sentence chunker);
@@ -114,9 +301,19 @@ upstream PR publishes; nothing else in the plugin touches core internals.
 
 ## Profiles
 
-The route serves the profile that owns the API server listener. A `start.profile` naming any other
-profile is refused with `profile_unsupported` until Hermes registers plugin routes ahead of its
-`/p/<profile>/` catch-all.
+The route serves the Hermes profile that owns the configured API server listener.
+`start.profile` is not supported by the client contract: all clients must omit it
+and delete their profile selector and saved per-server profile setting. Discard
+legacy values rather than sending `null`, an empty string, or `"default"`.
+Select the server URL and authenticate normally; neither `start.name` nor a
+client-constructed `/p/<profile>/` route replaces profile selection.
+
+Deployed servers may still parse the legacy field and reject it with
+`profile_unsupported` (4400). The parser remains in the current implementation;
+clients must remove the field regardless. See [specs/client.md](specs/client.md)
+for the removal contract.
+
+The voice lifecycle and server integration contract are in [specs/server.md](specs/server.md).
 
 ## Develop and test
 
@@ -129,8 +326,27 @@ HERMES_AGENT_ROOT=/path/to/hermes-agent python -m pytest
 hermes plugins validate .
 ```
 
+Tracing SDK/exporter tests run when `opentelemetry-sdk` is installed (included in Hermes's
+`otlp` extra); otherwise those cases skip while the missing-OTEL fallback test still runs.
+
 The suite drives the real VAD, endpointer, capture, resampler, Runs client and route against a
 scripted in-process stand-in for the Runs API; only STT, the TTS provider and the model are faked.
+
+
+Real Silero regression tests use the checked-in human-speech fixture and a separately cached
+model. Ordinary tests stay offline and exercise the energy fallback. To include real inference:
+
+```bash
+HERMES_TEST_SILERO_MODEL=/path/to/silero_vad_16k_op15.onnx HERMES_AGENT_ROOT=/path/to/hermes-agent python -m pytest tests/test_silero_vad.py
+```
+
+`tests/test_barge_soft_speech.py` exercises pending, thinking, speaking, and
+playback-tail interruption against both detectors and inference-failure fallback.
+The real-model tests also accept `HERMES_TEST_BARGE_AUDIO=/path/to/reviewed.wav`
+for local mono PCM16 recordings at 16 kHz. They replay the recording quietly
+(loudest 30 ms block at 900 RMS) to check rejection during a turn, then at its
+original volume to verify interruption still works. Quiet speech must also
+remain detectable as ordinary idle input. Private room audio is not committed.
 
 ## Disclosure
 
@@ -138,8 +354,9 @@ The plugin opens one authenticated route on the API server you already run. Micr
 transcribed by your configured STT provider and replies are synthesized by your configured TTS
 provider; neither leaves the host unless those providers are cloud services. Turns run as API
 sessions in the serving profile with its full toolset. Command approvals raised during a voice turn
-are answered with `approval_choice` (deny by default); clarifying questions are cancelled. No
-telemetry, no third-party network calls of its own, no self-update.
+are answered with `approval_choice` (deny by default); clarifying questions are cancelled. Voice timing metadata follows the global OTEL provider or the host's opted-in monitoring OTLP destination.
+No third-party network calls of its own beyond the configured providers and optional model downloads;
+no self-update.
 
 ## License
 

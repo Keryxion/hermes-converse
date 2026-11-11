@@ -32,3 +32,16 @@ def _load_plugin_package() -> None:
 
 
 _load_plugin_package()
+
+
+# Most audio fixtures are modulated noise for the energy detector. Keep ordinary tests
+# offline and exercise the missing-model fallback; Silero-specific tests inject a session.
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _offline_silero(monkeypatch):
+    monkeypatch.setattr('hermes_converse.speech_detector.load_silero_session',
+                        lambda: (None, 'model omitted in offline tests'))
+    monkeypatch.setattr('hermes_converse.silero_vad.load_silero_session',
+                        lambda: (None, 'model omitted in offline tests'))

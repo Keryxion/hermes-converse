@@ -17,7 +17,7 @@ import tempfile
 import wave
 from collections import deque
 from contextlib import suppress
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -98,18 +98,23 @@ def unlink_quietly(path: Optional[str]) -> None:
             os.unlink(path)
 
 
+def utterance_volume(np: Any, audio: Any) -> float:
+    """The RMS loudness of a captured utterance, same int16-amplitude units as every threshold in
+    this module (a quiet room is ~30-80, normal speech ~3000-8000). This is a local
+    capture measurement, separate from the normalized 0–1 wake volume reported by clients."""
+    return rms(np, audio)
+
+
 def capture_until_quiet(stream: Any, np: Any, block: int, pre_roll: Any, *, endpoint_blocks: int,
                         max_blocks: int, sample_rate: int = SAMPLE_RATE,
                         silence_rms: float = SILENCE_RMS_THRESHOLD,
-                        no_data_seconds: Optional[float] = None) -> str:
+                        is_quiet: Optional[Callable[[Any], bool]] = None,
+                        no_data_seconds: Optional[float] = None) -> tuple[str, float]:
     """After a trip, read until *endpoint_blocks* of quiet (or *max_blocks*) and write pre-roll +
     capture to a WAV at *sample_rate*. *silence_rms* is the end-of-utterance threshold: raised above
-    the absolute 200 so an utterance ends when the level returns to a NOISY ambient floor.
-
-    When *no_data_seconds* is given and no audio arrives for that long of wall-clock time, the
-    capture ends early rather than blocking so a much-later stream can complete it and merge two
-    unrelated utterances into one transcript (issue #7). Callers detect this via
-    ``stream.no_data_return`` and should drop the partial capture."""
+    the absolute 200 so an utterance ends when the level returns to a NOISY ambient floor. Returns
+    ``(wav_path, volume)`` — see :func:`utterance_volume`. With a no-data timeout, the caller
+    must drop the WAV when ``stream.no_data_return`` is true."""
     frames: list[Any] = list(pre_roll)
     quiet = 0
     for _ in range(max_blocks):
@@ -117,10 +122,12 @@ def capture_until_quiet(stream: Any, np: Any, block: int, pre_roll: Any, *, endp
         if stream.no_data_return:
             break
         frames.append(data.copy())
-        quiet = quiet + 1 if rms(np, data) < silence_rms else 0
+        quiet_block = is_quiet(data) if is_quiet is not None else rms(np, data) < silence_rms
+        quiet = quiet + 1 if quiet_block else 0
         if quiet >= endpoint_blocks:
             break
-    return write_wav(np, np.concatenate(frames, axis=0), sample_rate=sample_rate)
+    audio = np.concatenate(frames, axis=0)
+    return write_wav(np, audio, sample_rate=sample_rate), utterance_volume(np, audio)
 
 
 class BargeDetector:
@@ -178,18 +185,18 @@ class BargeDetector:
         self.playing_prev = playing
         self.blocks_since_playback = 0 if playing else self.blocks_since_playback + 1
 
-    def feed(self, rms_value: float, playing: bool) -> Optional[str]:
-        """Consume one block; return the phase name when speech trips, else None."""
+    def feed(self, rms_value: float, playing: bool, *, interrupting: bool = False) -> Optional[str]:
+        """Consume a block; active-turn interruption uses stricter energy than idle onset."""
         self.block_idx += 1
         if not self.floor_locked and not self._calibrate(rms_value, playing):
             return None
         self._track_playback(playing)
         # Trigger: quiet baseline x multiplier, phase-dependent.
-        #  • Playback (barge-in): quiet_floor*mult, floored at PLAYBACK_MIN_TRIGGER and capped at
+        #  • Active-turn interruption: quiet_floor*mult, floored at PLAYBACK_MIN_TRIGGER and capped at
         #    TRIGGER_CEILING so a noisy room never trips on speaker bleed.
-        #  • Onset (not playing): quiet_floor*onset_mult, floored at ONSET_TRIGGER_MIN and capped
+        #  • Ordinary onset: quiet_floor*onset_mult, floored at ONSET_TRIGGER_MIN and capped
         #    at onset_ceiling IF one is set (the converse profile sets none).
-        if playing:
+        if playing or interrupting:
             trigger = min(max(self.quiet_floor * self.mult, PLAYBACK_MIN_TRIGGER), TRIGGER_CEILING)
         else:
             trigger = max(self.quiet_floor * self._onset_mult, ONSET_TRIGGER_MIN)
@@ -217,7 +224,7 @@ class BargeDetector:
                     f"window={sum(self.recent_above)}/{self.trip_needed} phase={phase}")
         if not (above and sum(self.recent_above) >= self.trip_needed):
             return None
-        vad_log(f"TRIPPED ({phase}): block={self.block_idx} rms={rms_value:.0f} floor={self.quiet_floor:.0f} "
+        vad_log(f"energy candidate ({phase}): block={self.block_idx} rms={rms_value:.0f} floor={self.quiet_floor:.0f} "
                 f"trigger={trigger:.0f} window={sum(self.recent_above)}/{len(self.recent_above)}")
         return phase
 

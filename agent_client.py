@@ -89,10 +89,27 @@ class RunsClient:
         self._stream_task: Optional[asyncio.Task] = None
         self._stop_requested = False
         self._stops_posted: set[str] = set()
+        # Keep admission/stop uncertainty visible until a public terminal status confirms it.
+        self.unsettled_run_ids: set[str] = set()
+        self.admission_uncertain = False
+        self.tool_calls = 0  # Observed tool starts for the most recent run; retained through TTS.
 
     @property
     def current_run_id(self) -> Optional[str]:
         return self._run_id
+
+    async def model_options(self) -> dict[str, Any]:
+        """Reuse the authenticated server inventory behind the voice WebSocket."""
+        params = {"include_unconfigured": "false", "refresh": "false"}
+        async with asyncio.timeout(8):
+            async with self._http.get(f"{self._base}/api/model/options", params=params,
+                                      headers=self._headers, allow_redirects=False) as response:
+                if response.status != 200:
+                    raise RunsError('model_catalog_unavailable')
+                result = await response.json()
+                if not isinstance(result, dict) or not isinstance(result.get('providers'), list):
+                    raise RunsError('model_catalog_unavailable')
+                return result
 
     # ── turn ──
     async def run_turn(self, *, text: str, session_id: str, on_delta: Callable[[str], None],
@@ -100,6 +117,13 @@ class RunsClient:
                        provider: Optional[str] = None, idempotency_key: Optional[str] = None) -> TurnResult:
         """Start a run and stream it to completion. Returns the reply for the history and the error
         (if any) the client should hear about; ``status`` is the run's terminal status."""
+        self.tool_calls = 0
+        if self.admission_uncertain:
+            return TurnResult("", "Previous request admission is unresolved; reconnect before retrying.", "failed", None)
+        for previous in tuple(self.unsettled_run_ids):
+            await self._settle_by_polling(previous, on_delta_seen=True, reason="previous run still stopping")
+        if self.unsettled_run_ids:
+            return TurnResult("", "Previous request is still stopping; please try again.", "failed", None)
         body: dict[str, Any] = {"input": text, "session_id": session_id}
         if instructions:
             body["instructions"] = instructions
@@ -107,8 +131,20 @@ class RunsClient:
             body["model"] = model
         if provider:
             body["provider"] = provider
+        admission = asyncio.ensure_future(self._post_run(body, idempotency_key))
         try:
-            run_id = await self._post_run(body, idempotency_key)
+            run_id = await asyncio.shield(admission)
+        except asyncio.CancelledError:
+            # An accepted POST may not have returned its id yet. Cancelling the HTTP
+            # request here would orphan the accepted run, so finish admission and stop it.
+            async def cancel_admission():
+                try:
+                    accepted_id = await admission
+                except (RunsError, TimeoutError, aiohttp.ClientError):
+                    return
+                await self._post_stop(accepted_id)
+            await self._finish_cleanup(cancel_admission())
+            raise
         except RunsError as exc:
             return TurnResult("", str(exc), "failed", None)
         self._run_id, self._stop_requested = run_id, False
@@ -119,7 +155,7 @@ class RunsClient:
             current = asyncio.current_task()
             if current is not None and current.cancelling():
                 # The host abandoned the turn (deadline / socket closed): never leave it running.
-                await self._abort(run_id, task)
+                await self._finish_cleanup(self._abort(run_id, task))
                 raise
             # stop() cancelled the stream after its settle timeout: the turn is over for us.
             return TurnResult("", None, "interrupted", run_id)
@@ -144,6 +180,7 @@ class RunsClient:
 
     # ── HTTP ──
     async def _post_run(self, body: dict[str, Any], idempotency_key: Optional[str]) -> str:
+        self.admission_uncertain = True
         headers = dict(self._headers)
         if idempotency_key:
             headers["Idempotency-Key"] = idempotency_key
@@ -154,7 +191,12 @@ class RunsClient:
                                            allow_redirects=False) as resp:
                     payload = await self._json(resp)
                     if resp.status in (200, 202) and isinstance(payload, dict) and payload.get("run_id"):
-                        return str(payload["run_id"])
+                        run_id = str(payload["run_id"])
+                        self.unsettled_run_ids.add(run_id)
+                        self.admission_uncertain = False
+                        return run_id
+                    if 400 <= resp.status < 500:
+                        self.admission_uncertain = False
                     raise RunsError(self._error_text(resp.status, payload))
             except aiohttp.ClientConnectionError as exc:
                 last_exc = exc
@@ -171,6 +213,17 @@ class RunsClient:
             async with self._http.post(f"{self._base}/v1/runs/{run_id}/stop", headers=self._headers,
                                        allow_redirects=False, timeout=aiohttp.ClientTimeout(total=5)) as resp:
                 await resp.read()
+
+    async def _finish_cleanup(self, cleanup) -> None:
+        """A second cancel/close must not interrupt the bounded HTTP stop cleanup."""
+        task = asyncio.ensure_future(cleanup)
+        while True:
+            try:
+                await asyncio.shield(task)
+                return
+            except asyncio.CancelledError:
+                if task.cancelled():
+                    raise
 
     async def _abort(self, run_id: str, task: asyncio.Task) -> None:
         if not task.done():
@@ -279,6 +332,9 @@ class RunsClient:
     async def _dispatch(self, run_id: str, event: dict[str, Any], on_delta: Callable[[str], None],
                         ) -> Optional[TurnResult]:
         name = event.get("event")
+        if name == "tool.started":
+            self.tool_calls += 1
+            return None
         if name == "message.delta":
             delta = event.get("delta")
             if isinstance(delta, str) and delta:
@@ -291,17 +347,22 @@ class RunsClient:
             await self._answer(run_id, "clarify", event)
             return None
         if name == "run.completed":
+            self.unsettled_run_ids.discard(run_id)
             return TurnResult(str(event.get("output") or ""), None, "completed", run_id)
         if name == "run.failed":
+            self.unsettled_run_ids.discard(run_id)
             return TurnResult("", str(event.get("error") or "agent run failed"), "failed", run_id)
         if name in ("run.cancelled", "run.interrupted"):
+            self.unsettled_run_ids.discard(run_id)
             error = None if self._stop_requested else str(event.get("error") or "agent run was cancelled")
             return TurnResult(str(event.get("output") or ""), error, name.split(".", 1)[1], run_id)
-        return None  # message.interim, tool.*, reasoning.*, replay.truncated, run.steered, ...
+        return None  # message.interim, other tool.*, reasoning.*, replay.truncated, run.steered, ...
 
     def _from_status(self, status: dict[str, Any]) -> TurnResult:
         state = str(status.get("status") or "")
         run_id = status.get("run_id")
+        if state in TERMINAL_STATUSES:
+            self.unsettled_run_ids.discard(run_id)
         if state == "completed":
             return TurnResult(str(status.get("output") or ""), None, state, run_id)
         if state == "failed":
@@ -319,5 +380,6 @@ class RunsClient:
             if asyncio.get_running_loop().time() >= deadline:
                 if not self._stop_requested:
                     await self._post_stop(run_id)
+                self.unsettled_run_ids.discard(run_id)
                 return TurnResult("", None if self._stop_requested else reason, "interrupted", run_id)
             await asyncio.sleep(POLL_INTERVAL)
