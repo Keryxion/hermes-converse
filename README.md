@@ -241,6 +241,12 @@ unavailable weights all retain the fixed silence endpoint and log the reason onc
 Doctor leaves the model untouched when Smart Turn is off. A successful doctor check confirms
 model loading, not the quality of endpointing on real speech; tune the threshold with real audio.
 
+If a client stops sending audio during a capture, the partial utterance is dropped after
+`capture_no_data_seconds` (default 5; 0 disables) without transcription or an agent run.
+The next utterance starts a fresh capture on the same socket. This timeout applies to
+both endpointers; received silence still ends utterances normally, and idle session quiet
+continues to count only received audio.
+
 **Voice tracing** (optional): when the host registers a global OpenTelemetry tracer provider,
 the plugin emits a `voice.turn` span with `voice.capture`, `voice.stt`, `voice.agent`, and
 `voice.tts` children through that provider. It uses the host's sampling and exporter settings,

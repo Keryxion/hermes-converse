@@ -69,6 +69,10 @@ config_schema:
     type: float
     default: 0.5
     description: "P(turn complete) at or above which Smart Turn commits the utterance."
+  capture_no_data_seconds:
+    type: float
+    default: 5
+    description: "Drop a partial capture after this many seconds without incoming audio; 0 disables. Received silence and idle quiet accounting are unaffected."
   approval_choice:
     type: str
     choices: [deny, once]

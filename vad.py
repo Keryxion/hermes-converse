@@ -108,15 +108,19 @@ def utterance_volume(np: Any, audio: Any) -> float:
 def capture_until_quiet(stream: Any, np: Any, block: int, pre_roll: Any, *, endpoint_blocks: int,
                         max_blocks: int, sample_rate: int = SAMPLE_RATE,
                         silence_rms: float = SILENCE_RMS_THRESHOLD,
-                        is_quiet: Optional[Callable[[Any], bool]] = None) -> tuple[str, float]:
+                        is_quiet: Optional[Callable[[Any], bool]] = None,
+                        no_data_seconds: Optional[float] = None) -> tuple[str, float]:
     """After a trip, read until *endpoint_blocks* of quiet (or *max_blocks*) and write pre-roll +
     capture to a WAV at *sample_rate*. *silence_rms* is the end-of-utterance threshold: raised above
     the absolute 200 so an utterance ends when the level returns to a NOISY ambient floor. Returns
-    ``(wav_path, volume)`` — see :func:`utterance_volume`."""
+    ``(wav_path, volume)`` — see :func:`utterance_volume`. With a no-data timeout, the caller
+    must drop the WAV when ``stream.no_data_return`` is true."""
     frames: list[Any] = list(pre_roll)
     quiet = 0
     for _ in range(max_blocks):
-        data, _ = stream.read(block)
+        data, _ = stream.read(block, no_data_seconds=no_data_seconds)
+        if stream.no_data_return:
+            break
         frames.append(data.copy())
         quiet_block = is_quiet(data) if is_quiet is not None else rms(np, data) < silence_rms
         quiet = quiet + 1 if quiet_block else 0

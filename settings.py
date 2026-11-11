@@ -36,6 +36,8 @@ DEFAULT_TAIL_FALLBACK = 45.0
 # brevity prompt, a tool result read aloud) can't play for minutes.
 DEFAULT_MAX_TTS_CHARS = 1500
 DEFAULT_ENDPOINT_THRESHOLD = 0.5
+# Capture-only wall-clock timeout; idle quiet still counts received audio.
+DEFAULT_CAPTURE_NO_DATA_SECONDS = 5.0
 APPROVAL_CHOICES = ("deny", "once")
 
 Getter = Callable[..., Any]
@@ -52,6 +54,7 @@ class Settings:
     end_phrases: tuple[str, ...] = DEFAULT_END_PHRASES
     endpoint_model: bool = False
     endpoint_threshold: float = DEFAULT_ENDPOINT_THRESHOLD
+    capture_no_data_seconds: float = DEFAULT_CAPTURE_NO_DATA_SECONDS
     vad_model: str = DEFAULT_VAD_MODEL
     approval_choice: str = "deny"
     api_base_url: str = ""
@@ -92,6 +95,11 @@ def _wake_window(raw: Any) -> float:
     return value if math.isfinite(value) and value >= 0 else DEFAULT_ARBITRATE_WAKE_WINDOW_SECONDS
 
 
+def _capture_timeout(raw: Any) -> float:
+    value = _number(raw, DEFAULT_CAPTURE_NO_DATA_SECONDS)
+    return max(0.0, value) if math.isfinite(value) else DEFAULT_CAPTURE_NO_DATA_SECONDS
+
+
 def load_settings(get: Getter) -> Settings:
     """Build :class:`Settings` from ``get(key, default)`` (``ctx.get_config`` or a dict's ``.get``)."""
     approval = str(get("approval_choice", "deny") or "deny").strip().lower()
@@ -107,6 +115,8 @@ def load_settings(get: Getter) -> Settings:
         vad_model="energy" if str(get("vad_model", DEFAULT_VAD_MODEL)).strip().lower() == "energy" else "silero",
         endpoint_threshold=min(1.0, max(0.0, _number(get("endpoint_threshold", DEFAULT_ENDPOINT_THRESHOLD),
                                                        DEFAULT_ENDPOINT_THRESHOLD))),
+        capture_no_data_seconds=_capture_timeout(
+            get("capture_no_data_seconds", DEFAULT_CAPTURE_NO_DATA_SECONDS)),
         approval_choice=approval if approval in APPROVAL_CHOICES else "deny",
         api_base_url=str(get("api_base_url", "") or "").strip().rstrip("/"),
         arbitrate_enabled=_model_enabled(get("arbitrate_enabled", DEFAULT_ARBITRATE_ENABLED)),
