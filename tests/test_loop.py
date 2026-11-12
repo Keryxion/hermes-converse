@@ -958,6 +958,64 @@ def test_timing_line_shows_a_bare_signoff_as_completed_but_unspoken(caplog):
     assert "next_action=standby" in line
 
 
+@pytest.mark.parametrize("failure", ["cancel", "error"])
+def test_timing_line_does_not_count_partial_output_as_a_final_reply(caplog, failure):
+    session = ConverseSession(np)
+    session.transcripts.put("hello")
+    session.transcripts.put(None)
+    sent, history = [], []
+
+    async def send(frame):
+        sent.append(frame)
+
+    async def run(transcript, on_delta, *, interrupted):
+        on_delta("Partial reply.")
+        if failure == "cancel":
+            session.cancel()
+            await asyncio.Event().wait()
+        raise RuntimeError("agent failed before returning a final reply")
+
+    async def scenario():
+        await drive_converse_turns(
+            session=session, synth=_EchoSynth(), cap=4000,
+            loop=asyncio.get_running_loop(), send_json=send, send_bytes=send,
+            run_turn=run, history=history, tail_fallback=0)
+
+    with caplog.at_level("INFO", logger="hermes_converse.loop"):
+        asyncio.run(scenario())
+    (line,) = _timing_lines(caplog)
+    assert "reply_chars=14" in line and "final_chars=0" in line
+    assert f"outcome={'barged' if failure == 'cancel' else 'error'}" in line
+    assert history[-1] == {"role": "assistant", "content": "Partial reply."}
+    assert _types(sent)[-2:] == ["interrupted" if failure == "cancel" else "error", "turn_done"]
+    assert _turn_done_frame(sent)["next_action"] == "listen"
+
+
+def test_timing_line_counts_a_final_only_reply_without_speaking_it(caplog):
+    sent, history = [], []
+
+    async def send(frame):
+        sent.append(frame)
+
+    async def run(transcript, on_delta, *, interrupted):
+        return "Final reply.", None
+
+    async def scenario():
+        await drive_converse_turns(
+            session=_FakeConverseSession(["hello"]), synth=_EchoSynth(), cap=4000,
+            loop=asyncio.get_running_loop(), send_json=send, send_bytes=send,
+            run_turn=run, history=history)
+
+    with caplog.at_level("INFO", logger="hermes_converse.loop"):
+        asyncio.run(scenario())
+    (line,) = _timing_lines(caplog)
+    assert "outcome=completed" in line and "final_chars=12" in line
+    assert "deltas=0" in line and "reply_chars=0" in line
+    assert "spoken_chars=0" in line and "pcm_chunks=0" in line
+    assert _types(sent) == ["thinking", "turn_done"]
+    assert history[-1] == {"role": "assistant", "content": "Final reply."}
+
+
 def test_timing_line_marks_a_timed_out_turn(caplog):
     sent: list = []
 

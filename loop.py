@@ -1113,7 +1113,7 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
         "pcm_chunks=%d next_action=%s",
         turn.ms("first_delta"), turn.ms("first_sentence"), turn.ms("first_pcm"),
         turn.ms("pcm_done"), len(turn.reply_parts), sum(len(p) for p in turn.reply_parts),
-        getattr(session, "session_id", None), turn.turn_id, outcome, len(reply or ""),
+        getattr(session, "session_id", None), turn.turn_id, outcome, len(turn.result.get("reply") or ""),
         sum(len(p) for p in turn.spoken_parts), turn.pcm_chunks, next_action)
     turn_done: dict[str, Any] = {"type": "turn_done", "turn_id": turn.turn_id,
                                 "next_action": next_action}
