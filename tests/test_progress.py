@@ -200,3 +200,66 @@ async def test_thinking_reports_tool_count_during_speech_and_resets_each_turn():
     assert sum(f['type'] == 'turn_done' for f in frames) == 2
     assert not any(f['type'] == 'working' for f in frames)
     assert not _progress_tasks()
+
+
+@pytest.mark.asyncio
+async def test_thinking_reports_reasoning_tokens_during_speech():
+    frames = []
+    updates = asyncio.Queue()
+    tokens = 4000  # A previous run's count must not leak into the initial frame.
+
+    async def send_json(frame):
+        frames.append(frame)
+        if frame['type'] == 'thinking':
+            updates.put_nowait(frame)
+
+    async def send_bytes(data):
+        pass
+
+    async def run_turn(transcript, on_delta, *, interrupted):
+        nonlocal tokens
+        tokens = None
+        initial = await updates.get()
+        assert initial['reasoning_tokens'] is None
+        assert (await updates.get())['reasoning_tokens'] is None  # unavailable, not zero
+        tokens = 0
+        assert (await updates.get())['reasoning_tokens'] == 0
+        on_delta('Hello.')
+        tokens = 2400  # a usage report that lands after speech has started
+        while True:
+            update = await updates.get()
+            if any(f['type'] == 'speaking' and f['turn_id'] == update['turn_id'] for f in frames):
+                if update['reasoning_tokens'] == 2400:
+                    break
+        return 'Hello.', None
+
+    async with asyncio.timeout(2):
+        await cl.drive_converse_turns(
+            session=_FakeConverseSession(['first', 'second']), synth=_EchoSynth(), cap=4000,
+            loop=asyncio.get_running_loop(), send_json=send_json, send_bytes=send_bytes,
+            run_turn=run_turn, history=[], reasoning_tokens=lambda: tokens)
+    # The second turn starts unavailable again rather than inheriting the first turn's count.
+    first, second = [next(f for f in frames if f['type'] == 'thinking' and f['turn_id'] == t)
+                     for t in dict.fromkeys(f['turn_id'] for f in frames)]
+    assert first['turn_id'] != second['turn_id'] and second['reasoning_tokens'] is None
+    assert not _progress_tasks()
+
+
+@pytest.mark.asyncio
+async def test_reasoning_tokens_reach_the_websocket_and_progress_stays_within_timeout(monkeypatch):
+    fake = _patch(monkeypatch)
+    fake.hang = True
+    fake.pre_events = (('usage.updated', {'reasoning_tokens': 2400}),)
+    async with Harness(fake, settings={'turn_timeout_seconds': 0.12}) as client:
+        ws = await _connect(client)
+        for chunk in _speech_then_silence_pcm():
+            await ws.send_bytes(chunk)
+        frames = []
+        async with asyncio.timeout(2):
+            while not frames or frames[-1]['type'] != 'turn_done':
+                frames.append(await _next_frame(ws))
+        thinking = [f for f in frames if f['type'] == 'thinking']
+        assert thinking[0]['reasoning_tokens'] is None
+        assert any(f['reasoning_tokens'] == 2400 for f in thinking[1:])
+        assert any(f['type'] == 'error' and 'timed out' in f['error'] for f in frames)
+        await ws.close()

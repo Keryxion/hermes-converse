@@ -115,7 +115,7 @@ wake word again mid-turn and you want to keep the conversation going.
 | `wake_grant` | recommends this client handle the wake activation; echoes its `claim_id` and `wake_word`. |
 | `wake_deny` | recommends this client stand down for the activation; echoes its `claim_id` and `wake_word`. |
 | `transcript` | user input or assistant reply text, identified by `role` and `turn_id`; see below |
-| `thinking` | starts a turn, then repeats every 5 seconds with its cumulative `tool_calls` count; refresh inactivity without resetting speaking/playback |
+| `thinking` | starts a turn, then repeats every 5 seconds with `tool_calls` and `reasoning_tokens`; refresh inactivity without resetting speaking/playback |
 | `speaking` + binary frames | the reply as PCM16 at `output_rate` |
 | `interrupted` | the turn was cancelled (you barged in or sent `cancel`); stop playing |
 | `turn_done` | the reply is fully sent; `next_action` tells the client to listen or enter standby after drain |
@@ -199,14 +199,22 @@ The server sends `thinking` at turn start, then approximately every **5 seconds*
 until the turn ends, including agent/TTS waits and speech:
 
 ```json
-{"type": "thinking", "turn_id": "turn-42", "tool_calls": 3}
+{"type": "thinking", "turn_id": "turn-42", "tool_calls": 3, "reasoning_tokens": 2400}
 ```
 
-The initial frame has `tool_calls: 0`. Subsequent frames contain the cumulative
-number of `tool.started` events observed from the Runs API for this turn. SSE
-replays are not counted again. The count includes calls that later fail; it is
-not a count of completed or currently running calls, or a percentage complete.
-It resets for each turn. Replies prepared without an agent run report zero.
+Both counters are measured for this turn and reset for each turn:
+
+- `tool_calls` is the cumulative number of `tool.started` events observed from
+  the Runs API. SSE replays are not counted again. The count includes calls that
+  later fail; it is not a count of completed or currently running calls, or a
+  percentage complete.
+- `reasoning_tokens` is the cumulative reasoning-token count the model provider
+  reported for this turn, or `null` when none has been reported. `null` means
+  unavailable; `0` is a measured zero. The count is updated when a model call
+  finishes, so it can lag during a long call and can increase while speaking.
+
+The initial frame has `tool_calls: 0` and `reasoning_tokens: null`. Replies
+prepared without an agent run report `tool_calls: 0` and `reasoning_tokens: null`.
 No tool names, arguments, results, or reasoning text are included. When tracing
 is active, frames also carry the turn's `traceparent`.
 

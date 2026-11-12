@@ -843,6 +843,7 @@ class _Driver:
     end_phrases: tuple[str, ...]
     transcripts: bool
     tool_calls: Optional[Callable[[], int]]
+    reasoning_tokens: Optional[Callable[[], Optional[int]]]
 
 
 class _Turn:
@@ -894,6 +895,7 @@ async def drive_converse_turns(
     end_phrases: tuple[str, ...] = DEFAULT_END_PHRASES,
     transcripts: bool = False,
     tool_calls: Optional[Callable[[], int]] = None,
+    reasoning_tokens: Optional[Callable[[], Optional[int]]] = None,
 ) -> None:
     """Run the per-transcript incremental-TTS turn loop.
 
@@ -904,8 +906,9 @@ async def drive_converse_turns(
     ``transcript`` → ``thinking`` → (``speaking`` + PCM frames) → optional ``interrupted``/``error``
     → ``turn_done``.
 
-    ``thinking`` repeats every five seconds with the observed tool-start count until terminal frames.
-    ``tool_calls`` reads that count from the current run; prepared replies always report zero.
+    ``thinking`` repeats every five seconds with the observed tool-start count and reported
+    reasoning tokens until terminal frames. ``tool_calls`` and ``reasoning_tokens`` read
+    the current run; prepared replies report zero tool calls and ``None`` reasoning tokens.
 
     BARGE-IN: a VAD trip while playing stops TTS playback (``session`` sets ``tts_stop``), we emit
     ``interrupted``, and — when the host provides ``interrupt_turn`` — the in-flight agent turn is
@@ -916,7 +919,8 @@ async def drive_converse_turns(
                 send_bytes=send_bytes, run_turn=run_turn, history=history,
                 quiet_interval=quiet_interval, interrupt_turn=interrupt_turn,
                 turn_timeout=turn_timeout, tail_fallback=tail_fallback, max_tts_chars=max_tts_chars,
-                end_phrases=tuple(end_phrases), transcripts=transcripts, tool_calls=tool_calls)
+                end_phrases=tuple(end_phrases), transcripts=transcripts, tool_calls=tool_calls,
+                reasoning_tokens=reasoning_tokens)
     session.enable_turn_control()
     async def notify_tail_barge(turn_id):
         await send_json({"type": "interrupted", "turn_id": turn_id})
@@ -1038,7 +1042,7 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
     progress_task = None
     try:
         if not turn.tts_stop.is_set():
-            await d.send_json({"type": "thinking", "tool_calls": 0, **turn.meta})
+            await d.send_json(_thinking_frame(d, turn))
         # The producer carries the request's credential/profile context.
         speech.spawn_context_thread(_produce_speech, name="converse-tts", args=(d, turn)).start()
         progress_task = asyncio.create_task(_report_thinking(d, turn))
@@ -1114,14 +1118,21 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
     return next_action
 
 
+def _thinking_frame(d: _Driver, turn: _Turn) -> dict[str, Any]:
+    """Measured progress only: a run's counters are read once its agent turn has started."""
+    run = turn.agent_started
+    count = d.tool_calls() if run and d.tool_calls is not None else 0
+    reasoning = d.reasoning_tokens() if run and d.reasoning_tokens is not None else None
+    return {"type": "thinking", "tool_calls": count, "reasoning_tokens": reasoning, **turn.meta}
+
+
 async def _report_thinking(d: _Driver, turn: _Turn) -> None:
-    """Repeat turn liveness and observed tool starts, including while streaming speech."""
+    """Repeat turn liveness and measured progress, including while streaming speech."""
     while True:
         await asyncio.sleep(THINKING_FRAME_INTERVAL)
         if turn.tts_stop.is_set() or d.session.stopped:
             return
-        count = d.tool_calls() if turn.agent_started and d.tool_calls is not None else 0
-        await d.send_json({"type": "thinking", "tool_calls": count, **turn.meta})
+        await d.send_json(_thinking_frame(d, turn))
 
 
 async def _run_agent(d: _Driver, turn: _Turn, interrupted: bool) -> None:
