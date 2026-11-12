@@ -115,7 +115,7 @@ wake word again mid-turn and you want to keep the conversation going.
 | `wake_grant` | recommends this client handle the wake activation; echoes its `claim_id` and `wake_word`. |
 | `wake_deny` | recommends this client stand down for the activation; echoes its `claim_id` and `wake_word`. |
 | `transcript` | user input or assistant reply text, identified by `role` and `turn_id`; see below |
-| `thinking` | starts a turn, then repeats every 5 seconds with `elapsed_ms`, `tool_calls`, and `reasoning_tokens`; refresh inactivity without resetting speaking/playback |
+| `thinking` | starts a turn, then repeats every 5 seconds with `tool_calls` and `reasoning_tokens`; refresh inactivity without resetting speaking/playback |
 | `speaking` + binary frames | the reply as PCM16 at `output_rate` |
 | `interrupted` | the turn was cancelled (you barged in or sent `cancel`); stop playing |
 | `turn_done` | the reply is fully sent; `next_action` tells the client to listen or enter standby after drain |
@@ -199,13 +199,11 @@ The server sends `thinking` at turn start, then approximately every **5 seconds*
 until the turn ends, including agent/TTS waits and speech:
 
 ```json
-{"type": "thinking", "turn_id": "turn-42", "elapsed_ms": 25000, "tool_calls": 3, "reasoning_tokens": 2400}
+{"type": "thinking", "turn_id": "turn-42", "tool_calls": 3, "reasoning_tokens": 2400}
 ```
 
-All three counters are measured for this turn and reset for each turn:
+Both counters are measured for this turn and reset for each turn:
 
-- `elapsed_ms` is the time since the turn started, including agent, tool, and
-  speech time. It is total turn time, not time spent reasoning.
 - `tool_calls` is the cumulative number of `tool.started` events observed from
   the Runs API. SSE replays are not counted again. The count includes calls that
   later fail; it is not a count of completed or currently running calls, or a

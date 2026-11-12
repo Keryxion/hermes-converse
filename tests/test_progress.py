@@ -203,7 +203,7 @@ async def test_thinking_reports_tool_count_during_speech_and_resets_each_turn():
 
 
 @pytest.mark.asyncio
-async def test_thinking_reports_elapsed_time_and_reasoning_tokens_during_speech():
+async def test_thinking_reports_reasoning_tokens_during_speech():
     frames = []
     updates = asyncio.Queue()
     tokens = 4000  # A previous run's count must not leak into the initial frame.
@@ -221,7 +221,6 @@ async def test_thinking_reports_elapsed_time_and_reasoning_tokens_during_speech(
         tokens = None
         initial = await updates.get()
         assert initial['reasoning_tokens'] is None
-        assert initial['elapsed_ms'] >= 0
         assert (await updates.get())['reasoning_tokens'] is None  # unavailable, not zero
         tokens = 0
         assert (await updates.get())['reasoning_tokens'] == 0
@@ -239,14 +238,10 @@ async def test_thinking_reports_elapsed_time_and_reasoning_tokens_during_speech(
             session=_FakeConverseSession(['first', 'second']), synth=_EchoSynth(), cap=4000,
             loop=asyncio.get_running_loop(), send_json=send_json, send_bytes=send_bytes,
             run_turn=run_turn, history=[], reasoning_tokens=lambda: tokens)
-    for turn_id in {f['turn_id'] for f in frames}:
-        elapsed = [f['elapsed_ms'] for f in frames if f['type'] == 'thinking' and f['turn_id'] == turn_id]
-        assert elapsed == sorted(elapsed) and elapsed[-1] > 0
-        assert elapsed[0] < elapsed[-1]
-    # The second turn restarts the clock rather than continuing the first turn's.
+    # The second turn starts unavailable again rather than inheriting the first turn's count.
     first, second = [next(f for f in frames if f['type'] == 'thinking' and f['turn_id'] == t)
                      for t in dict.fromkeys(f['turn_id'] for f in frames)]
-    assert second['elapsed_ms'] < 100 and first['turn_id'] != second['turn_id']
+    assert first['turn_id'] != second['turn_id'] and second['reasoning_tokens'] is None
     assert not _progress_tasks()
 
 
@@ -266,7 +261,5 @@ async def test_reasoning_tokens_reach_the_websocket_and_progress_stays_within_ti
         thinking = [f for f in frames if f['type'] == 'thinking']
         assert thinking[0]['reasoning_tokens'] is None
         assert any(f['reasoning_tokens'] == 2400 for f in thinking[1:])
-        assert all(isinstance(f['elapsed_ms'], int) for f in thinking)
-        assert thinking[-1]['elapsed_ms'] < 1000  # the 0.12 s deadline still ends the turn
         assert any(f['type'] == 'error' and 'timed out' in f['error'] for f in frames)
         await ws.close()

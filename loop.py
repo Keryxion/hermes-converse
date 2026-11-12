@@ -861,7 +861,6 @@ class _Turn:
         self.spoken_parts: list[str] = []
         self.result: dict[str, str] = {}
         self.ns: dict[str, int] = {"turn_start": time.time_ns()}
-        self.started = time.monotonic()
         self.output: Optional[ConversationOutput] = None
         self.pcm_chunks = 0
         self.timed_out = False
@@ -907,8 +906,8 @@ async def drive_converse_turns(
     ``transcript`` → ``thinking`` → (``speaking`` + PCM frames) → optional ``interrupted``/``error``
     → ``turn_done``.
 
-    ``thinking`` repeats every five seconds with the turn's elapsed time, observed tool-start count
-    and reported reasoning tokens until terminal frames. ``tool_calls`` and ``reasoning_tokens`` read
+    ``thinking`` repeats every five seconds with the observed tool-start count and reported
+    reasoning tokens until terminal frames. ``tool_calls`` and ``reasoning_tokens`` read
     the current run; prepared replies report zero tool calls and ``None`` reasoning tokens.
 
     BARGE-IN: a VAD trip while playing stops TTS playback (``session`` sets ``tts_stop``), we emit
@@ -1124,8 +1123,7 @@ def _thinking_frame(d: _Driver, turn: _Turn) -> dict[str, Any]:
     run = turn.agent_started
     count = d.tool_calls() if run and d.tool_calls is not None else 0
     reasoning = d.reasoning_tokens() if run and d.reasoning_tokens is not None else None
-    return {"type": "thinking", "elapsed_ms": round((time.monotonic() - turn.started) * 1000),
-            "tool_calls": count, "reasoning_tokens": reasoning, **turn.meta}
+    return {"type": "thinking", "tool_calls": count, "reasoning_tokens": reasoning, **turn.meta}
 
 
 async def _report_thinking(d: _Driver, turn: _Turn) -> None:
