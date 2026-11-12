@@ -61,7 +61,7 @@ A non-wake client may stream after `ready`. The server answers:
 |---|---|
 | `ready` | rates, the socket's `session_id`, and two server timestamps for clock-skew estimation |
 | `transcript` | what it heard; carries a `turn_id` every later frame of the turn repeats |
-| `thinking` | turn start, then progress every 5 seconds with a cumulative `tool_calls` count |
+| `thinking` | turn start, then progress every 5 seconds with `elapsed_ms`, `tool_calls`, and `reasoning_tokens` |
 | `speaking` + binary frames | the reply as PCM16 at `output_rate` |
 | `interrupted` | you spoke over the reply: stop playing, the turn is cancelled |
 | `error` | the turn failed (the message is spoken-safe text) |
@@ -79,8 +79,9 @@ not reasoning text. See
 [the client spec](specs/client.md#handling-thinking) for the frame format and tracing behavior.
 
 During a long agent/TTS turn, `thinking` repeats every 5 seconds with the same
-`turn_id` (and `traceparent` when available) and the number of tool calls started
-so far. Refresh the active turn's inactivity timer and count without changing
+`turn_id` (and `traceparent` when available), the turn's elapsed time, the number of
+tool calls started so far, and the provider-reported reasoning tokens (`null` when
+unavailable). Refresh the active turn's inactivity timer and count without changing
 speaking/playback state. Ignore stale/completed turn IDs and keep any absolute
 turn limit; progress frames do not extend the server's 120-second default timeout.
 They stop before terminal frames and on disconnect. See

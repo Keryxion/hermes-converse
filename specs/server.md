@@ -74,6 +74,20 @@ continued speech after endpoint must still be handled as continuation.
 
 Emit `thinking`, optional `speaking` and PCM, then the turn's terminal
 frames in order. Interrupted, failed, or superseded replies return `listen`.
+
+`thinking` progress is measured, never estimated. `elapsed_ms` uses a monotonic
+clock started with the turn. `tool_calls` counts the run's `tool.started` events.
+`reasoning_tokens` comes from the Runs API's `usage.updated` run event, which
+Hermes emits after each model call with the run's cumulative provider-reported
+count (`null` when the provider reports none):
+
+```json
+{"event": "usage.updated", "run_id": "run_abc", "reasoning_tokens": 2400}
+```
+
+Take the latest value rather than summing, so an SSE replay or late report cannot
+double count. Do not derive tokens from elapsed time or `reasoning.available`
+previews, and never forward reasoning text. Counters reset at each run's start.
 Send opt-in user and assistant `transcript` frames as defined in
 [the client spec](client.md), for both voice replies and outbound output. Send
 reply text before `turn_done` without delaying PCM. Distinguish generated text,
