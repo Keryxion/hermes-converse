@@ -1019,7 +1019,8 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
     """Run one agent turn and speak its reply; return the explicit client next action."""
     session = d.session
     interrupted_in = session.take_interrupted()
-    if turn.tts_stop.is_set():
+    cancelled_before_start = turn.tts_stop.is_set()
+    if cancelled_before_start:
         async def cancelled_reply():
             turn.text_q.put(None)
         turn_task = asyncio.ensure_future(cancelled_reply())
@@ -1052,12 +1053,6 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
                 d.interrupt_turn()
             except Exception:
                 logger.debug("converse: interrupt_turn failed", exc_info=True)
-
-        logger.info(
-            "converse timing: first_delta=%sms first_sentence=%sms first_pcm=%sms total=%sms "
-            "deltas=%d reply_chars=%d",
-            turn.ms("first_delta"), turn.ms("first_sentence"), turn.ms("first_pcm"),
-            turn.ms("pcm_done"), len(turn.reply_parts), sum(len(p) for p in turn.reply_parts))
 
         try:
             await turn_task
@@ -1107,6 +1102,19 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
     # Arm before turn_done so an immediate drained acknowledgement cannot be lost.
     if session.finish_turn(turn.turn_id, d.tail_fallback if turn.pcm_chunks else 0):
         next_action = "listen"
+    # One line per turn that says which turn it was and why it was (or was not) heard. Lengths
+    # only: never the transcript or reply text. reply_chars counts streamed deltas, final_chars the
+    # run's final reply, spoken_chars what reached TTS (a stripped sign-off leaves it at 0).
+    outcome = ("cancelled" if cancelled_before_start else "timed_out" if turn.timed_out
+               else "barged" if barged else "error" if turn_err else "completed")
+    logger.info(
+        "converse timing: first_delta=%sms first_sentence=%sms first_pcm=%sms total=%sms "
+        "deltas=%d reply_chars=%d session=%s turn=%s outcome=%s final_chars=%d spoken_chars=%d "
+        "pcm_chunks=%d next_action=%s",
+        turn.ms("first_delta"), turn.ms("first_sentence"), turn.ms("first_pcm"),
+        turn.ms("pcm_done"), len(turn.reply_parts), sum(len(p) for p in turn.reply_parts),
+        getattr(session, "session_id", None), turn.turn_id, outcome, len(reply or ""),
+        sum(len(p) for p in turn.spoken_parts), turn.pcm_chunks, next_action)
     turn_done: dict[str, Any] = {"type": "turn_done", "turn_id": turn.turn_id,
                                 "next_action": next_action}
     await d.send_json(turn_done)

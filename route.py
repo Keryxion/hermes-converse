@@ -337,6 +337,10 @@ class ConverseRoute:
         device_id = f"{settings.arbitrate_device_id or 'device'}_{uuid.uuid4().hex}"
         if arbitrator is not None:
             await arbitrator.register(device_id)
+        # The only place a socket's device identity meets its session id; turn and onset lines
+        # carry the session id, so this is what attributes them to a device.
+        logger.info("converse session: session=%s device_id=%s name=%r arbitrated=%s",
+                    getattr(session, "session_id", None), device_id, name, arbitrator is not None)
         if named is not None:
             connection.client = client
         await _serve(ws, session=session, synth=synth, cap=cap, client=client, settings=settings,
