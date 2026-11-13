@@ -66,6 +66,7 @@ DEFAULT_LOOPBACK = "http://127.0.0.1:8642"
 # read gap well past the server's 10 s SSE keepalive.
 HTTP_TIMEOUT = ClientTimeout(total=None, connect=5, sock_read=90)
 REPLACEMENT_TIMEOUT = 12.0
+GATEWAY_WAIT = 30.0
 
 
 @dataclass
@@ -267,8 +268,11 @@ class ConverseRoute:
                     if isinstance(old.client, RunsClient):
                         if old.client.admission_uncertain or not await sessions.settled(old.client.unsettled_run_ids):
                             raise NamedError('conversation_busy', 4404)
-                    elif old.client is not None and not old.client.settled:
-                        raise NamedError('conversation_busy', 4404)
+                # At startup a device can dial in before the platform has connected; wait for it
+                # rather than start this socket on the Runs API.
+                deadline = time.monotonic() + GATEWAY_WAIT
+                while self.hub.gateway is None and self.hub.gateway_expected and time.monotonic() < deadline:
+                    await asyncio.sleep(0.2)
                 gateway, turns = self.hub.gateway, None
                 if gateway is not None:
                     # The conversation is a gateway session on the converse platform.

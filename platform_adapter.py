@@ -82,6 +82,9 @@ class ConverseAdapter(BasePlatformAdapter):
         self._turns: dict[str, _VoiceTurn] = {}  # chat_id -> the voice turn in flight
         self._processing: dict[str, int] = {}  # chat_id -> gateway turns being processed
         self._commands: dict[str, _Command] = {}  # chat_id -> the plugin's own command in flight
+        self._active: dict[str, str] = {}  # chat_id -> message id the gateway is processing
+        # Voice turns the device gave up on that the gateway has not finished: message id -> turn.
+        self._abandoned: dict[str, _VoiceTurn] = {}
         self._session_chats: dict[str, str] = {}  # session_id -> chat_id
 
     # ── lifecycle ──
@@ -153,16 +156,24 @@ class ConverseAdapter(BasePlatformAdapter):
     def _own(self, event: MessageEvent) -> Optional[_VoiceTurn]:
         source = getattr(event, "source", None)
         turn = self._turns.get(getattr(source, "chat_id", "") or "")
-        if turn is None:
-            return None
-        if turn.event is event or (event.message_id and event.message_id == turn.event.message_id):
+        if turn is not None and (turn.event is event or (
+                event.message_id and event.message_id == turn.event.message_id)):
             return turn
-        return None
+        return self._abandoned.get(event.message_id or "")
+
+    def abandon(self, turn: _VoiceTurn) -> None:
+        """The device moved on; the gateway still owns this turn. Its late output is not spoken."""
+        if turn.done.is_set():
+            return
+        self._abandoned[str(turn.event.message_id)] = turn
+        while len(self._abandoned) > 256:
+            self._abandoned.pop(next(iter(self._abandoned)))
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         chat_id = event.source.chat_id
         with self._lock:
             self._processing[chat_id] = self._processing.get(chat_id, 0) + 1
+            self._active[chat_id] = str(event.message_id or "")
         command = self._commands.get(chat_id)
         if command is not None and command.event.message_id == event.message_id:
             command.started = True
@@ -182,6 +193,8 @@ class ConverseAdapter(BasePlatformAdapter):
                 self._processing[chat_id] = left
             else:
                 self._processing.pop(chat_id, None)
+            if self._active.get(chat_id) == str(event.message_id or ""):
+                self._active.pop(chat_id, None)
         command = self._commands.get(chat_id)
         if command is not None and command.event.message_id == event.message_id:
             command.done.set()
@@ -190,6 +203,7 @@ class ConverseAdapter(BasePlatformAdapter):
         if turn is not None:
             turn.outcome = outcome
             turn.done.set()
+            self._abandoned.pop(str(event.message_id or ""), None)
 
     # ── outbound ──
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
@@ -199,6 +213,8 @@ class ConverseAdapter(BasePlatformAdapter):
         if command is not None and command.started and not command.done.is_set():
             command.reply = content
             return SendResult(success=True, message_id=uuid.uuid4().hex)
+        if self._active.get(chat_id) in self._abandoned:
+            return SendResult(success=True, message_id=uuid.uuid4().hex)  # nobody is waiting for it
         turn = self._turns.get(chat_id)
         if turn is not None and turn.started and turn.outcome is None:
             # The voice turn's own output: its final completes the streamed speech.
@@ -340,19 +356,17 @@ class GatewayTurns:
     def settled(self) -> bool:
         return self._turn is None or self._turn.done.is_set()
 
-    @property
-    def unsettled_run_ids(self) -> set[str]:
-        return set() if self.settled else {str(self._turn.event.message_id)}
+    # The gateway owns a turn that outlives its socket; nothing is left for the route to settle.
+    unsettled_run_ids: frozenset = frozenset()
 
     async def run_turn(self, *, text: str, on_delta: Callable[[str], None],
                        instructions: Optional[str] = None, model: Optional[str] = None,
                        provider: Optional[str] = None, **_: Any) -> TurnResult:
         adapter = self._adapter
-        if not self.settled:
-            # A stopped turn that never unwound: cancel it rather than wedge the device.
-            await adapter.cancel_session_processing(self._session_key)
-            if not self.settled:
-                return TurnResult("", "Previous request is still stopping; please try again.", "failed", None)
+        if self._turn is not None:
+            # A stopped turn the gateway has not finished. The gateway serializes the session, so
+            # this request is admitted behind it instead of refusing the device.
+            adapter.abandon(self._turn)
         if self._model != (model, provider):  # the first turn also clears a stale earlier choice
             await adapter.set_model(self._source, self._session_key, model, provider)
             self._model = (model, provider)
@@ -402,6 +416,7 @@ class GatewayTurns:
             await asyncio.wait_for(turn.done.wait(), self._settle_timeout)
         except TimeoutError:
             logger.warning("converse: turn %s did not settle after stop; detaching", turn.event.message_id)
+            self._adapter.abandon(turn)
             turn.released.set()
 
 
@@ -434,6 +449,7 @@ def register_platform(ctx: Any, hub: Any) -> bool:
                 getattr(adapter, name)(**kwargs)
         return hook
 
+    hub.gateway_expected = True
     ctx.register_hook("on_stream_start", forward("on_stream_start"))
     ctx.register_hook("on_stream_delta", forward("on_stream_delta"))
     ctx.register_hook("pre_tool_call", forward("on_tool_call"))

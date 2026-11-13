@@ -208,7 +208,7 @@ async def test_stop_interrupts_the_turn_and_drops_its_late_reply(rig):
     spoken = []
     task = asyncio.ensure_future(turns.run_turn(text="long story", on_delta=spoken.append))
     await started.wait()
-    assert not turns.settled and turns.unsettled_run_ids
+    assert not turns.settled
     await turns.stop()
     result = await task
     assert (result.status, result.error) == ("interrupted", None)
@@ -235,28 +235,34 @@ async def test_cancelled_host_stops_the_turn(rig):
     assert finished.is_set() and turns.settled
 
 
-async def test_turn_that_never_settles_is_released_then_cancelled_before_the_next(rig):
+async def test_turn_that_outlives_its_stop_never_blocks_or_speaks(rig):
+    """A long tool call can outlast the stop. The device moves on; the next request is admitted
+    behind it and the old turn's late reply is dropped."""
     turns, _ = await _turns(rig)
     turns._settle_timeout = 0.05
-    started = asyncio.Event()
-
-    async def stuck(event):
-        started.set()
-        await asyncio.sleep(3600)
-
-    rig.adapter.set_message_handler(stuck)
-    task = asyncio.ensure_future(turns.run_turn(text="x", on_delta=lambda _: None))
-    await started.wait()
-    await turns.stop()
-    assert (await task).status == "interrupted" and not turns.settled
+    started, finish = asyncio.Event(), asyncio.Event()
 
     async def handler(event):
+        if event.text == "long":
+            started.set()
+            await finish.wait()
+            return "stale answer"
         return "Back."
 
     rig.adapter.set_message_handler(handler)
     spoken = []
-    result = await turns.run_turn(text="again", on_delta=spoken.append)
+    rig.hub.attach("den", Device())
+    first = asyncio.ensure_future(turns.run_turn(text="long", on_delta=spoken.append))
+    await started.wait()
+    await turns.stop()
+    assert (await first).status == "interrupted" and not turns.settled
+    assert not turns.unsettled_run_ids  # a new socket for the device is not refused
+    second = asyncio.ensure_future(turns.run_turn(text="again", on_delta=spoken.append))
+    await asyncio.sleep(0.05)
+    finish.set()
+    result = await second
     assert (result.status, spoken) == ("completed", ["Back."])
+    assert rig.adapter._abandoned == {} and rig.hub._attachments["den"].session.outputs == []
 
 
 async def test_failed_turn_reports_an_error(rig):
