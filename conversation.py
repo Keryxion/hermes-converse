@@ -50,6 +50,20 @@ class ConversationHub:
                 if item is attachment:
                     self._attachments.pop(alias)
 
+    def rebind(self, attachment: Attachment, conversation_id: str, live_id: str) -> None:
+        """Move a live attachment to a replacement conversation, dropping its old aliases."""
+        with self._lock:
+            for key in (conversation_id, live_id):
+                existing = self._attachments.get(key)
+                if existing is not None and existing is not attachment:
+                    raise ValueError("conversation_in_use")
+            for alias, item in list(self._attachments.items()):
+                if item is attachment:
+                    self._attachments.pop(alias)
+            attachment.conversation_id = conversation_id
+            self._attachments[conversation_id] = attachment
+            self._attachments[live_id] = attachment
+
     def alias(self, conversation_id: str, attachment: Attachment) -> None:
         with self._lock:
             existing = self._attachments.get(conversation_id)

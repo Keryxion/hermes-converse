@@ -279,10 +279,20 @@ class ConverseRoute:
                 attachment = self.hub.attach(conversation_id, session)
                 self.hub.alias(live_id, attachment)
                 self._named_connections[device.recipient_id] = connection
+
+            async def reattach() -> str:
+                # The device's conversation was deleted while connected: resolve it exactly as a
+                # new connection would (mint a replacement) and move this attachment to it.
+                async with self._named_lock:
+                    current = await asyncio.to_thread(self._devices.reserve, *names)
+                    replacement, live, _ = await sessions.resolve(current, self._devices)
+                    self.hub.rebind(attachment, replacement, live)
+                return replacement
+
             await self._connected(ws, session, api_key, http, base_url, synth, cap, names[0],
                                   quiet_interval, settings, attachment, recv_ms, input_rate, output_rate,
                                   named=(device, connection, history), transcripts=frame.get("transcripts") is True,
-                                  models=frame.get("models") is True)
+                                  models=frame.get("models") is True, reattach=reattach)
         except NamedError as exc:
             await _fail(ws, exc.error, exc.code)
         except (ClientError, TimeoutError, ValueError):
@@ -307,7 +317,7 @@ class ConverseRoute:
 
     async def _connected(self, ws, session, api_key, http, base_url, synth, cap, name,
                          quiet_interval, settings, attachment, server_recv_unix_ms, input_rate, output_rate,
-                         named=None, transcripts=False, models=False):
+                         named=None, transcripts=False, models=False, reattach=None):
         client = RunsClient(base_url, api_key, http=http, approval_choice=settings.approval_choice)
         ready = {
             "type": "ready",
@@ -347,7 +357,7 @@ class ConverseRoute:
                      name=name, quiet_interval=quiet_interval, arbitrator=arbitrator,
                      device_id=device_id, hub=self.hub, attachment=attachment,
                      named_device=named[0] if named else None, history=history if named else None,
-                     named_connection=named[1] if named else None, transcripts=transcripts)
+                     named_connection=named[1] if named else None, transcripts=transcripts, reattach=reattach)
 
     async def output(self, request: web.Request) -> web.Response:
         header = request.headers.get("Authorization", "")
@@ -473,7 +483,8 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                  arbitrator: Optional[Arbitrator] = None,
                  device_id: str = "", hub=None, attachment=None, named_device=None,
                  history: Optional[list[dict[str, str]]] = None, named_connection=None,
-                 transcripts: bool = False) -> None:
+                 transcripts: bool = False,
+                 reattach: Optional[Callable[[], Awaitable[str]]] = None) -> None:
     """Run the client pump and the turn driver until the socket ends; always stop the live run."""
     loop = asyncio.get_running_loop()
     session.enable_turn_control()
@@ -542,16 +553,31 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
         session.stop()
 
     async def _run_turn(transcript: str, on_delta, *, interrupted: bool) -> tuple[str, Optional[str]]:
+        nonlocal session_id
         model, provider = selected_model  # Snapshot once; do not alter a run already in flight.
-        with hub.owned_run(attachment, transcript) if hub is not None else contextlib.nullcontext() as owned:
-            result = await client.run_turn(
-                text=transcript, session_id=session_id, on_delta=on_delta,
+
+        async def run(target: str):
+            return await client.run_turn(
+                text=transcript, session_id=target, on_delta=on_delta,
                 instructions=voice_system_prompt(
                     name, allow_signoff=allow_signoff, end_phrases=settings.end_phrases,
                     device_name=named_device.device_name if named_device else None,
                     recipient_id=named_device.recipient_id if named_device else None),
                 model=model, provider=provider,
-                idempotency_key=f"converse-{session_id}-{uuid.uuid4().hex}")
+                idempotency_key=f"converse-{target}-{uuid.uuid4().hex}")
+
+        with hub.owned_run(attachment, transcript) if hub is not None else contextlib.nullcontext() as owned:
+            result = await run(session_id)
+            if result.code == "not_found" and reattach is not None:
+                try:
+                    replacement = await reattach()
+                except Exception:
+                    logger.warning("converse: could not replace deleted conversation %s", session_id, exc_info=True)
+                    replacement = None
+                if replacement and replacement != session_id:
+                    logger.info("converse: conversation %s was deleted; continuing in %s", session_id, replacement)
+                    session_id = replacement
+                    result = await run(session_id)
             if owned is not None and result.error is None:
                 owned.reply = result.reply
         return result.reply, result.error

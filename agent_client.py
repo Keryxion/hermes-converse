@@ -42,6 +42,10 @@ POLL_INTERVAL = 0.5
 class RunsError(Exception):
     """The API server refused or lost a run; the message is what the voice turn reports."""
 
+    def __init__(self, message: str, code: Optional[str] = None) -> None:
+        super().__init__(message)
+        self.code = code
+
 
 @dataclass
 class TurnResult:
@@ -49,6 +53,7 @@ class TurnResult:
     error: Optional[str]
     status: str
     run_id: Optional[str]
+    code: Optional[str] = None  # the API's error code when it refused the run, e.g. ``not_found``
 
 
 def _sse_events(raw_lines):
@@ -148,7 +153,7 @@ class RunsClient:
             await self._finish_cleanup(cancel_admission())
             raise
         except RunsError as exc:
-            return TurnResult("", str(exc), "failed", None)
+            return TurnResult("", str(exc), "failed", None, exc.code)
         self._run_id, self._stop_requested = run_id, False
         task = self._stream_task = asyncio.ensure_future(self._stream(run_id, on_delta))
         try:
@@ -199,7 +204,9 @@ class RunsClient:
                         return run_id
                     if 400 <= resp.status < 500:
                         self.admission_uncertain = False
-                    raise RunsError(self._error_text(resp.status, payload))
+                    err = payload.get("error") if isinstance(payload, dict) else None
+                    code = err.get("code") if isinstance(err, dict) else None
+                    raise RunsError(self._error_text(resp.status, payload), code if isinstance(code, str) else None)
             except aiohttp.ClientConnectionError as exc:
                 last_exc = exc
                 if attempt == 0 and idempotency_key:

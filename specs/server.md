@@ -165,6 +165,10 @@ when the title lookup confirms none exists, create a fresh session with a new
 ID and update the saved reference. Preserve the device's routing identity.
 Use a new session ID because deleted IDs may be retired by Hermes. A lost create
 response must recover the already-created conversation through title lookup.
+The same recovery applies while connected: when Hermes refuses a run with
+`not_found` because the session was deleted, resolve the device's conversation
+again as on connect, move the live attachment to the result, and retry that
+turn once there. Retry only if resolution produced a different session.
 Authentication failures, timeouts, malformed responses, ambiguous titles, and
 server errors must not create or replace history. Save the session reference
 for reconnect; do not build a
