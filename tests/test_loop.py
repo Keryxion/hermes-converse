@@ -186,6 +186,40 @@ def test_client_commit_ends_capture_even_when_smart_turn_would_hold(wake):
     assert _captured_blocks(session, wav_path) == 4
 
 
+def test_commit_queued_with_speech_before_onset_still_transcribes():
+    """PCM and commit can both reach the stream before the worker detects onset."""
+    session = ConverseSession(np, transcribe=lambda path: "set a timer", capture_no_data_seconds=1.0)
+    session.stream.feed(calibration().tobytes())
+    session.stream.feed(speech_like(2000, seconds=1.0).tobytes())
+    session.commit()  # no further PCM
+    session.start()
+    try:
+        item = session.transcripts.get(timeout=3)
+        assert isinstance(item, Utterance) and item == "set a timer"
+    finally:
+        session.stop()
+
+
+def test_commit_arriving_during_inference_ends_capture_without_waiting():
+    session = None
+
+    def speech_and_commit_during_inference(call):
+        if call == 1:
+            _feed_speech(session, 3)
+            session.commit()
+
+    det = _ScriptedDetector([0.9], on_call=speech_and_commit_during_inference)
+    session = _adaptive_session(det)
+    session._capture_no_data_seconds = 1.0
+    _feed_speech(session, 2)
+    _feed_silence(session, 2)
+    wav_path, _volume = session._capture()
+    assert not session.stream.no_data_return
+    assert det.calls == 1
+    assert _captured_blocks(session, wav_path) == 2 + 2 + 3 + 1
+    assert session.stream.committed is False
+
+
 def test_endpoint_windows_round_up_to_whole_blocks():
     session = ConverseSession(np, endpoint_silence_ms=700, endpoint_max_silence_ms=3000)
     assert session._endpoint_blocks * vad.BLOCK_MS == 720

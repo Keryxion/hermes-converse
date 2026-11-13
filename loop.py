@@ -94,8 +94,11 @@ class NetworkMicStream:
         self.resume_gap_seconds = STREAM_RESUME_GAP_SECONDS
         self.resumed = False
         self._pending_resume = False
+        # Set when the reader reaches a client ``commit`` marker, which is queued in order with the
+        # audio so a commit never overtakes the speech sent before it.
+        self.committed = False
 
-    def feed(self, pcm_bytes: bytes) -> None:
+    def feed(self, pcm_bytes: bytes, *, commit: bool = False) -> None:
         if not pcm_bytes:
             return
         with self._feed_lock:
@@ -110,7 +113,7 @@ class NetworkMicStream:
                 self._byte_carry = b""
             if buf:
                 self._chunks.put((self._epoch, self._np.frombuffer(buf, dtype=self._np.int16).copy(),
-                                  self._pending_resume))
+                                  self._pending_resume, commit))
                 self._pending_resume = False
 
     def discard(self) -> None:
@@ -119,6 +122,7 @@ class NetworkMicStream:
             self._epoch += 1
             self._byte_carry = b""
             self._pending_resume = False
+            self.committed = False
             while True:
                 try:
                     self._chunks.get_nowait()
@@ -170,13 +174,14 @@ class NetworkMicStream:
                 continue
             if chunk is None:  # close() sentinel
                 continue
-            epoch, chunk, resumed = chunk
+            epoch, chunk, resumed, commit = chunk
             if self._read_epoch != self._epoch:
                 self._carry = np.zeros(0, dtype=np.int16)
                 self._read_epoch = self._epoch
             if epoch == self._epoch:
                 self._carry = np.concatenate([self._carry, chunk])
                 self.resumed = self.resumed or resumed
+                self.committed = self.committed or commit
         out, self._carry = self._carry[:block], self._carry[block:]
         if self.no_data_return:
             out = np.pad(out, (0, block - len(out)))
@@ -201,10 +206,11 @@ class NetworkMicStream:
             except queue.Empty:
                 return
             if chunk is not None:
-                epoch, chunk, resumed = chunk
+                epoch, chunk, resumed, commit = chunk
                 if epoch == self._epoch:
                     self._carry = self._np.concatenate([self._carry, chunk])
                     self.resumed = self.resumed or resumed
+                    self.committed = self.committed or commit
 
 
 class InputReady:
@@ -333,8 +339,6 @@ class ConverseSession:
         # (and queuing a CancelTurn marker) applies to the capture happening right now.
         self._capturing = False
         self._continuation_capture = False
-        # Client `commit`: end the current capture at its next block, whatever the endpointer thinks.
-        self._commit = threading.Event()
         # A granted wake: the next capture tolerates a pause between the wake word and the request.
         self._wake_pending = False
         self._queued_utterance: Optional[Utterance] = None
@@ -403,9 +407,9 @@ class ConverseSession:
 
     def commit(self) -> None:
         """End the current capture now (client sent ``commit``), bypassing Smart Turn and the wake
-        pause. One silent block wakes a capture that is waiting for audio."""
-        self._commit.set()
-        self.stream.feed(self._np.zeros(self._block, dtype=self._np.int16).tobytes())
+        pause. The marker is one silent block queued after the audio already received, so it also
+        wakes a capture that is waiting for audio."""
+        self.stream.feed(self._np.zeros(self._block, dtype=self._np.int16).tobytes(), commit=True)
 
     @_session_state
     def note_wake(self) -> None:
@@ -448,6 +452,7 @@ class ConverseSession:
                     # Onset filtering rejects echo/noise; accepted speech always owns a capture.
                     self._pre_roll.append(data.copy())
                     if phase is None:
+                        self.stream.committed = False  # a commit with no utterance to end
                         self._account_received_silence()
                         continue
                     self._reset_quiet()
@@ -457,7 +462,6 @@ class ConverseSession:
                         except Exception:
                             logger.debug("converse on_trip callback failed", exc_info=True)
                     self._continuation_capture = busy
-                    self._commit.clear()
                     wake, self._wake_pending = self._wake_pending, False
                     for utterance in (self._queued_utterance, self._active_utterance):
                         if utterance is not None:
@@ -731,16 +735,19 @@ class ConverseSession:
                 speech_blocks += 1
 
         while len(frames) - pre_roll < self._max_blocks:
+            if self.stream.committed:
+                # Reached the commit marker (maybe while draining audio after Smart Turn): keep what
+                # has arrived and end without waiting for more audio or asking Smart Turn.
+                frames.extend(self.stream.ready_blocks(self._block))
+                reason = "client_commit"
+                break
             data, _ = self.stream.read(self._block, no_data_seconds=self._capture_no_data_seconds)
             if self.stream.no_data_return or self._stop.is_set():
                 reason = "no_data" if self.stream.no_data_return else "stopped"
                 break
-            if self._commit.is_set():
-                # Keep the audio received before the commit, then end without asking Smart Turn.
+            if self.stream.committed:
                 frames.append(data.copy())
-                frames.extend(self.stream.ready_blocks(self._block))
-                reason = "client_commit"
-                break
+                continue
             take(data)
             if quiet >= self._max_silence_blocks:
                 reason = "max_silence"
@@ -776,6 +783,7 @@ class ConverseSession:
             if complete:
                 reason = "threshold"
                 break
+        self.stream.committed = False  # a commit ends only the capture it arrived in
         if phase is not None:
             phase.set(**{"endpoint.reason": reason, "endpoint.pause_ms": self._blocks_ms(quiet),
                          "endpoint.longest_pause_ms": self._blocks_ms(longest_pause)})
