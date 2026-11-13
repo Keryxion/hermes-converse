@@ -211,5 +211,54 @@ responses. A confirmed missing session recovers through exact-title lookup;
 other lookup failures leave the existing reference unchanged.
 The prompt supplies both names and the routing identity, explains proactive output without
 another wake word, and requires successful scheduling receipts before confirming timers.
-Heartbeat 2's current API-session restriction still requires an integration change; a prompt
-does not bypass a scheduling tool's refusal.
+A prompt does not bypass a scheduling tool's refusal.
+
+## Gateway conversation
+
+A named device's conversation is a gateway session on the `converse` platform, the
+same kind of session a Telegram or Slack chat has. The plugin registers the platform;
+it needs no credentials and is enabled with the plugin. The WebSocket route, its URL,
+and API-key authentication stay on the API server.
+
+| Voice event | Gateway interface |
+|---|---|
+| Endpointed utterance | `handle_message` with a text `MessageEvent`; the voice prompt is its `channel_prompt` |
+| Reply text as it is generated | `on_stream_delta` plugin hook |
+| Final reply | `send` marked `notify`; speaks only what the stream did not carry |
+| Turn settled | `on_processing_complete` |
+| Barge-in, cancel, disconnect | `interrupt_session_activity`, then wait for the turn to settle |
+| Tool and reasoning progress | `pre_tool_call` and `post_api_request` plugin hooks |
+| Model selection | the session's model override |
+
+The chat is the device's conversation: chat name `<assistant_name>: <device_name>`,
+user `recipient_id`, user name `device_name`. Hermes owns the session, its history,
+compaction, and its place in the web UI. Every event comes from a socket that
+presented the API key, so the platform is registered as trusted inbound and needs no
+user allowlist or pairing.
+
+A message another producer submits to the session, such as a Heartbeat wake or a
+background process completion, runs as an ordinary turn. Its final reply reaches
+`send` and is spoken on the attached device without a wake word. Outcomes:
+
+| Situation | Outcome |
+|---|---|
+| Device attached and idle | Spoken once. |
+| Device capturing or replying | Spoken after the current exchange. |
+| No device attached, or the reply expired after 60 s | `send` reports failure; nothing is queued for a later connection. |
+| Silent result (`[SILENT]` or empty) | No speech. |
+| Voice turn interrupted | Its late reply is discarded. |
+| Stream delta arriving after the final | Discarded, so nothing is spoken twice. |
+
+Status text meant for a screen (busy acknowledgements, tool progress, error notices)
+is never spoken; the platform's display defaults turn it off. Approval prompts are
+answered at once with `approval_choice`, and clarify prompts are cancelled.
+
+One voice turn runs at a time per conversation. A stopped turn must settle before the
+next is admitted; one that has not settled within the timeout is cancelled first.
+
+A device that already has a conversation from the Runs API continues it: on first
+attach the gateway session is pointed at that conversation's live session and the
+saved reference is dropped. If it was deleted, the device starts a fresh conversation.
+
+When the platform is not connected, a named device runs through the Runs API as
+described under Named Aryas.

@@ -35,6 +35,8 @@ class ConversationHub:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._attachments: dict[str, Attachment] = {}
+        # The connected ``converse`` gateway adapter, when this Hermes hosts the platform.
+        self.gateway: Any = None
 
     def attach(self, conversation_id: str, session: Any) -> Attachment:
         with self._lock:

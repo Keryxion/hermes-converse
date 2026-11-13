@@ -7,9 +7,10 @@ text, the agent turn, and per-sentence streaming text to speech back down the sa
 barge-in. Built for devices that have a microphone and a speaker and nothing else: an ESP32, a
 browser tab, a kiosk.
 
-The agent turn runs through Hermes's public Runs API, so every turn is an ordinary Hermes session:
-the agent's tools, memory, skills and approvals all apply, and the conversation continues across
-turns on one socket.
+A named device's conversation is a gateway session on the plugin's `converse` platform, the same
+kind of session a Telegram or Slack chat has: the agent's tools, memory, skills, scheduling and
+compaction all apply, and the conversation shows up in the web UI under its device name. A socket
+that sends no names runs its turns through Hermes's public Runs API instead.
 
 ## Install
 
@@ -296,6 +297,7 @@ API-server client.
 | `route.py` | the WebSocket handler, auth flow and the per-connection wiring |
 | `loop.py` | the mic shim, the VAD/STT session worker, the turn driver (sentence-by-sentence TTS, barge-in, session mode) |
 | `arbitrate.py` | advisory selection among wake claims; audio processing is independent |
+| `platform_adapter.py` | the `converse` gateway platform: voice turns as gateway messages, reply text from stream hooks, proactive output |
 | `agent_client.py` | the Runs API client: idempotent run creation, SSE with replay-safe sequence tracking, stop, approval answers |
 | `auth.py` | key verification through the API server's own `/v1/capabilities` |
 | `vad.py`, `speech_detector.py`, `silero_vad.py` | energy/Silero speech detection, verified model cache, endpointing and WAV capture |

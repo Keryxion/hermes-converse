@@ -264,12 +264,27 @@ class ConverseRoute:
                             await asyncio.wait_for(old.done.wait(), REPLACEMENT_TIMEOUT)
                         except TimeoutError:
                             raise NamedError('conversation_busy', 4404) from None
-                    pending = old.client.unsettled_run_ids if old.client is not None else set()
-                    if old.client is not None and old.client.admission_uncertain:
+                    if isinstance(old.client, RunsClient):
+                        if old.client.admission_uncertain or not await sessions.settled(old.client.unsettled_run_ids):
+                            raise NamedError('conversation_busy', 4404)
+                    elif old.client is not None and not old.client.settled:
                         raise NamedError('conversation_busy', 4404)
-                    if not await sessions.settled(pending):
-                        raise NamedError('conversation_busy', 4404)
-                conversation_id, live_id, history = await sessions.resolve(device, self._devices)
+                gateway, turns = self.hub.gateway, None
+                if gateway is not None:
+                    # The conversation is a gateway session on the converse platform.
+                    from .platform_adapter import GatewayTurns
+                    conversation_id = live_id = device.candidate_id.removeprefix('voice_')
+                    history = []
+                    source = gateway.source_for(chat_id=conversation_id, title=device.title,
+                                                recipient_id=device.recipient_id, device_name=device.device_name)
+                    # A device that talked through the Runs API keeps that conversation's history.
+                    earlier = await sessions.live_tip(device.session_id) if device.session_id else None
+                    session_key = await gateway.bind(source, adopt_session_id=earlier)
+                    if device.session_id:
+                        await asyncio.to_thread(self._devices.forget, device)
+                    turns = GatewayTurns(gateway, source, session_key)
+                else:
+                    conversation_id, live_id, history = await sessions.resolve(device, self._devices)
                 input_rate, output_rate, quiet_interval, _, profile = parse_start_config(frame)
                 if not self._profile_allowed(profile):
                     raise NamedError('profile_unsupported', 4400)
@@ -292,7 +307,9 @@ class ConverseRoute:
             await self._connected(ws, session, api_key, http, base_url, synth, cap, names[0],
                                   quiet_interval, settings, attachment, recv_ms, input_rate, output_rate,
                                   named=(device, connection, history), transcripts=frame.get("transcripts") is True,
-                                  models=frame.get("models") is True, reattach=reattach)
+                                  models=frame.get("models") is True, turns=turns,
+                                  # A gateway conversation is recreated by the gateway itself.
+                                  reattach=None if turns is not None else reattach)
         except NamedError as exc:
             await _fail(ws, exc.error, exc.code)
         except (ClientError, TimeoutError, ValueError):
@@ -317,8 +334,9 @@ class ConverseRoute:
 
     async def _connected(self, ws, session, api_key, http, base_url, synth, cap, name,
                          quiet_interval, settings, attachment, server_recv_unix_ms, input_rate, output_rate,
-                         named=None, transcripts=False, models=False, reattach=None):
-        client = RunsClient(base_url, api_key, http=http, approval_choice=settings.approval_choice)
+                         named=None, transcripts=False, models=False, turns=None, reattach=None):
+        runs = RunsClient(base_url, api_key, http=http, approval_choice=settings.approval_choice)
+        client = turns or runs
         ready = {
             "type": "ready",
             "transcripts": transcripts,
@@ -331,7 +349,7 @@ class ConverseRoute:
         }
         if models:
             try:
-                ready["model_catalog"] = public_model_catalog(await client.model_options())
+                ready["model_catalog"] = public_model_catalog(await runs.model_options())
             except Exception:
                 logger.warning("converse model catalog unavailable", exc_info=True)
                 ready["model_catalog"] = {"providers": []}
@@ -479,7 +497,7 @@ async def _await_start_frame(ws: web.WebSocketResponse, *,
 
 
 async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: Any, cap: int,
-                 client: RunsClient, settings: Settings, name: str, quiet_interval: float,
+                 client: Any, settings: Settings, name: str, quiet_interval: float,
                  arbitrator: Optional[Arbitrator] = None,
                  device_id: str = "", hub=None, attachment=None, named_device=None,
                  history: Optional[list[dict[str, str]]] = None, named_connection=None,

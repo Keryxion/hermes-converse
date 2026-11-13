@@ -1,8 +1,8 @@
 """hermes-converse: server-owned realtime voice over one WebSocket on the Hermes API server.
 
 ``register()`` wires the final-response observer, the ``GET /v1/audio/converse`` route on the
-``api_server`` platform (through ``ctx.register_platform_handler``) and the ``hermes converse``
-CLI tree. Everything heavy (numpy, PyAV, the speech providers) is imported per connection, so
+``api_server`` platform (through ``ctx.register_platform_handler``), the ``converse`` gateway
+platform that named devices' conversations run on, and the ``hermes converse`` CLI tree. Everything heavy (numpy, PyAV, the speech providers) is imported per connection, so
 loading the plugin costs nothing until a client connects.
 """
 
@@ -19,6 +19,12 @@ def register(ctx) -> None:
     hub = ConversationHub()
     ctx.register_hook("post_llm_call", hub.on_response)
     ctx.register_platform_handler("api_server", make_platform_factory(ctx, hub=hub))
+    try:
+        from .platform_adapter import register_platform
+    except ImportError:  # no gateway in this process (CLI-only install)
+        pass
+    else:
+        register_platform(ctx, hub)
     ctx.register_cli_command(
         name="converse",
         help="Realtime voice endpoint (/v1/audio/converse) tools",

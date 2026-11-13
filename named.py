@@ -114,6 +114,14 @@ class DeviceStore:
                 if saved != session_id:
                     raise NamedError()
 
+    def forget(self, device: DeviceConversation) -> None:
+        """Drop the saved session reference; the gateway conversation owns the history now."""
+        with self._lock:
+            db = self._connection()
+            with db:
+                db.execute('UPDATE conversations SET session_id=NULL WHERE recipient_id=? AND assistant_name=?',
+                           (device.recipient_id, device.assistant_name))
+
     def close(self):
         with self._lock:
             if self._db is not None:
@@ -215,6 +223,17 @@ class NamedSessions:
                    if isinstance(m, dict) and m.get('role') in ('user', 'assistant')
                    and isinstance(m.get('content'), str)][-40:]
         return sid, live, history
+
+    async def live_tip(self, session_id: str) -> str | None:
+        """The live session continuing *session_id* (compression rotates it); None when it is gone."""
+        status, body = await self.request('GET', f'/api/sessions/{quote(session_id, safe="")}/messages',
+                                         params={'limit': '1', 'order': 'latest'})
+        if status == 404:
+            return None
+        live = body.get('session_id')
+        if status != 200 or not isinstance(live, str) or not live:
+            raise NamedError()
+        return live
 
     async def settled(self, run_ids: set[str]) -> bool:
         for run_id in tuple(run_ids):

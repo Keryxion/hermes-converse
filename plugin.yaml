@@ -7,9 +7,10 @@ kind: standalone
 description: >-
   Off-device realtime voice: GET /v1/audio/converse on the API server. A client streams
   microphone PCM16 up one WebSocket; the plugin owns VAD, endpointing, STT, the agent turn
-  (through the public Runs API, so the session, tools and approvals stay Hermes's) and
-  per-sentence streaming TTS back down the same socket, with barge-in. Built for an ESP32
-  or a browser that has a microphone and a speaker and nothing else.
+  (a gateway session on the plugin's converse platform, so the session, tools, scheduling
+  and approvals stay Hermes's) and per-sentence streaming TTS back down the same socket,
+  with barge-in. Built for an ESP32 or a browser that has a microphone and a speaker and
+  nothing else.
 author: "Darrell (@DTTerastar)"
 license: MIT
 homepage: https://github.com/Keryxion/hermes-converse
@@ -25,7 +26,7 @@ python_dependencies:
   - "transformers>=4.46,<6"
   - "huggingface_hub>=0.26,<2"
 provides_tools: []
-provides_hooks: [post_llm_call]
+provides_hooks: [post_llm_call, on_stream_start, on_stream_delta, pre_tool_call, post_api_request]
 config_schema:
   vad_model:
     type: str
