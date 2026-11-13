@@ -477,3 +477,41 @@ def test_stale_recovery_cannot_overwrite_a_different_saved_session(tmp_path):
     with pytest.raises(NamedError):
         store.remember(stale, 'different')
     assert store.reserve('Arya', 'Den Echo').session_id == 'recovered'
+
+
+async def _spoken_turn(ws):
+    for chunk in _speech_then_silence_pcm():
+        await ws.send_bytes(chunk)
+    frames, _ = await _collect_turn(ws)
+    return frames
+
+
+@pytest.mark.asyncio
+async def test_conversation_deleted_while_connected_continues_in_a_replacement(tmp_path, monkeypatch):
+    """A live socket must recover without reconnecting when Hermes deletes its conversation."""
+    fake = _patch(monkeypatch)
+    create = fake.create_run
+    refused = []
+
+    async def create_run(request):
+        body = await request.json()
+        if body['session_id'] not in fake.sessions:  # Hermes: a deleted session refuses new runs
+            refused.append(body['session_id'])
+            return web.json_response({'error': {'message': 'not_found', 'code': 'not_found'}}, status=409)
+        return await create(request)  # aiohttp caches the body it already read
+
+    fake.create_run = create_run
+    async with Harness(fake, device_store=DeviceStore(tmp_path/'devices.db')) as client:
+        ws, ready = await connect(client)
+        old = next(iter(fake.sessions))
+        await _spoken_turn(ws)
+        del fake.sessions[old]  # deleted out from under the connection
+        frames = await _spoken_turn(ws)
+        assert refused == [old]
+        assert not any(f['type'] == 'error' for f in frames)
+        new = next(iter(fake.sessions))
+        assert new != old and fake.sessions[new]['title'] == 'Arya: Den Echo'
+        await _spoken_turn(ws)
+        assert [run['body']['session_id'] for run in fake.runs.values()] == [old, new, new]
+        assert refused == [old]  # later turns go straight to the replacement
+        await ws.close()
