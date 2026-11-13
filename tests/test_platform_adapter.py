@@ -377,6 +377,20 @@ async def test_model_selection_is_applied_to_the_conversation(rig):
     assert rig.store.models[key] is None
 
 
+async def test_model_change_reaches_the_running_gateway(rig):
+    """The runner caches an override and an agent per session; both must go for the change to apply."""
+    turns, key = await _turns(rig)
+    evicted = []
+    runner = SimpleNamespace(_session_model_overrides={key: {"model": "old"}}, _evict_cached_agent=evicted.append)
+    rig.adapter.gateway_runner = runner
+    try:
+        await rig.adapter.set_model(key, "flash", "litellm")
+    finally:
+        rig.adapter.gateway_runner = None
+    assert rig.store.models[key] == {"model": "flash", "provider": "litellm"}
+    assert runner._session_model_overrides == {} and evicted == [key]
+
+
 async def test_approval_and_clarify_prompts_are_answered_at_once(rig, monkeypatch):
     calls = []
     monkeypatch.setattr("tools.approval.resolve_gateway_approval",

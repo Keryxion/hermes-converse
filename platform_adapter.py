@@ -109,12 +109,21 @@ class ConverseAdapter(BasePlatformAdapter):
             entry = switched
         return entry.session_key
 
-    def set_model(self, session_key: str, model: Optional[str], provider: Optional[str]) -> None:
+    async def set_model(self, session_key: str, model: Optional[str], provider: Optional[str]) -> None:
         store = getattr(self, "_session_store", None)
         if store is None:
             return
         override = {k: v for k, v in (("model", model), ("provider", provider)) if v}
-        store.set_model_override(session_key, override or None)
+        await asyncio.to_thread(store.set_model_override, session_key, override or None)
+        # The runner keeps its own copy and a built agent per session; without dropping both the
+        # stored override only takes effect after a restart. Core has no public call for this.
+        runner = self.gateway_runner
+        try:
+            runner._session_model_overrides.pop(session_key, None)
+            runner._evict_cached_agent(session_key)
+        except AttributeError:
+            if runner is not None:
+                logger.warning("converse: this gateway cannot apply a model change before restart")
 
     # ── turn bracket ──
     def _own(self, event: MessageEvent) -> Optional[_VoiceTurn]:
@@ -309,7 +318,7 @@ class GatewayTurns:
             if not self.settled:
                 return TurnResult("", "Previous request is still stopping; please try again.", "failed", None)
         if (model, provider) != (self._model or (None, None)):
-            await asyncio.to_thread(adapter.set_model, self._session_key, model, provider)
+            await adapter.set_model(self._session_key, model, provider)
             self._model = (model, provider)
         turn_id = uuid.uuid4().hex
         event = MessageEvent(
