@@ -62,7 +62,18 @@ class TestSettings:
         assert s.turn_timeout == 120.0 and s.tail_fallback == 45.0 and s.max_tts_chars == 1500
         assert s.end_phrases == ("over and out",)
         assert s.endpoint_model is False and s.endpoint_threshold == 0.5
+        assert s.endpoint_silence_ms == 700 and s.endpoint_max_silence_ms == 3000
         assert s.approval_choice == "deny" and s.api_base_url == ""
+
+    def test_endpoint_silence_windows(self):
+        def load(cfg):
+            return load_settings(lambda key, default=None: cfg.get(key, default))
+        s = load({"endpoint_silence_ms": "900", "endpoint_max_silence_ms": 2500})
+        assert s.endpoint_silence_ms == 900 and s.endpoint_max_silence_ms == 2500
+        s = load({"endpoint_silence_ms": 1200, "endpoint_max_silence_ms": 500})
+        assert s.endpoint_max_silence_ms == 1200  # never shorter than the candidate pause
+        s = load({"endpoint_silence_ms": -1, "endpoint_max_silence_ms": "nan"})
+        assert s.endpoint_silence_ms == 700 and s.endpoint_max_silence_ms == 3000
 
     def test_values_are_coerced_and_clamped(self):
         cfg = {"name": "  Hal ", "voice_model": "gpt-x", "voice_provider": "", "turn_timeout_seconds": "30",

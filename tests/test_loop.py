@@ -16,33 +16,39 @@ import pytest
 from hermes_converse import loop as cl
 from hermes_converse import speech, vad
 from hermes_converse.loop import (
-    HISTORY_MAX_MESSAGES, MAX_ENDPOINT_HOLDS, ConverseSession, QuietTick, TailBarge, Utterance,
+    HISTORY_MAX_MESSAGES, ConverseSession, QuietTick, TailBarge, Utterance,
     drive_converse_turns, parse_start_config, voice_system_prompt)
 from hermes_converse.synth import decode_audio_file_to_pcm16, resample_synth, resolve_synthesizer
 
 from tests.support.converse_audio import calibration, silence, speech_like
 
 
-# ── Smart Turn adaptive endpoint ──
+# ── endpointing ──
 
 class _ScriptedDetector:
-    def __init__(self, probs):
+    def __init__(self, probs, on_call=None):
         self._probs = list(probs)
         self.threshold = 0.5
         self.calls = 0
+        self._on_call = on_call
 
     def turn_complete_probability(self, audio_f32):
         p = self._probs[min(self.calls, len(self._probs) - 1)]
         self.calls += 1
+        if self._on_call is not None:
+            self._on_call(self.calls)
         return float(p)
 
 
-def _adaptive_session(detector, *, endpoint_blocks=2, max_blocks=60, transcribe=None):
+def _adaptive_session(detector, *, endpoint_blocks=2, max_silence_blocks=8, max_blocks=500, transcribe=None):
     session = ConverseSession(np, transcribe=transcribe)  # endpoint_model off -> no model load
     session._turn_detector = detector
-    session._endpoint_threshold = detector.threshold
+    if detector is not None:
+        session._endpoint_threshold = detector.threshold
     session._endpoint_blocks = endpoint_blocks
+    session._max_silence_blocks = max_silence_blocks
     session._max_blocks = max_blocks
+    session._detector.is_quiet = lambda block: not np.any(block)  # zeros are quiet, anything else speech
     return session
 
 
@@ -52,34 +58,172 @@ def _feed_silence(session, blocks):
         session.stream.feed(silence_block)
 
 
+def _feed_speech(session, blocks):
+    speech_block = np.full(session._block, 4000, dtype=np.int16).tobytes()
+    for _ in range(blocks):
+        session.stream.feed(speech_block)
+
+
+def _captured_blocks(session, wav_path):
+    with wave.open(wav_path, "rb") as wf:
+        frames = wf.getnframes()
+    vad.unlink_quietly(wav_path)
+    return frames // session._block
+
+
 def test_adaptive_commits_immediately_when_turn_sounds_complete():
     det = _ScriptedDetector([0.95])
     session = _adaptive_session(det)
     _feed_silence(session, session._endpoint_blocks + 4)
-    wav_path, volume = session._capture_adaptive()
+    wav_path, volume = session._capture()
     assert det.calls == 1
     assert volume >= 0
-    with wave.open(wav_path, "rb") as wf:
-        assert wf.getnframes() > 0
-    vad.unlink_quietly(wav_path)
+    assert _captured_blocks(session, wav_path) == session._endpoint_blocks + 4  # buffered audio is kept
 
 
-def test_adaptive_holds_then_commits_capturing_more_audio():
+def test_adaptive_rechecks_each_window_until_complete():
     det = _ScriptedDetector([0.1, 0.2, 0.9])
     session = _adaptive_session(det)
-    _feed_silence(session, session._endpoint_blocks * 4 + 4)
-    wav_path, _volume = session._capture_adaptive()
+    _feed_silence(session, 20)
+    wav_path, _volume = session._capture()
     assert det.calls == 3
-    vad.unlink_quietly(wav_path)
 
 
-def test_adaptive_gives_up_after_max_holds():
+def test_adaptive_incomplete_turn_ends_at_max_silence():
     det = _ScriptedDetector([0.0])
-    session = _adaptive_session(det, max_blocks=500)
-    _feed_silence(session, session._endpoint_blocks * 6 + 4)
-    wav_path, _volume = session._capture_adaptive()
-    assert det.calls == MAX_ENDPOINT_HOLDS
-    vad.unlink_quietly(wav_path)
+    session = _adaptive_session(det, max_silence_blocks=9)
+    _feed_silence(session, 20)
+    wav_path, _volume = session._capture()
+    assert det.calls == 4  # checks at 2, 4, 6, 8 blocks of silence
+    assert _captured_blocks(session, wav_path) == 9
+
+
+def test_adaptive_resumed_speech_restores_the_full_pause_allowance():
+    det = _ScriptedDetector([0.0, 0.0, 0.9])
+    session = _adaptive_session(det, max_silence_blocks=6)
+    _feed_speech(session, 2)
+    _feed_silence(session, 5)  # an incomplete-sounding pause, bridged
+    _feed_speech(session, 2)
+    _feed_silence(session, 10)
+    wav_path, _volume = session._capture()
+    assert det.calls == 3
+    assert _captured_blocks(session, wav_path) == 2 + 5 + 2 + 10
+
+
+def test_speech_during_inference_keeps_listening():
+    session = None
+
+    def arrives_during_inference(call):
+        if call == 1:
+            _feed_speech(session, 3)  # already queued when the model returns
+            threading.Timer(0.2, _feed_silence, (session, 5)).start()
+
+    det = _ScriptedDetector([0.9], on_call=arrives_during_inference)
+    session = _adaptive_session(det)
+    _feed_speech(session, 2)
+    _feed_silence(session, 2)
+    wav_path, _volume = session._capture()
+    assert det.calls == 2  # the complete verdict was discarded and the updated turn rechecked
+    assert _captured_blocks(session, wav_path) == 2 + 2 + 3 + 5
+
+
+def test_fixed_endpoint_ends_at_first_candidate_pause():
+    session = _adaptive_session(None)
+    _feed_speech(session, 3)
+    _feed_silence(session, 10)
+    wav_path, _volume = session._capture()
+    assert _captured_blocks(session, wav_path) == 3 + session._endpoint_blocks
+
+
+@pytest.mark.parametrize("smart_turn", [False, True])
+def test_wake_pause_waits_for_the_request(smart_turn):
+    det = _ScriptedDetector([0.9]) if smart_turn else None
+    session = _adaptive_session(det)
+    wake_word = session._wake_speech_blocks - 5
+    _feed_speech(session, wake_word)  # "Hey Arya"
+    _feed_silence(session, 6)  # checking that the device is listening
+    _feed_speech(session, 20)  # "set a five minute timer"
+    _feed_silence(session, 10)
+    wav_path, _volume = session._capture(wake=True)
+    trailing = 10 if smart_turn else session._endpoint_blocks  # Smart Turn keeps buffered audio
+    assert _captured_blocks(session, wav_path) == wake_word + 6 + 20 + trailing
+    assert det is None or det.calls == 1
+
+
+def test_wake_pause_is_bounded_by_max_silence():
+    session = _adaptive_session(None)
+    _feed_speech(session, 5)
+    _feed_silence(session, 20)
+    wav_path, _volume = session._capture(wake=True)
+    assert _captured_blocks(session, wav_path) == 5 + session._max_silence_blocks
+
+
+def test_continuous_wake_request_endpoints_normally():
+    session = _adaptive_session(None)
+    _feed_speech(session, session._wake_speech_blocks + 10)
+    _feed_silence(session, 10)
+    wav_path, _volume = session._capture(wake=True)
+    assert _captured_blocks(session, wav_path) == session._wake_speech_blocks + 10 + session._endpoint_blocks
+
+
+def test_without_wake_a_short_pause_ends_capture():
+    session = _adaptive_session(None)
+    _feed_speech(session, 5)
+    _feed_silence(session, 6)
+    _feed_speech(session, 20)
+    wav_path, _volume = session._capture()
+    assert _captured_blocks(session, wav_path) == 5 + session._endpoint_blocks
+
+
+@pytest.mark.parametrize("wake", [False, True])
+def test_client_commit_ends_capture_even_when_smart_turn_would_hold(wake):
+    det = _ScriptedDetector([0.0])
+    session = _adaptive_session(det)
+    _feed_speech(session, 3)
+    session.commit()
+    wav_path, _volume = session._capture(wake=wake)
+    assert det.calls == 0
+    assert _captured_blocks(session, wav_path) == 4
+
+
+def test_commit_queued_with_speech_before_onset_still_transcribes():
+    """PCM and commit can both reach the stream before the worker detects onset."""
+    session = ConverseSession(np, transcribe=lambda path: "set a timer", capture_no_data_seconds=1.0)
+    session.stream.feed(calibration().tobytes())
+    session.stream.feed(speech_like(2000, seconds=1.0).tobytes())
+    session.commit()  # no further PCM
+    session.start()
+    try:
+        item = session.transcripts.get(timeout=3)
+        assert isinstance(item, Utterance) and item == "set a timer"
+    finally:
+        session.stop()
+
+
+def test_commit_arriving_during_inference_ends_capture_without_waiting():
+    session = None
+
+    def speech_and_commit_during_inference(call):
+        if call == 1:
+            _feed_speech(session, 3)
+            session.commit()
+
+    det = _ScriptedDetector([0.9], on_call=speech_and_commit_during_inference)
+    session = _adaptive_session(det)
+    session._capture_no_data_seconds = 1.0
+    _feed_speech(session, 2)
+    _feed_silence(session, 2)
+    wav_path, _volume = session._capture()
+    assert not session.stream.no_data_return
+    assert det.calls == 1
+    assert _captured_blocks(session, wav_path) == 2 + 2 + 3 + 1
+    assert session.stream.committed is False
+
+
+def test_endpoint_windows_round_up_to_whole_blocks():
+    session = ConverseSession(np, endpoint_silence_ms=700, endpoint_max_silence_ms=3000)
+    assert session._endpoint_blocks * vad.BLOCK_MS == 720
+    assert session._max_silence_blocks * vad.BLOCK_MS == 3000
 
 
 def test_frames_to_f32_resamples_non_16k_capture():

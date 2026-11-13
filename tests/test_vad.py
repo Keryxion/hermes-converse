@@ -2,8 +2,6 @@
 
 import threading
 import time
-import wave
-from collections import deque
 
 import numpy as np
 import pytest
@@ -124,25 +122,6 @@ def test_network_mic_stream_zero_pads_and_returns_on_stop():
     assert overflow is False and data.shape == (480,)
     np.testing.assert_array_equal(data[:100], np.arange(100, dtype=np.int16))
     assert np.all(data[100:] == 0)
-
-
-def test_capture_until_quiet_produces_wav_from_shim():
-    stream = NetworkMicStream(np, stop=threading.Event(), poll_seconds=0.01)
-    block = int(vad.SAMPLE_RATE * 0.03)
-    speech = np.ones(block, dtype=np.int16) * 8000
-    silence = np.zeros(block, dtype=np.int16)
-    endpoint_blocks = max(1, 1250 // 30)
-    stream.feed(speech.tobytes())
-    stream.feed(speech.tobytes())
-    for _ in range(endpoint_blocks + 2):
-        stream.feed(silence.tobytes())
-    wav_path, volume = vad.capture_until_quiet(stream, np, block, deque(maxlen=4), endpoint_blocks=endpoint_blocks,
-                                               max_blocks=max(1, 30_000 // 30), sample_rate=22050)
-    assert wav_path
-    assert volume > 0  # the fed audio was loud, not silence
-    with wave.open(wav_path, "rb") as wf:
-        assert wf.getframerate() == 22050 and wf.getnchannels() == 1 and wf.getnframes() > 0
-    vad.unlink_quietly(wav_path)
 
 
 def test_network_mic_stream_flags_resume_after_a_gap_even_from_one_byte():

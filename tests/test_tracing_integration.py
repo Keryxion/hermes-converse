@@ -60,22 +60,22 @@ async def test_app_cleanup_flushes_off_event_loop(monkeypatch):
     assert len(calls) == 1 and calls[0] != main_thread
 
 
-def test_smart_turn_events_include_hold_commit_and_budget(otel):
+def test_smart_turn_events_include_hold_commit_and_max_silence(otel):
     from hermes_converse import vad
     from tests.test_loop import _ScriptedDetector, _adaptive_session, _feed_silence
 
     _, _, exporter = otel
-    for probabilities, reason in [([0.1, 0.9], 'threshold'), ([0.0], 'hold_budget')]:
+    for probabilities, reason in [([0.1, 0.9], 'threshold'), ([0.0], 'max_silence')]:
         recorder = tracing.PhaseRecorder()
-        session = _adaptive_session(_ScriptedDetector(probabilities), max_blocks=500)
-        _feed_silence(session, session._endpoint_blocks * 6 + 4)
+        session = _adaptive_session(_ScriptedDetector(probabilities))
+        _feed_silence(session, 20)
         with recorder.phase('voice.capture', **{'endpoint.mode': 'smart_turn'}) as phase:
-            wav, _ = session._capture_adaptive(phase=phase)
+            wav, _ = session._capture(phase=phase)
         vad.unlink_quietly(wav)
         tracing.start_turn(recorder=recorder, turn_id=reason).end()
         capture = [s for s in exporter.get_finished_spans() if s.name == 'voice.capture'][-1]
         decisions = [e.attributes for e in capture.events]
         assert decisions[0]['endpoint.decision'] == 'hold'
-        assert decisions[-1]['endpoint.decision'] == 'commit'
-        assert decisions[-1]['endpoint.reason'] == reason
+        assert decisions[0]['endpoint.pause_ms'] == 60
         assert all(0 <= d['endpoint.probability'] <= 1 for d in decisions)
+        assert capture.attributes['endpoint.reason'] == reason

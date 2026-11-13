@@ -64,10 +64,24 @@ and leave the socket and conversation usable. `stop` closes the attachment.
 
 ### Endpointing, completion, and recovery
 
-Keep the configured silence window and optional Smart Turn semantic endpoint
-separate from onset detection. Smart Turn may hold an incomplete utterance through
-a candidate pause, bounded by the configured hold budget and utterance limit.
-Explicit `commit` forces capture to endpoint. A failed/empty STT result starts no
+Keep endpointing separate from onset detection. Received silence of
+`endpoint_silence_ms` (default 700) is a candidate pause. Without Smart Turn it
+ends the capture. With Smart Turn, a complete-sounding turn ends it; an incomplete
+one keeps listening and is checked again after each further window, until
+`endpoint_max_silence_ms` (default 3000) of continuous silence ends it. Speech
+resets the pause. Audio that arrived while Smart Turn ran is checked before
+committing; if it contains speech, keep listening.
+
+After a granted `wake`, the user often pauses to check the device is listening.
+In that activation's first capture, until 1 s of speech has followed onset, a
+pause ends the capture only at `endpoint_max_silence_ms`. This applies with or
+without Smart Turn, so "Hey Arya … set a timer" is one request while a continuous
+"Hey Arya, set a timer" endpoints normally.
+
+Explicit `commit` ends the capture at once with the audio already received,
+bypassing Smart Turn and the wake pause. The utterance limit still applies.
+Capture traces record the endpoint mode, windows, wake flag, end reason, final
+pause, and longest pause spoken through. A failed/empty STT result starts no
 run and releases capture ownership. Continue listening within an open activation.
 Do not claim a VAD or endpoint model can eliminate every premature endpoint:
 continued speech after endpoint must still be handled as continuation.
