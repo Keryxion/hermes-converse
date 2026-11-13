@@ -303,8 +303,8 @@ class ConverseAdapter(BasePlatformAdapter):
 
 def _reasoning_tokens(usage: Any) -> Optional[int]:
     """Provider-reported reasoning tokens for one model call; None when not reported."""
-    if not isinstance(usage, dict):
-        return None
+    if not isinstance(usage, dict) or usage.get("reasoning_tokens_reported") is False:
+        return None  # Hermes normalizes an unreported count to 0; this flag says it was absent
     details = usage.get("completion_tokens_details") or usage.get("output_tokens_details")
     for value in (usage.get("reasoning_tokens"), details.get("reasoning_tokens") if isinstance(details, dict) else None):
         if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
