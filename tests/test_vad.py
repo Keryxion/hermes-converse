@@ -1,6 +1,7 @@
 """The barge/onset detector as a pure RMS state machine, and the endpointer over the mic shim."""
 
 import threading
+import time
 import wave
 from collections import deque
 
@@ -142,3 +143,16 @@ def test_capture_until_quiet_produces_wav_from_shim():
     with wave.open(wav_path, "rb") as wf:
         assert wf.getframerate() == 22050 and wf.getnchannels() == 1 and wf.getnframes() > 0
     vad.unlink_quietly(wav_path)
+
+
+def test_network_mic_stream_flags_resume_after_a_gap_even_from_one_byte():
+    stream = NetworkMicStream(np, stop=threading.Event(), poll_seconds=0.01)
+    stream.resume_gap_seconds = 0.05
+    stream.feed(np.zeros(480, dtype=np.int16).tobytes())
+    stream.read(480)
+    assert stream.resumed is False
+    time.sleep(0.1)
+    stream.feed(b"\x00")  # a lone odd byte queues nothing
+    stream.feed(b"\x00" + np.zeros(479, dtype=np.int16).tobytes() + b"\x00")
+    stream.read(480)
+    assert stream.resumed is True

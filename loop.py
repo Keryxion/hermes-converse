@@ -91,13 +91,15 @@ class NetworkMicStream:
         # example, stopped listening and started again); ``resumed`` flags it for the reader.
         self.resume_gap_seconds = STREAM_RESUME_GAP_SECONDS
         self.resumed = False
+        self._pending_resume = False
 
     def feed(self, pcm_bytes: bytes) -> None:
         if not pcm_bytes:
             return
         with self._feed_lock:
             now = time.monotonic()
-            resumed = now - self._last_feed >= self.resume_gap_seconds
+            # Held until a chunk is queued: a lone odd byte only fills the carry.
+            self._pending_resume = self._pending_resume or now - self._last_feed >= self.resume_gap_seconds
             self._last_feed = now
             buf = self._byte_carry + pcm_bytes
             if len(buf) % 2:
@@ -105,7 +107,9 @@ class NetworkMicStream:
             else:
                 self._byte_carry = b""
             if buf:
-                self._chunks.put((self._epoch, self._np.frombuffer(buf, dtype=self._np.int16).copy(), resumed))
+                self._chunks.put((self._epoch, self._np.frombuffer(buf, dtype=self._np.int16).copy(),
+                                  self._pending_resume))
+                self._pending_resume = False
 
     def discard(self) -> None:
         """Fence already received audio so control-phase samples cannot be replayed as input."""
