@@ -139,7 +139,7 @@ plugin settings form):
 |---|---|---|
 | `name` | `Arya` | the assistant's name in the voice prompt when the start frame has none |
 | `voice_model`, `voice_provider` | `""` | a voice-only model override sent with every run |
-| `turn_timeout_seconds` | `120` | a turn with no output for this long is stopped and reported |
+| `turn_timeout_seconds` | `120` | a turn that makes no progress for this long is stopped and reported; each tool call and model call counts as progress |
 | `playback_tail_timeout_seconds` | `45` | how long to wait for the client's `drained` frame |
 | `max_tts_chars_per_turn` | `1500` | safety cap on how much of one reply is spoken |
 | `end_phrases` | `[over and out]` | session mode: a reply ending with one of these signs off |

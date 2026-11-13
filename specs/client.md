@@ -242,8 +242,12 @@ the turn trace when tracing is enabled. A short turn may send only the initial f
 An unchanged count still indicates turn liveness, not proof that model/tool work
 has advanced.
 
-Keep any absolute client turn limit independent: repeated `thinking` frames
-never extend it or the server's `turn_timeout_seconds` (default 120 seconds).
+The server ends a turn that makes no progress for `turn_timeout_seconds`
+(default 120 seconds) with an `error` and `turn_done`. Progress is a tool call
+starting or finishing, a model call, reply text, or reply audio; a turn that
+keeps working is not cut off. Repeated `thinking` frames are liveness, not
+progress: they never extend this limit, and any absolute client turn limit
+stays independent of them.
 The server stops these updates before terminal `interrupted`, `error`, or
 `turn_done` frames and on disconnect. Network delays can still deliver an old
 frame after local cancellation, so check its turn ID before refreshing timers.

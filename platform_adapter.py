@@ -67,6 +67,7 @@ class _VoiceTurn:
     earlier: str = ""  # the last model response that carried text, once another has started
     tool_calls: int = 0
     reasoning_tokens: Optional[int] = None
+    progress_at: float = 0.0  # monotonic time the agent last did anything
 
 
 @dataclass
@@ -302,15 +303,19 @@ class ConverseAdapter(BasePlatformAdapter):
     def on_stream_start(self, *, session_id=None, **_: Any) -> None:
         turn = self._turn_for_session(session_id)
         if turn is not None:
+            turn.progress_at = time.monotonic()
             if turn.streamed.strip():
                 turn.earlier = turn.streamed
             turn.streamed = ""
 
     def on_stream_delta(self, *, delta=None, kind="text", session_id=None, **_: Any) -> None:
+        turn = self._turn_for_session(session_id)
+        if turn is None:
+            return
+        turn.progress_at = time.monotonic()  # reasoning counts as progress too
         if kind != "text" or not isinstance(delta, str) or not delta:
             return
-        turn = self._turn_for_session(session_id)
-        if turn is None or turn.stopped or turn.final is not None:
+        if turn.stopped or turn.final is not None:
             return
         turn.streamed += delta
         turn.on_delta(delta)
@@ -319,11 +324,20 @@ class ConverseAdapter(BasePlatformAdapter):
         turn = self._turn_for_session(session_id)
         if turn is not None:
             turn.tool_calls += 1
+            turn.progress_at = time.monotonic()
+
+    def on_tool_done(self, *, session_id=None, **_: Any) -> None:
+        turn = self._turn_for_session(session_id)
+        if turn is not None:
+            turn.progress_at = time.monotonic()
 
     def on_api_request(self, *, session_id=None, usage=None, **_: Any) -> None:
         turn = self._turn_for_session(session_id)
+        if turn is None:
+            return
+        turn.progress_at = time.monotonic()
         count = _reasoning_tokens(usage)
-        if turn is not None and count is not None:
+        if count is not None:
             turn.reasoning_tokens = (turn.reasoning_tokens or 0) + count
 
 
@@ -358,6 +372,11 @@ class GatewayTurns:
     @property
     def reasoning_tokens(self) -> Optional[int]:
         return self._turn.reasoning_tokens if self._turn is not None else None
+
+    @property
+    def last_progress(self) -> float:
+        """Monotonic time the turn in flight last made progress; 0 before it has."""
+        return self._turn.progress_at if self._turn is not None else 0.0
 
     @property
     def settled(self) -> bool:
@@ -457,5 +476,6 @@ def register_platform(ctx: Any, hub: Any) -> bool:
     ctx.register_hook("on_stream_start", forward("on_stream_start"))
     ctx.register_hook("on_stream_delta", forward("on_stream_delta"))
     ctx.register_hook("pre_tool_call", forward("on_tool_call"))
+    ctx.register_hook("post_tool_call", forward("on_tool_done"))
     ctx.register_hook("post_api_request", forward("on_api_request"))
     return True

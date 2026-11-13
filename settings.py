@@ -24,10 +24,10 @@ DEFAULT_ARBITRATE_ENABLED = False
 # the primary device. Long enough to cover detector jitter across devices, short enough that a
 # client is not left waiting before it starts streaming.
 DEFAULT_ARBITRATE_WAKE_WINDOW_SECONDS = DEFAULT_WAKE_WINDOW
-# Hard cap on a single agent turn (LLM think + stream). A turn that produces nothing — an LLM call
-# hung with no request timeout — otherwise never ends: no reply, no turn_done, so the client is stuck
-# "thinking" forever. The driver stops the run at this deadline, sends an error + turn_done, and
-# returns to listening. This is a backstop; the root-cause cap is a provider request timeout.
+# How long an agent turn may go with no progress at all: no tool call starting or finishing, no
+# model call, no reply text or audio. A hung turn otherwise never ends: no reply, no turn_done, so
+# the client is stuck "thinking" forever. The driver stops the turn at this point, sends an error +
+# turn_done, and returns to listening. A turn that keeps working is never cut off by it.
 DEFAULT_TURN_TIMEOUT = 120.0
 # How long the server keeps the "playback tail" state — turn_done sent, waiting for the client's
 # `drained` — before resuming quiet/VAD on its own. Only a backstop for a client that never sends it.

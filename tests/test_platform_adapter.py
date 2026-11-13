@@ -386,6 +386,31 @@ async def test_new_socket_clears_a_model_left_by_an_earlier_one(rig):
     assert seen == ["/model reset", "a"]
 
 
+async def test_every_agent_event_counts_as_progress(rig):
+    import time
+    turns, key = await _turns(rig)
+    seen = []
+
+    async def handler(event):
+        sid = rig.store.peek_session_id(key)
+        for hook in (lambda: rig.adapter.on_tool_call(session_id=sid),
+                     lambda: rig.adapter.on_tool_done(session_id=sid),
+                     lambda: rig.adapter.on_api_request(session_id=sid, usage=None),
+                     lambda: rig.adapter.on_stream_start(session_id=sid),
+                     lambda: rig.adapter.on_stream_delta(delta="hm", kind="reasoning", session_id=sid)):
+            before = turns.last_progress
+            await asyncio.sleep(0.002)
+            hook()
+            seen.append(turns.last_progress > before)
+        return "ok"
+
+    assert turns.last_progress == 0.0
+    rig.adapter.set_message_handler(handler)
+    started = time.monotonic()
+    await turns.run_turn(text="go", on_delta=lambda _: None)
+    assert seen == [True] * 5 and turns.last_progress >= started
+
+
 async def test_approval_and_clarify_prompts_are_answered_at_once(rig, monkeypatch):
     calls = []
     monkeypatch.setattr("tools.approval.resolve_gateway_approval",
@@ -408,7 +433,8 @@ def test_register_platform_declares_a_trusted_text_quiet_platform():
     assert registered["name"] == "converse" and registered["trusted_inbound"] is True
     assert registered["display_overrides"]["streaming"] is False
     assert registered["is_connected"](None) and registered["check_fn"]()
-    assert set(hooks) == {"on_stream_start", "on_stream_delta", "pre_tool_call", "post_api_request"}
+    assert set(hooks) == {"on_stream_start", "on_stream_delta", "pre_tool_call", "post_tool_call",
+                          "post_api_request"}
     hooks["on_stream_delta"](delta="x", session_id="s")  # no adapter connected: ignored
     adapter = registered["adapter_factory"](PlatformConfig(enabled=True))
     assert isinstance(adapter, ConverseAdapter) and adapter._approval_choice() == "deny"

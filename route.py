@@ -567,6 +567,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
             quiet_interval=quiet_interval, interrupt_turn=_interrupt_turn, transcripts=transcripts,
             tool_calls=lambda: client.tool_calls,
             reasoning_tokens=lambda: client.reasoning_tokens,
+            last_progress=lambda: client.last_progress,
             turn_timeout=settings.turn_timeout, tail_fallback=settings.tail_fallback,
             max_tts_chars=settings.max_tts_chars,
             end_phrases=settings.end_phrases,
