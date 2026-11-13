@@ -196,6 +196,40 @@ def test_first_quiet_tick_after_resume_is_a_full_interval_later():
         session.stop()
 
 
+def test_split_sample_resume_requires_a_full_new_quiet_interval(monkeypatch):
+    """Drive the real worker synchronously so each assertion follows a processed audio block."""
+    session = ConverseSession(np, quiet_interval=0.3)
+    read = session.stream.read
+    silence_block = np.zeros(session._block, dtype=np.int16).tobytes()
+    blocks = 0
+    completed = False
+
+    def feed_then_read(block):
+        nonlocal blocks, completed
+        # Eight old blocks = 0.24 s; nine new blocks = 0.27 s, still below the interval.
+        if blocks in (8, 11, 17):
+            assert session.transcripts.empty()
+        if blocks == 18:
+            tick = session.transcripts.get_nowait()
+            assert isinstance(tick, QuietTick) and tick.quiet_seconds == 0.3
+            assert session.transcripts.empty()
+            completed = True
+            session._stop.set()
+            return np.zeros(block, dtype=np.int16), False
+        if blocks == 8:
+            session.stream._last_feed -= 1.1  # a receive gap above the real 1 s threshold
+            session.stream.feed(silence_block[:1])
+            session.stream.feed(silence_block[1:])
+        else:
+            session.stream.feed(silence_block)
+        blocks += 1
+        return read(block)
+
+    monkeypatch.setattr(session.stream, "read", feed_then_read)
+    session._run()
+    assert completed and blocks == 18  # the worker logs exceptions instead of propagating them
+
+
 # ── start frame + prompt ──
 
 def test_parse_start_config_defaults_and_clamps():

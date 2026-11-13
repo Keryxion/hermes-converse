@@ -156,3 +156,15 @@ def test_network_mic_stream_flags_resume_after_a_gap_even_from_one_byte():
     stream.feed(b"\x00" + np.zeros(479, dtype=np.int16).tobytes() + b"\x00")
     stream.read(480)
     assert stream.resumed is True
+
+
+def test_network_mic_stream_discard_clears_pending_resume():
+    stream = NetworkMicStream(np, stop=threading.Event())
+    stream._last_feed -= 1.1
+    stream.feed(b"\xff")  # the resume marker belongs to this incomplete sample
+    stream.discard()
+    samples = np.arange(480, dtype=np.int16)
+    stream.feed(samples.tobytes())
+    data, _ = stream.read(480)
+    np.testing.assert_array_equal(data, samples)
+    assert stream.resumed is False

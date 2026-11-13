@@ -116,6 +116,7 @@ class NetworkMicStream:
         with self._feed_lock:
             self._epoch += 1
             self._byte_carry = b""
+            self._pending_resume = False
             while True:
                 try:
                     self._chunks.get_nowait()
