@@ -303,7 +303,16 @@ history or replay; those require a separate contract.
 ## 5. Session mode (`quiet_interval > 0`)
 
 For wake-word devices. The server reports quiet in **received** audio (never
-wall-clock, so a held-open socket never accrues phantom quiet). `turn_done.next_action` tells the client whether to continue
+wall-clock, so a held-open socket never accrues phantom quiet). Each listening
+phase counts from zero: speech, a turn, and resuming upstream audio after
+stopping it all restart the count. The first `quiet` after you start or resume
+listening comes after one full `quiet_interval` of received silence, for example:
+
+```json
+{"type": "quiet", "quiet_seconds": 3.0}
+```
+
+Silence sent before you stopped streaming does not carry over. `turn_done.next_action` tells the client whether to continue
 listening or return to standby after playback drain. The mechanism used by
 the server to decide a sign-off is internal; there is no client-side phrase
 contract.
