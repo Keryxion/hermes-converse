@@ -114,6 +114,24 @@ async def test_final_speaks_only_what_the_stream_missed(rig):
     assert spoken == ["Checking. ", "The door ", "is locked."]
 
 
+async def test_model_call_starting_before_the_final_send_does_not_repeat_the_reply(rig):
+    """Hermes's background review starts its own model call in the session as soon as the reply
+    is ready, before the reply is sent."""
+    turns, key = await _turns(rig)
+
+    async def handler(event):
+        sid = rig.store.peek_session_id(key)
+        rig.adapter.on_stream_start(session_id=sid)
+        rig.adapter.on_stream_delta(delta="It is on TestFlight now.", session_id=sid)
+        rig.adapter.on_stream_start(session_id=sid)  # the review's call
+        return "It is on TestFlight now."
+
+    rig.adapter.set_message_handler(handler)
+    spoken = []
+    await turns.run_turn(text="status?", on_delta=spoken.append)
+    assert spoken == ["It is on TestFlight now."]
+
+
 async def test_late_delta_after_the_final_is_not_spoken_twice(rig):
     turns, key = await _turns(rig)
     spoken = []

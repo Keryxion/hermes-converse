@@ -64,6 +64,7 @@ class _VoiceTurn:
     outcome: Optional[ProcessingOutcome] = None
     final: Optional[str] = None
     streamed: str = ""  # the current model response's text already handed to TTS
+    earlier: str = ""  # the last model response that carried text, once another has started
     tool_calls: int = 0
     reasoning_tokens: Optional[int] = None
 
@@ -245,7 +246,9 @@ class ConverseAdapter(BasePlatformAdapter):
         turn.final = final
         if not text or text.upper() == SILENT:
             return
-        streamed = turn.streamed.lstrip()
+        # Another model call can start between the reply's last delta and this send (Hermes's
+        # background review does), so the reply may be the response before the current one.
+        streamed = (turn.streamed if turn.streamed.strip() else turn.earlier).lstrip()
         if not streamed.strip():
             turn.on_delta(final)
             return
@@ -299,6 +302,8 @@ class ConverseAdapter(BasePlatformAdapter):
     def on_stream_start(self, *, session_id=None, **_: Any) -> None:
         turn = self._turn_for_session(session_id)
         if turn is not None:
+            if turn.streamed.strip():
+                turn.earlier = turn.streamed
             turn.streamed = ""
 
     def on_stream_delta(self, *, delta=None, kind="text", session_id=None, **_: Any) -> None:
