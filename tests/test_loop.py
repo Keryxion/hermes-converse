@@ -8,6 +8,7 @@ import contextvars
 import json
 import queue as _queue
 import threading
+import types
 import wave
 
 import numpy as np
@@ -1246,3 +1247,112 @@ def test_timing_line_marks_a_timed_out_turn(caplog):
         asyncio.run(_main())
     (line,) = _timing_lines(caplog)
     assert "outcome=timed_out" in line and "deltas=0" in line and "final_chars=0" in line
+
+
+# ── reply audio pacing ──
+
+class _PaceSession:
+    def set_playing(self, value, *, tts_stop=None):
+        pass
+
+
+def _pace_driver(sent, *, turn_timeout=0.0, rate=8000):
+    loop = asyncio.get_running_loop()
+
+    async def send_bytes(data):
+        sent.append((loop.time(), len(data)))
+
+    async def send_json(obj):
+        pass
+
+    return types.SimpleNamespace(loop=loop, synth=types.SimpleNamespace(sample_rate=rate),
+                                 session=_PaceSession(), send_json=send_json, send_bytes=send_bytes,
+                                 turn_timeout=turn_timeout)
+
+
+def _pace_turn():
+    return types.SimpleNamespace(pcm_q=asyncio.Queue(), tts_stop=threading.Event(), meta={}, pcm_chunks=0,
+                                 ns={}, timed_out=False, result={})
+
+
+def _chunk(seconds, rate=8000):
+    return b"\0\0" * int(rate * seconds)
+
+
+def test_reply_audio_is_sent_at_most_the_lead_ahead_of_playback(monkeypatch):
+    monkeypatch.setattr(cl, "MAX_AUDIO_LEAD_SECONDS", 0.2)
+
+    async def main():
+        sent = []
+        d, turn = _pace_driver(sent), _pace_turn()
+        for _ in range(10):
+            turn.pcm_q.put_nowait(_chunk(0.1))
+        turn.pcm_q.put_nowait(None)
+        start = d.loop.time()
+        await cl._stream_reply(d, turn, asyncio.get_running_loop().create_future())
+        return start, sent
+
+    start, sent = asyncio.run(main())
+    assert len(sent) == 10
+    assert all(t - start < 0.05 for t, _ in sent[:3])  # time to first audio is not delayed
+    for i, (t, _) in enumerate(sent):
+        assert i * 0.1 - (t - start) <= 0.2 + 0.02  # queued audio never exceeds the lead
+    assert sent[-1][0] - start >= 0.9 - 0.2 - 0.02
+
+
+def test_interruption_during_pacing_stops_sending_promptly(monkeypatch):
+    monkeypatch.setattr(cl, "MAX_AUDIO_LEAD_SECONDS", 0.2)
+
+    async def main():
+        sent = []
+        d, turn = _pace_driver(sent), _pace_turn()
+        for _ in range(50):
+            turn.pcm_q.put_nowait(_chunk(0.1))
+        turn.pcm_q.put_nowait(None)
+        d.loop.call_later(0.3, turn.tts_stop.set)
+        start = d.loop.time()
+        await cl._stream_reply(d, turn, asyncio.get_running_loop().create_future())
+        return d.loop.time() - start, sent
+
+    elapsed, sent = asyncio.run(main())
+    assert elapsed < 0.3 + 0.1
+    assert len(sent) < 10
+
+
+def test_slow_tts_is_not_held_back_after_the_client_runs_dry(monkeypatch):
+    monkeypatch.setattr(cl, "MAX_AUDIO_LEAD_SECONDS", 0.2)
+
+    async def main():
+        sent, arrived = [], []
+        d, turn = _pace_driver(sent), _pace_turn()
+
+        async def produce():
+            for _ in range(4):
+                await asyncio.sleep(0.15)  # slower than the 0.1 s of audio per chunk
+                arrived.append(d.loop.time())
+                turn.pcm_q.put_nowait(_chunk(0.1))
+            turn.pcm_q.put_nowait(None)
+
+        producer = asyncio.ensure_future(produce())
+        await cl._stream_reply(d, turn, asyncio.get_running_loop().create_future())
+        await producer
+        return arrived, sent
+
+    arrived, sent = asyncio.run(main())
+    assert all(t - a < 0.03 for (t, _), a in zip(sent, arrived))
+
+
+def test_pacing_waits_do_not_count_toward_the_turn_timeout(monkeypatch):
+    monkeypatch.setattr(cl, "MAX_AUDIO_LEAD_SECONDS", 0.1)
+
+    async def main():
+        sent = []
+        d, turn = _pace_driver(sent, turn_timeout=0.3), _pace_turn()
+        for _ in range(8):
+            turn.pcm_q.put_nowait(_chunk(0.1))  # 0.8 s of audio: pacing takes ~0.7 s
+        turn.pcm_q.put_nowait(None)
+        await cl._stream_reply(d, turn, asyncio.get_running_loop().create_future())
+        return turn, sent
+
+    turn, sent = asyncio.run(main())
+    assert not turn.timed_out and len(sent) == 8

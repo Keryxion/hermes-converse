@@ -89,6 +89,13 @@ continued speech after endpoint must still be handled as continuation.
 Emit `thinking`, optional `speaking` and PCM, then the turn's terminal
 frames in order. Interrupted, failed, or superseded replies return `listen`.
 
+Pace reply PCM against the playback it implies so the server, not the client,
+holds the backlog. Track where the client's queued audio ends; before sending a
+chunk, wait until that is at most 1.5 s ahead of now. If it is already in the
+past (TTS was slower than real time), restart from now. Send the first chunks
+without delay, stop waiting as soon as the turn is interrupted, and do not count
+pacing waits toward the turn timeout. `drained` remains the end of playback.
+
 `thinking` progress is measured, never estimated. `tool_calls` counts the run's
 `tool.started` events. `reasoning_tokens` comes from the Runs API's `usage.updated` run event, which
 Hermes emits after each model call with the run's cumulative provider-reported
