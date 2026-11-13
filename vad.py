@@ -39,6 +39,9 @@ ONSET_TRIGGER_MIN = SILENCE_RMS_THRESHOLD * 1.5  # 300
 # room level (~30-80 RMS) is tracked instead of being inflated to 200.
 MIN_QUIET_FLOOR = 40.0
 DEFAULT_BARGE_MULTIPLIER = 3.0  # over the quiet floor: 300 * 3 = 900 vs 3000+ speech
+BLEED_MARGIN = 1.5  # playback threshold = max(fixed floor, bleed * margin): bleed never trips,
+# real speech (typically 2-4x the bleed level) still does. Relative, not a fixed dB number,
+# so it adapts to room volume and playback level.
 
 # ── converse profile (30 ms blocks at the capture rate) ──
 BLOCK_MS = 30
@@ -120,6 +123,7 @@ class BargeDetector:
         self._onset_mult = float(onset_mult) if onset_mult else float(mult)
         self._onset_ceiling = onset_ceiling
         self.ambient: deque = deque(maxlen=100)  # ~3s of quiet-phase RMS
+        self._bleed_ambient: deque = deque(maxlen=100)  # RMS while playback is active (bleed reference)
         self.recent_above: deque = deque(maxlen=trip_blocks)
         self.quiet_floor = float(SILENCE_RMS_THRESHOLD)
         self.floor_locked = self.playing_prev = self.playback_seen = False
@@ -153,6 +157,9 @@ class BargeDetector:
                 self.grace_remaining = self.grace_blocks
                 vad_log(f"playback started (block={self.block_idx}) — grace {self.grace_blocks * BLOCK_MS}ms")
             self.playback_seen = True
+        if not playing and self.playing_prev:
+            # Playback just stopped: drop the bleed reference so the next playback re-calibrates.
+            self._bleed_ambient.clear()
         self.playing_prev = playing
         self.blocks_since_playback = 0 if playing else self.blocks_since_playback + 1
 
@@ -162,13 +169,23 @@ class BargeDetector:
         if not self.floor_locked and not self._calibrate(rms_value, playing):
             return None
         self._track_playback(playing)
+# Track the playback bleed level so the barge-in threshold adapts to the actual speaker
+        # bleed (room volume + playback level) instead of a fixed dB clamp.
+        if playing:
+            self._bleed_ambient.append(rms_value)
         # Trigger: quiet baseline x multiplier, phase-dependent.
-        #  • Active-turn interruption: quiet_floor*mult, floored at PLAYBACK_MIN_TRIGGER and capped at
-        #    TRIGGER_CEILING so a noisy room never trips on speaker bleed.
+        #  • Active-turn interruption / playback: quiet_floor*mult, floored at PLAYBACK_MIN_TRIGGER,
+        #    raised to BLEED_MARGIN * bleed level (so bleed never trips), capped at TRIGGER_CEILING
+        #    so a noisy room never pushes the trigger past normal speech.
         #  • Ordinary onset: quiet_floor*onset_mult, floored at ONSET_TRIGGER_MIN and capped
         #    at onset_ceiling IF one is set (the converse profile sets none).
         if playing or interrupting:
-            trigger = min(max(self.quiet_floor * self.mult, PLAYBACK_MIN_TRIGGER), TRIGGER_CEILING)
+            bleed_floor = (float(self._np.percentile(list(self._bleed_ambient), 50.0))
+                           if self._bleed_ambient else 0.0)
+            trigger = min(max(self.quiet_floor * self.mult,
+                              PLAYBACK_MIN_TRIGGER,
+                              bleed_floor * BLEED_MARGIN),
+                          TRIGGER_CEILING)
         else:
             trigger = max(self.quiet_floor * self._onset_mult, ONSET_TRIGGER_MIN)
             if self._onset_ceiling is not None:
