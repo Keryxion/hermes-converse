@@ -2,9 +2,8 @@
 
 Two surfaces, both the real shapes:
 
-* The API server over HTTP, served in-process: ``GET /v1/capabilities`` (the auth probe),
-  ``GET /api/model/options`` and ``GET /api/sessions/{id}/messages`` (the live session behind an
-  API conversation from before conversations were gateway sessions).
+* The API server over HTTP, served in-process: ``GET /v1/capabilities`` (the auth probe) and
+  ``GET /api/model/options``.
 * The gateway runner behind the converse platform: :meth:`FakeHermes.handle` is the message handler
   a real ``BasePlatformAdapter`` hands each admitted event to. It streams the scripted reply through
   the adapter's plugin hooks and returns the final text, and it stops when the adapter raises the
@@ -24,18 +23,12 @@ class FakeStore:
 
     def __init__(self) -> None:
         self.ids: dict[str, str] = {}
-        self.switched: list[tuple[str, str]] = []
         self.models: dict[str, Optional[dict]] = {}
 
     def get_or_create_session(self, source, force_new=False, touch_activity=True):
         key = f"agent:main:converse:dm:{source.chat_id}"
         self.ids.setdefault(key, f"sid-{source.chat_id}")
         return SimpleNamespace(session_key=key, session_id=self.ids[key])
-
-    def switch_session(self, session_key, target):
-        self.switched.append((session_key, target))
-        self.ids[session_key] = target
-        return SimpleNamespace(session_key=session_key, session_id=target)
 
     def lookup_by_session_key(self, session_key):
         return self.ids.get(session_key)
@@ -62,16 +55,12 @@ class FakeHermes:
         # Every voice turn the gateway admitted, in order.
         self.turns: list[dict[str, Any]] = []
         self.commands: list[str] = []
-        # API sessions that predate gateway conversations, and where compaction moved them.
-        self.sessions: dict[str, dict] = {}
-        self.continuations: dict[str, str] = {}
 
     # ── API server ──
     def routes(self) -> list:
         return [
             web.get("/v1/capabilities", self.capabilities),
             web.get("/api/model/options", self.model_options),
-            web.get("/api/sessions/{session_id}/messages", self.session_messages),
         ]
 
     def _auth(self, request: web.Request) -> Optional[web.Response]:
@@ -87,15 +76,6 @@ class FakeHermes:
 
     async def model_options(self, request: web.Request) -> web.Response:
         return self._auth(request) or web.json_response({"model": "agent", "providers": []})
-
-    async def session_messages(self, request: web.Request) -> web.Response:
-        err = self._auth(request)
-        if err is not None:
-            return err
-        sid = request.match_info["session_id"]
-        if sid not in self.sessions:
-            return web.json_response({}, status=404)
-        return web.json_response({"session_id": self.continuations.get(sid, sid), "data": []})
 
     # ── gateway runner ──
     def install(self, adapter: Any) -> None:

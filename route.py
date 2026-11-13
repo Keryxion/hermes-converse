@@ -48,7 +48,7 @@ from aiohttp import ClientError, ClientSession, ClientTimeout, web
 from .arbitrate import Arbitrator
 from .auth import offered_key_protocol, verify_api_key
 from .conversation import ConversationHub
-from .named import DeviceStore, NamedError, NamedSessions, parse_names
+from .named import DeviceStore, NamedError, parse_names
 from .platform_adapter import GatewayTurns
 from .model_selection import parse_model_selection, public_model_catalog
 from .loop import ConverseSession, drive_converse_turns, parse_start_config, voice_system_prompt
@@ -221,15 +221,11 @@ class ConverseRoute:
             session.session_id = requested or f"voice_{uuid.uuid4().hex}"
             source = gateway.source_for(chat_id=session.session_id, title=name,
                                         recipient_id=session.session_id, device_name=name)
+            if requested is not None and not gateway.has_conversation(source):
+                await _fail(ws, "conversation_unavailable", 4403)
+                return ws
             try:
-                earlier = None
-                if requested is not None and not gateway.has_conversation(source):
-                    # An id from before conversations were gateway sessions names an API session.
-                    earlier = await NamedSessions(base_url, api_key, http).live_tip(requested)
-                    if earlier is None:
-                        await _fail(ws, "conversation_unavailable", 4403)
-                        return ws
-                turns = GatewayTurns(gateway, source, await gateway.bind(source, adopt_session_id=earlier))
+                turns = GatewayTurns(gateway, source, await gateway.bind(source))
             except Exception:
                 logger.warning("converse conversation unavailable", exc_info=True)
                 await _fail(ws, "conversation_unavailable", 1011)
@@ -256,7 +252,6 @@ class ConverseRoute:
         try:
             async with self._named_lock:
                 device = await asyncio.to_thread(self._devices.reserve, *names)
-                sessions = NamedSessions(base_url, api_key, http)
                 old = self._named_connections.get(device.recipient_id)
                 if old is not None:
                     if not old.done.is_set():
@@ -274,12 +269,7 @@ class ConverseRoute:
                 conversation_id = device.candidate_id.removeprefix('voice_')
                 source = gateway.source_for(chat_id=conversation_id, title=device.title,
                                             recipient_id=device.recipient_id, device_name=device.device_name)
-                # A device that talked through an API session keeps that conversation's history.
-                earlier = await sessions.live_tip(device.session_id) if device.session_id else None
-                session_key = await gateway.bind(source, adopt_session_id=earlier)
-                if device.session_id:
-                    await asyncio.to_thread(self._devices.forget, device)
-                turns = GatewayTurns(gateway, source, session_key)
+                turns = GatewayTurns(gateway, source, await gateway.bind(source))
                 input_rate, output_rate, quiet_interval, _, profile = parse_start_config(frame)
                 if not self._profile_allowed(profile):
                     raise NamedError('profile_unsupported', 4400)

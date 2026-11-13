@@ -3,7 +3,6 @@ conversation per assistant and device."""
 import asyncio
 
 import pytest
-from aiohttp import web
 
 from hermes_converse.named import DeviceStore, NamedError, parse_names
 from tests.test_arbitrate_integration import _audio_turn, _patch
@@ -52,22 +51,7 @@ def test_store_keeps_device_identity_and_separate_assistant_conversations(tmp_pa
     assert other_assistant.recipient_id == first.recipient_id
     assert other_assistant.candidate_id != first.candidate_id
     assert other_device.recipient_id != first.recipient_id
-    assert same.session_id is None
     reopened.close()
-
-
-def test_forget_drops_only_that_conversations_earlier_session(tmp_path):
-    import sqlite3
-    path = tmp_path/'devices.db'
-    store = DeviceStore(path)
-    arya, nova = store.reserve('Arya', 'Den Echo'), store.reserve('Nova', 'Den Echo')
-    with sqlite3.connect(path) as db:
-        db.execute("UPDATE conversations SET session_id='voice_' || assistant_name")
-    assert store.reserve('Arya', 'Den Echo').session_id == 'voice_Arya'
-    store.forget(arya)
-    assert store.reserve('Arya', 'Den Echo').session_id is None
-    assert store.reserve('Nova', 'Den Echo').session_id == 'voice_Nova' and nova.recipient_id == arya.recipient_id
-    store.close()
 
 
 @pytest.mark.asyncio
@@ -148,26 +132,6 @@ async def test_replacement_stops_the_turn_in_flight(tmp_path, monkeypatch):
         fake.hang = False
         await _audio_turn(second)
         await second.close()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize('status', [401, 403, 500])
-async def test_failed_lookup_of_an_earlier_conversation_keeps_the_reference(tmp_path, monkeypatch, status):
-    import sqlite3
-    fake = _patch(monkeypatch)
-    path = tmp_path/'devices.db'
-    store = DeviceStore(path)
-    store.reserve('Arya', 'Den Echo')
-    with sqlite3.connect(path) as db:
-        db.execute("UPDATE conversations SET session_id='voice_old'")
-
-    async def failing(request):
-        return web.json_response({}, status=status)
-    fake.session_messages = failing
-    async with Harness(fake, device_store=store) as client:
-        ws, refused = await connect(client)
-        assert refused == {'type': 'error', 'error': 'conversation_unavailable'}
-        assert store.reserve('Arya', 'Den Echo').session_id == 'voice_old' and not fake.store.switched
 
 
 @pytest.mark.asyncio

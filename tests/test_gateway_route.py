@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import sqlite3
 
 from hermes_converse.named import DeviceStore
 from tests.test_arbitrate_integration import _patch
@@ -24,15 +23,6 @@ async def _say(ws):
     for chunk in _speech_then_silence_pcm():
         await ws.send_bytes(chunk)
     return await _collect_turn(ws)
-
-
-def _earlier_conversation(path, session_id):
-    """A device record as the plugin left it when conversations were API sessions."""
-    devices = DeviceStore(path)
-    device = devices.reserve("Arya", "Den Echo")
-    devices.close()
-    with sqlite3.connect(path) as db:
-        db.execute("UPDATE conversations SET session_id=? WHERE recipient_id=?", (session_id, device.recipient_id))
 
 
 async def test_voice_turn_runs_in_the_gateway_conversation(tmp_path, monkeypatch):
@@ -63,35 +53,7 @@ async def test_reconnect_keeps_the_same_gateway_conversation(tmp_path, monkeypat
         ws, second = await _connect(client)
         assert second["recipient_id"] == first["recipient_id"]
         await ws.close()
-    assert len(fake.store.ids) == 1 and fake.store.switched == []
-
-
-async def test_earlier_api_conversation_is_continued_once(tmp_path, monkeypatch):
-    fake = _patch(monkeypatch)
-    fake.sessions["voice_old"] = {"id": "voice_old"}
-    fake.continuations["voice_old"] = "voice_tip"  # compaction moved the conversation on
-    _earlier_conversation(tmp_path / "devices.db", "voice_old")
-    devices = DeviceStore(tmp_path / "devices.db")
-    async with Harness(fake, device_store=devices) as client:
-        ws, ready = await _connect(client)
-        assert ready["type"] == "ready"
-        await ws.close()
-        assert [target for _, target in fake.store.switched] == ["voice_tip"]
-        assert devices.reserve("Arya", "Den Echo").session_id is None
-        ws, _ = await _connect(client)
-        await ws.close()
-        assert len(fake.store.switched) == 1
-
-
-async def test_deleted_earlier_conversation_starts_fresh(tmp_path, monkeypatch):
-    fake = _patch(monkeypatch)
-    _earlier_conversation(tmp_path / "devices.db", "voice_gone")
-    devices = DeviceStore(tmp_path / "devices.db")
-    async with Harness(fake, device_store=devices) as client:
-        ws, ready = await _connect(client)
-        assert ready["type"] == "ready" and fake.store.switched == []
-        await ws.close()
-        assert devices.reserve("Arya", "Den Echo").session_id is None
+    assert len(fake.store.ids) == 1
 
 
 async def test_scheduled_reply_is_spoken_on_the_attached_device(tmp_path, monkeypatch):
@@ -143,16 +105,12 @@ async def test_socket_without_names_gets_a_conversation_it_can_reattach(monkeypa
     assert [turn["chat_id"] for turn in fake.turns] == [conversation, conversation]
 
 
-async def test_unknown_conversation_id_is_refused_and_an_earlier_api_one_is_continued(monkeypatch):
+async def test_unknown_conversation_id_is_refused(monkeypatch):
     fake = _patch(monkeypatch)
-    fake.sessions["voice_old"] = {"id": "voice_old"}
     async with Harness(fake) as client:
-        ws, refused = await _connect(client, assistant_name=None, device_name=None, conversation_id="voice_nope")
+        _, refused = await _connect(client, assistant_name=None, device_name=None, conversation_id="voice_nope")
         assert refused == {"type": "error", "error": "conversation_unavailable"}
-        ws, ready = await _connect(client, assistant_name=None, device_name=None, conversation_id="voice_old")
-        assert ready["conversation_id"] == "voice_old"
-        await ws.close()
-    assert [target for _, target in fake.store.switched] == ["voice_old"]
+    assert not fake.store.ids
 
 
 async def test_device_is_refused_when_the_platform_is_not_hosted(tmp_path, monkeypatch):

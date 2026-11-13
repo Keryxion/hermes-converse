@@ -121,18 +121,12 @@ class ConverseAdapter(BasePlatformAdapter):
         store = getattr(self, "_session_store", None)
         return store is not None and store.lookup_by_session_key(self._source_session_key(source)) is not None
 
-    async def bind(self, source: Any, *, adopt_session_id: Optional[str] = None) -> str:
-        """Make sure the device's gateway conversation exists; optionally continue an existing
-        session in it (the conversation a device had before it moved to this platform)."""
+    async def bind(self, source: Any) -> str:
+        """Make sure the gateway conversation for this chat exists; return its session key."""
         store = getattr(self, "_session_store", None)
         if store is None:
             raise RuntimeError("gateway session store unavailable")
         entry = await asyncio.to_thread(store.get_or_create_session, source, touch_activity=False)
-        if adopt_session_id and entry.session_id != adopt_session_id:
-            switched = await asyncio.to_thread(store.switch_session, entry.session_key, adopt_session_id)
-            if switched is None:
-                raise RuntimeError("could not continue the existing conversation")
-            entry = switched
         return entry.session_key
 
     async def set_model(self, source: Any, session_key: str, model: Optional[str],

@@ -234,11 +234,5 @@ example inside a long tool call; the next request is admitted behind it, and the
 stopped turn's late reply is discarded. A device is never refused because an
 earlier turn has not settled.
 
-A device or `conversation_id` whose conversation was an API-server session
-continues it: on first attach the gateway session is pointed at that
-conversation's live session, and for a named device the saved reference is
-dropped. If it was deleted, a named device starts a fresh conversation. A failed
-lookup refuses the connection and leaves the reference unchanged.
-
 At startup a socket waits up to 30 s for the platform to connect. When the
 platform is not hosted, the connection is refused with `conversation_unavailable`.

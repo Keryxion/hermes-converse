@@ -327,14 +327,6 @@ async def test_scheduled_turn_replies_in_the_same_conversation_without_a_voice_t
     assert [o.text for o in device.outputs] == ["Time to stretch."]
 
 
-async def test_bind_continues_an_earlier_conversation_once(rig):
-    source = rig.adapter.source_for(chat_id="den", title="Arya: Den Echo", recipient_id="r", device_name="Den Echo")
-    key = await rig.adapter.bind(source, adopt_session_id="voice_old")
-    assert rig.store.switched == [(key, "voice_old")]
-    await rig.adapter.bind(source, adopt_session_id="voice_old")
-    assert len(rig.store.switched) == 1
-
-
 async def test_model_selection_is_sent_as_the_gateway_model_command(rig):
     turns, key = await _turns(rig)
     seen = []
