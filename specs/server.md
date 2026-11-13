@@ -99,7 +99,10 @@ context must not describe a generated or transmitted response as heard.
 After `turn_done`, retain playback protection until matching `drained` or the
 bounded fallback timeout. A tail interruption updates the same turn to `listen`;
 it does not create another reply for that turn. Quiet advisories count received
-idle silence, never wall time or time occupied by a reply/capture. Working frames
+idle silence, never wall time or time occupied by a reply/capture. Restart the
+count on speech onset, turn start and end, playback drain, and when received
+audio resumes after a gap of at least 1 s, so silence from an earlier listening
+phase never shortens the next one. Working frames
 are sent every 15 seconds and stop with their owning turn.
 
 On disconnect, stop capture and generation, settle the attachment, and fence late

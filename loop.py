@@ -44,6 +44,9 @@ logger = logging.getLogger(__name__)
 # finished; a "hold" keeps listening for another window. Cap consecutive holds so a user who
 # genuinely stopped mid-phrase is committed after ~3 windows, not at the utterance cap.
 MAX_ENDPOINT_HOLDS = 3
+# Received-audio gap that marks the client stopping and resuming its stream. Live clients send
+# frames every few tens of milliseconds; a longer network stall only delays the next quiet tick.
+STREAM_RESUME_GAP_SECONDS = 1.0
 # Reply speech: poll for deltas every 0.5 s; after 4 empty polls (~2 s) speak the buffered tail.
 IDLE_POLL_SECONDS = 0.5
 IDLE_POLLS_TO_FLUSH = 4
@@ -84,25 +87,36 @@ class NetworkMicStream:
         self._read_epoch = 0
         self._last_feed = time.monotonic()
         self.no_data_return = False
+        # A feed after this long without audio means the client stopped and resumed sending (for
+        # example, stopped listening and started again); ``resumed`` flags it for the reader.
+        self.resume_gap_seconds = STREAM_RESUME_GAP_SECONDS
+        self.resumed = False
+        self._pending_resume = False
 
     def feed(self, pcm_bytes: bytes) -> None:
         if not pcm_bytes:
             return
         with self._feed_lock:
-            self._last_feed = time.monotonic()
+            now = time.monotonic()
+            # Held until a chunk is queued: a lone odd byte only fills the carry.
+            self._pending_resume = self._pending_resume or now - self._last_feed >= self.resume_gap_seconds
+            self._last_feed = now
             buf = self._byte_carry + pcm_bytes
             if len(buf) % 2:
                 buf, self._byte_carry = buf[:-1], buf[-1:]
             else:
                 self._byte_carry = b""
             if buf:
-                self._chunks.put((self._epoch, self._np.frombuffer(buf, dtype=self._np.int16).copy()))
+                self._chunks.put((self._epoch, self._np.frombuffer(buf, dtype=self._np.int16).copy(),
+                                  self._pending_resume))
+                self._pending_resume = False
 
     def discard(self) -> None:
         """Fence already received audio so control-phase samples cannot be replayed as input."""
         with self._feed_lock:
             self._epoch += 1
             self._byte_carry = b""
+            self._pending_resume = False
             while True:
                 try:
                     self._chunks.get_nowait()
@@ -154,12 +168,13 @@ class NetworkMicStream:
                 continue
             if chunk is None:  # close() sentinel
                 continue
-            epoch, chunk = chunk
+            epoch, chunk, resumed = chunk
             if self._read_epoch != self._epoch:
                 self._carry = np.zeros(0, dtype=np.int16)
                 self._read_epoch = self._epoch
             if epoch == self._epoch:
                 self._carry = np.concatenate([self._carry, chunk])
+                self.resumed = self.resumed or resumed
         out, self._carry = self._carry[:block], self._carry[block:]
         if self.no_data_return:
             out = np.pad(out, (0, block - len(out)))
@@ -172,9 +187,10 @@ class NetworkMicStream:
             except queue.Empty:
                 return
             if chunk is not None:
-                epoch, chunk = chunk
+                epoch, chunk, resumed = chunk
                 if epoch == self._epoch:
                     self._carry = self._np.concatenate([self._carry, chunk])
+                    self.resumed = self.resumed or resumed
 
 
 class InputReady:
@@ -192,7 +208,8 @@ class ConversationOutput:
 
 class QuietTick:
     """Session-mode marker: the RECEIVED audio stream has been silent for another
-    ``quiet_interval``; ``quiet_seconds`` is the cumulative received-silence since the last speech."""
+    ``quiet_interval``; ``quiet_seconds`` is the received silence in the current listening phase:
+    since the last speech, turn change, or resumed client stream."""
 
     __slots__ = ("quiet_seconds",)
 
@@ -387,6 +404,11 @@ class ConverseSession:
                 with self._state_lock:
                     if self.stream._read_epoch != self.stream._epoch:
                         continue  # samples received before the last drain/reset
+                    if self.stream.resumed:
+                        # A new listening phase: silence before the client stopped sending is not
+                        # part of this phase's quiet_interval.
+                        self.stream.resumed = False
+                        self._reset_quiet()
                     busy = self._turn_active.is_set() or self._pending_turn.is_set() or self._tail_active
                     playing = self.playing() or self._tail_active
                     phase = self._detector.feed(data, playing, interrupting=busy)

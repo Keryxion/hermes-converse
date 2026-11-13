@@ -166,6 +166,70 @@ def test_playback_tail_suppresses_quiet_until_drained():
     assert len(_drain_ticks()) >= 1
 
 
+def test_first_quiet_tick_after_resume_is_a_full_interval_later():
+    """Silence received before the client stopped sending must not shorten the next listening phase."""
+    import time
+
+    session = ConverseSession(np, quiet_interval=0.3)  # 10 blocks
+    session.stream.resume_gap_seconds = 0.1
+    session.start()
+    try:
+        def ticks_after(blocks):
+            _feed_silence(session, blocks)
+            deadline = time.monotonic() + 2
+            while not session.stream._chunks.empty() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            time.sleep(0.05)
+            out = []
+            while True:
+                try:
+                    out.append(session.transcripts.get_nowait())
+                except _queue.Empty:
+                    return [t for t in out if isinstance(t, QuietTick)]
+
+        assert ticks_after(8) == []  # an earlier listening phase: 0.24 s of silence, then the client stops
+        time.sleep(0.2)  # client stopped sending; nothing received
+        assert ticks_after(3) == []  # resumed: 0.09 s is not an interval
+        ticks = ticks_after(7)
+        assert len(ticks) == 1 and ticks[0].quiet_seconds == 0.3
+    finally:
+        session.stop()
+
+
+def test_split_sample_resume_requires_a_full_new_quiet_interval(monkeypatch):
+    """Drive the real worker synchronously so each assertion follows a processed audio block."""
+    session = ConverseSession(np, quiet_interval=0.3)
+    read = session.stream.read
+    silence_block = np.zeros(session._block, dtype=np.int16).tobytes()
+    blocks = 0
+    completed = False
+
+    def feed_then_read(block):
+        nonlocal blocks, completed
+        # Eight old blocks = 0.24 s; nine new blocks = 0.27 s, still below the interval.
+        if blocks in (8, 11, 17):
+            assert session.transcripts.empty()
+        if blocks == 18:
+            tick = session.transcripts.get_nowait()
+            assert isinstance(tick, QuietTick) and tick.quiet_seconds == 0.3
+            assert session.transcripts.empty()
+            completed = True
+            session._stop.set()
+            return np.zeros(block, dtype=np.int16), False
+        if blocks == 8:
+            session.stream._last_feed -= 1.1  # a receive gap above the real 1 s threshold
+            session.stream.feed(silence_block[:1])
+            session.stream.feed(silence_block[1:])
+        else:
+            session.stream.feed(silence_block)
+        blocks += 1
+        return read(block)
+
+    monkeypatch.setattr(session.stream, "read", feed_then_read)
+    session._run()
+    assert completed and blocks == 18  # the worker logs exceptions instead of propagating them
+
+
 # ── start frame + prompt ──
 
 def test_parse_start_config_defaults_and_clamps():
