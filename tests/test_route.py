@@ -625,3 +625,47 @@ def test_wire_on_a_frozen_router_warns_instead_of_raising(caplog):
         assert route.wire(app) is False
     assert "restart the gateway" in caplog.text
     assert not any(r.resource.canonical == "/v1/audio/converse" for r in app.router.routes())
+
+
+# ── client-requested speech ──
+
+@pytest.mark.asyncio
+async def test_say_frame_speaks_the_text_without_an_agent_turn(monkeypatch):
+    """A device's `say` (a spoken help reminder) is synthesized as given and ends in standby; it
+    never reaches the agent and is not recorded as a turn."""
+    fake = FakeHermes(API_KEY)
+    streamer = _FakeStreamer([b"\x01\x02", b"\x03\x04"])
+    _patch_speech(monkeypatch, streamer, transcript="unused")
+    async with Harness(fake) as client:
+        ws = await client.ws_connect("/v1/audio/converse", protocols=(VOICE_PROTOCOL, _key_protocol()))
+        try:
+            await ws.send_str(_start_msg(quiet_interval=3))
+            assert json.loads((await _recv(ws)).data)["type"] == "ready"
+            await ws.send_json({"type": "say", "text": "  I'm Sakura. Say Hey Sakura to talk to me.  "})
+            frames, pcm = await _collect_turn(ws)
+            assert [f["type"] for f in frames if f["type"] != "thinking"] == ["speaking", "turn_done"]
+            assert frames[-1]["next_action"] == "standby"
+            assert pcm == [b"\x01\x02", b"\x03\x04"]
+            assert " ".join(streamer.requests) == "I'm Sakura. Say Hey Sakura to talk to me."
+            assert fake.turns == []
+        finally:
+            await _end(ws)
+
+
+@pytest.mark.asyncio
+async def test_empty_or_non_text_say_is_ignored(monkeypatch):
+    fake = FakeHermes(API_KEY)
+    streamer = _FakeStreamer([b"\x01"])
+    _patch_speech(monkeypatch, streamer, transcript="unused")
+    async with Harness(fake) as client:
+        ws = await client.ws_connect("/v1/audio/converse", protocols=(VOICE_PROTOCOL, _key_protocol()))
+        try:
+            await ws.send_str(_start_msg())
+            assert json.loads((await _recv(ws)).data)["type"] == "ready"
+            for bad in ({"type": "say"}, {"type": "say", "text": "   "}, {"type": "say", "text": 7}):
+                await ws.send_json(bad)
+            with pytest.raises(asyncio.TimeoutError):
+                await _recv(ws, timeout=1.5)
+            assert streamer.requests == []
+        finally:
+            await _end(ws)

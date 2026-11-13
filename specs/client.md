@@ -103,6 +103,7 @@ All are JSON text frames:
 | `{"type": "cancel", "turn_id": "..."}` | Cancels the **current** turn — stops TTS and the agent — but keeps the socket, session, and history alive. |
 | `{"type": "wake", "claim_id": "...", "wake_word": "Hey Arya"}` | request an advisory wake decision while buffering the new activation locally; see section 8. |
 | `{"type": "drained", "turn_id": "..."}` | Tells the server the reply's last audio has left the speaker, so the server won't transcribe its own echo as a new turn. |
+| `{"type": "say", "text": "..."}` | Speaks the given text (trimmed, at most 400 characters) as a reply of its own: `thinking`, `speaking` + PCM, then `turn_done` with `next_action: "standby"`. No agent turn runs and nothing is added to the conversation. For fixed device prompts such as a spoken help reminder. Empty or non-string text is ignored. |
 
 **`cancel` vs `stop`:** `stop` tears down the session; `cancel` only kills the
 current turn. Use `cancel` when the user hits the action button or says the

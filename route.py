@@ -51,7 +51,8 @@ from .conversation import ConversationHub
 from .named import DeviceStore, NamedError, parse_names
 from .platform_adapter import GatewayTurns
 from .model_selection import parse_model_selection, public_model_catalog
-from .loop import ConverseSession, drive_converse_turns, parse_start_config, voice_system_prompt
+from .loop import (ConversationOutput, ConverseSession, drive_converse_turns, parse_start_config,
+                   voice_system_prompt)
 from .settings import Settings, load_settings
 from .tracing import force_flush
 
@@ -409,6 +410,14 @@ def _resolve_session(settings: Settings, input_rate: int, output_rate: int, quie
     return synth, cap, session
 
 
+MAX_SAY_CHARS = 400
+
+
+def _say_text(raw: Any) -> str:
+    """The text of a client ``say`` frame: a nonempty string, trimmed and capped."""
+    return raw.strip()[:MAX_SAY_CHARS] if isinstance(raw, str) else ""
+
+
 def _wake_number(raw: Any, *, maximum: Optional[float] = None) -> Optional[float]:
     # Missing or unusable optional signals lose their ranking tier.
     if isinstance(raw, bool) or not isinstance(raw, (int, float)):
@@ -519,6 +528,13 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                         session.notify_drained(frame.get("turn_id"))
                     if frame.get("type") == "cancel":
                         session.cancel(frame.get("turn_id"))
+                    if frame.get("type") == "say":
+                        text = _say_text(frame.get("text"))
+                        if text:
+                            # Fixed text from the device itself (a spoken help reminder): no agent
+                            # turn and no history. The client returns to its wake word afterwards.
+                            session.transcripts.put(ConversationOutput(
+                                text, f"say-{uuid.uuid4().hex}", next_action="standby"))
                     if frame.get("type") == "set_model":
                         request_id = frame.get("request_id")
                         if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", request_id):
