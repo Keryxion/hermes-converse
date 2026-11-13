@@ -123,7 +123,7 @@ async def test_short_turn_has_no_keepalive(monkeypatch):
 async def test_progress_over_websocket_does_not_extend_server_timeout(monkeypatch):
     fake = _patch(monkeypatch)
     fake.hang = True
-    fake.pre_events = (('tool.started', {'tool_call_id': 'a', 'tool': 'read_file'}),)
+    fake.tool_calls = 1
     async with Harness(fake, settings={'turn_timeout_seconds': 0.12}) as client:
         ws = await _connect(client)
         for chunk in _speech_then_silence_pcm():
@@ -249,7 +249,7 @@ async def test_thinking_reports_reasoning_tokens_during_speech():
 async def test_reasoning_tokens_reach_the_websocket_and_progress_stays_within_timeout(monkeypatch):
     fake = _patch(monkeypatch)
     fake.hang = True
-    fake.pre_events = (('usage.updated', {'reasoning_tokens': 2400}),)
+    fake.reasoning_tokens = (2400,)
     async with Harness(fake, settings={'turn_timeout_seconds': 0.12}) as client:
         ws = await _connect(client)
         for chunk in _speech_then_silence_pcm():

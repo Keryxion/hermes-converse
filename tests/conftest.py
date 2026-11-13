@@ -45,3 +45,18 @@ def _offline_silero(monkeypatch):
                         lambda: (None, 'model omitted in offline tests'))
     monkeypatch.setattr('hermes_converse.silero_vad.load_silero_session',
                         lambda: (None, 'model omitted in offline tests'))
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _converse_platform():
+    """``Platform("converse")`` resolves only for a registered plugin platform."""
+    try:
+        from gateway.platform_registry import PlatformEntry, platform_registry
+    except ImportError:  # no Hermes checkout: the tests that need it skip themselves
+        yield
+        return
+    platform_registry.register(PlatformEntry(
+        name="converse", label="Converse", adapter_factory=lambda config: None, check_fn=lambda: True,
+        trusted_inbound=True, source="builtin"))  # unscoped: visible to every profile scope
+    yield
+    platform_registry.unregister("converse")

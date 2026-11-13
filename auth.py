@@ -3,8 +3,7 @@ the API server itself.
 
 The plugin never reads the key (catalog rule 11) and never compares it: it presents the client's
 candidate to ``GET /v1/capabilities`` over loopback with ``Authorization: Bearer`` and admits the
-socket only on 200. The same key then drives the connection's ``/v1/runs`` calls, so an existing
-client keeps the one secret it already has, a rotated key fails on the next connect, and the
+socket only on 200. An existing client keeps the one secret it already has, a rotated key fails on the next connect, and the
 server's own per-profile key semantics apply unchanged.
 """
 

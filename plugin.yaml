@@ -26,7 +26,7 @@ python_dependencies:
   - "transformers>=4.46,<6"
   - "huggingface_hub>=0.26,<2"
 provides_tools: []
-provides_hooks: [post_llm_call, on_stream_start, on_stream_delta, pre_tool_call, post_api_request]
+provides_hooks: [on_stream_start, on_stream_delta, pre_tool_call, post_api_request]
 config_schema:
   vad_model:
     type: str
@@ -41,11 +41,11 @@ config_schema:
   voice_model:
     type: str
     default: ""
-    description: "Voice-only model override sent with every run ('' = the gateway default)."
+    description: "Model for voice conversations ('' = the gateway default)."
   voice_provider:
     type: str
     default: ""
-    description: "Provider for the voice-only model override ('' = the configured one)."
+    description: "Provider for the voice model ('' = the configured one)."
   turn_timeout_seconds:
     type: float
     default: 120

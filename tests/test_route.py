@@ -1,6 +1,6 @@
 """GET /v1/audio/converse end to end over a real aiohttp TestServer: the plugin route and a scripted
-fake of the Runs API share one app, so the loopback key probe, the turn and the stop all go over
-real HTTP. STT and the streaming TTS provider are patched at the plugin's speech seam; VAD,
+fake API server share one app, so the loopback key probe goes over real HTTP, and the converse
+platform (Hermes's real adapter base) is connected to a scripted gateway runner. STT and the streaming TTS provider are patched at the plugin's speech seam; VAD,
 endpointing, capture and the client/driver pipeline run for real."""
 
 from __future__ import annotations
@@ -17,11 +17,14 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from hermes_converse import speech
 from hermes_converse.loop import voice_system_prompt
+from gateway.config import PlatformConfig
+from hermes_converse.platform_adapter import ConverseAdapter
 from hermes_converse.route import ConverseRoute, loopback_base_url
+from hermes_converse.settings import load_settings
 
 from tests.support.converse_audio import RMS_NORMAL_SPEECH, RMS_QUIET_SPEECH, room_noise, speech_like
 from tests.support.converse_audio import silence as _silence_pcm
-from tests.support.fake_api import FakeRunsAPI
+from tests.support.fake_hermes import FakeHermes
 
 API_KEY = "-".join(("fixture", "converse", "api", "key", "0123456789"))
 VOICE_PROTOCOL = "hermes-voice-v1"
@@ -51,27 +54,34 @@ class _FakeStreamer:
 
 
 class Harness:
-    """One app serving the fake Runs API and the plugin route; the route's loopback URL is this
-    server's own URL once it has started."""
+    """One app serving the fake API server and the plugin route, with the converse platform
+    connected to the fake gateway runner; the route's loopback URL is this server's own URL."""
 
-    def __init__(self, fake: FakeRunsAPI, settings: dict | None = None, *, device_store=None):
+    def __init__(self, fake: FakeHermes, settings: dict | None = None, *, device_store=None):
         self.fake = fake
         self.settings = settings or {}
         self.base = {"url": ""}
         app = web.Application()
         app.add_routes(fake.routes())
-        self.route = ConverseRoute(settings_getter=lambda key, default=None: self.settings.get(key, default),
-                      base_url_resolver=lambda: self.base["url"], profile_name="default", device_store=device_store)
+        getter = lambda key, default=None: self.settings.get(key, default)  # noqa: E731
+        self.route = ConverseRoute(settings_getter=getter, base_url_resolver=lambda: self.base["url"],
+                                   profile_name="default", device_store=device_store)
         self.route.wire(app)
         self.app = app
+        self.adapter = ConverseAdapter(PlatformConfig(enabled=True), self.route.hub,
+                                       approval_choice=lambda: load_settings(getter).approval_choice)
+        fake.install(self.adapter)
 
     async def __aenter__(self):
+        await self.adapter.connect()
         self.client = await TestClient(TestServer(self.app)).__aenter__()
         self.base["url"] = str(self.client.make_url(""))
         return self.client
 
     async def __aexit__(self, *exc):
         await self.client.__aexit__(*exc)
+        await self.adapter.cancel_background_tasks()
+        await self.adapter.disconnect()
 
 
 def _speech_then_silence_pcm(block=480, speech_blocks=16, silence_blocks=60):
@@ -134,11 +144,9 @@ async def _drive_full_turn(ws, streamer):
     for frame in _speech_then_silence_pcm():
         await ws.send_bytes(frame)
     frames, pcm = await _collect_turn(ws)
-    transcript = next(f["text"] for f in frames if f["type"] == "transcript")
-    assert transcript == "turn it on"
     assert pcm == [b"\x01\x02\x03\x04", b"\x05\x06"]
     assert streamer.requests
-    assert [f["type"] for f in frames] == ["transcript", "thinking", "speaking", "turn_done"]
+    assert [f["type"] for f in frames] == ["thinking", "speaking", "turn_done"]
     assert frames[-1]["next_action"] == "listen"
     return frames
 
@@ -149,8 +157,8 @@ async def _end(ws):
 
 
 @pytest.mark.asyncio
-async def test_subprotocol_key_accept_full_turn_through_the_runs_api(monkeypatch):
-    fake = FakeRunsAPI(API_KEY, deltas=("Turn it ", "on."))
+async def test_subprotocol_key_accept_full_turn_through_the_gateway(monkeypatch):
+    fake = FakeHermes(API_KEY, deltas=("Turn it ", "on."))
     streamer = _FakeStreamer([b"\x01\x02\x03\x04", b"\x05\x06"])
     _patch_speech(monkeypatch, streamer, transcript="turn it on")
     async with Harness(fake) as client:
@@ -161,18 +169,17 @@ async def test_subprotocol_key_accept_full_turn_through_the_runs_api(monkeypatch
             await _drive_full_turn(ws, streamer)
         finally:
             await _end(ws)
-    (run,) = fake.runs.values()
-    assert run["body"]["input"] == "turn it on"
-    assert run["body"]["session_id"].startswith("voice_")
-    assert run["body"]["instructions"] == voice_system_prompt("Arya")
-    assert "model" not in run["body"] and "provider" not in run["body"]
-    assert run["idempotency_key"].startswith("converse-" + run["body"]["session_id"])
+    (turn,) = fake.turns
+    assert turn["text"] == "turn it on"
+    assert turn["chat_id"].startswith("voice_")
+    assert turn["instructions"] == voice_system_prompt("Arya")
+    assert turn["model"] is None and turn["provider"] is None and not fake.commands
     assert streamer.requests == ["Turn it on."]
 
 
 @pytest.mark.asyncio
 async def test_start_key_accept_full_turn(monkeypatch):
-    fake = FakeRunsAPI(API_KEY)
+    fake = FakeHermes(API_KEY)
     streamer = _FakeStreamer([b"\x01\x02\x03\x04", b"\x05\x06"])
     _patch_speech(monkeypatch, streamer, transcript="turn it on")
     async with Harness(fake) as client:
@@ -186,7 +193,7 @@ async def test_start_key_accept_full_turn(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_session_id_is_stable_across_turns_on_one_socket(monkeypatch):
-    fake = FakeRunsAPI(API_KEY, deltas=("ok.",))
+    fake = FakeHermes(API_KEY, deltas=("ok.",))
     streamer = _FakeStreamer([b"\x01\x02"])
     monkeypatch.setattr(speech, "streaming_provider", lambda cfg: streamer)
     monkeypatch.setattr(speech, "load_tts_config", dict)
@@ -204,13 +211,12 @@ async def test_session_id_is_stable_across_turns_on_one_socket(monkeypatch):
                 await _collect_turn(ws)
         finally:
             await _end(ws)
-    sessions = {run["body"]["session_id"] for run in fake.runs.values()}
-    assert len(fake.runs) == 2 and len(sessions) == 1
+    assert len(fake.turns) == 2 and len({turn["chat_id"] for turn in fake.turns}) == 1
 
 
 @pytest.mark.asyncio
-async def test_settings_drive_the_run_request_and_the_prompt(monkeypatch):
-    fake = FakeRunsAPI(API_KEY)
+async def test_settings_drive_the_model_and_the_prompt(monkeypatch):
+    fake = FakeHermes(API_KEY)
     streamer = _FakeStreamer([b"\x01\x02"])
     _patch_speech(monkeypatch, streamer, transcript="what time is it")
     settings = {"name": "Hal", "voice_model": "fast-model", "voice_provider": "local-llm", "end_phrases": ["that is all"]}
@@ -224,15 +230,16 @@ async def test_settings_drive_the_run_request_and_the_prompt(monkeypatch):
             await _collect_turn(ws)
         finally:
             await _end(ws)
-    (run,) = fake.runs.values()
-    assert run["body"]["model"] == "fast-model" and run["body"]["provider"] == "local-llm"
-    assert run["body"]["instructions"] == voice_system_prompt("Hal", allow_signoff=True, end_phrases=("that is all",))
-    assert "That is all" in run["body"]["instructions"]
+    (turn,) = fake.turns
+    assert turn["model"] == "fast-model" and turn["provider"] == "local-llm"
+    assert fake.commands == ["/model fast-model --provider local-llm"]
+    assert turn["instructions"] == voice_system_prompt("Hal", allow_signoff=True, end_phrases=("that is all",))
+    assert "That is all" in turn["instructions"]
 
 
 @pytest.mark.asyncio
 async def test_start_name_overrides_the_configured_name(monkeypatch):
-    fake = FakeRunsAPI(API_KEY)
+    fake = FakeHermes(API_KEY)
     _patch_speech(monkeypatch, _FakeStreamer([b"\x01"]), transcript="hi")
     async with Harness(fake, {"name": "Hal"}) as client:
         ws = await client.ws_connect("/v1/audio/converse", protocols=(VOICE_PROTOCOL, _key_protocol()))
@@ -244,13 +251,13 @@ async def test_start_name_overrides_the_configured_name(monkeypatch):
             await _collect_turn(ws)
         finally:
             await _end(ws)
-    (run,) = fake.runs.values()
-    assert run["body"]["instructions"] == voice_system_prompt("Nova")
+    (turn,) = fake.turns
+    assert turn["instructions"] == voice_system_prompt("Nova")
 
 
 @pytest.mark.asyncio
 async def test_start_bad_key_closes_unauthorized():
-    async with Harness(FakeRunsAPI(API_KEY)) as client:
+    async with Harness(FakeHermes(API_KEY)) as client:
         ws = await client.ws_connect("/v1/audio/converse")
         try:
             await ws.send_str(_start_msg(key="nope"))
@@ -266,7 +273,7 @@ async def test_start_bad_key_closes_unauthorized():
 
 @pytest.mark.asyncio
 async def test_non_start_first_frame_rejected_bad_start():
-    async with Harness(FakeRunsAPI(API_KEY)) as client:
+    async with Harness(FakeHermes(API_KEY)) as client:
         ws = await client.ws_connect("/v1/audio/converse", protocols=(VOICE_PROTOCOL, _key_protocol()))
         try:
             await ws.send_str(json.dumps({"type": "auth", "key": API_KEY}))
@@ -281,7 +288,7 @@ async def test_non_start_first_frame_rejected_bad_start():
 
 @pytest.mark.asyncio
 async def test_bad_subprotocol_key_rejects_upgrade_401():
-    async with Harness(FakeRunsAPI(API_KEY)) as client:
+    async with Harness(FakeHermes(API_KEY)) as client:
         with pytest.raises(WSServerHandshakeError) as exc:
             await client.ws_connect("/v1/audio/converse", protocols=(VOICE_PROTOCOL, _key_protocol("nope")))
         assert exc.value.status == 401
@@ -289,7 +296,7 @@ async def test_bad_subprotocol_key_rejects_upgrade_401():
 
 @pytest.mark.asyncio
 async def test_unreachable_api_server_refuses_the_upgrade():
-    fake = FakeRunsAPI(API_KEY)
+    fake = FakeHermes(API_KEY)
     harness = Harness(fake)
     async with harness as client:
         harness.base["url"] = "http://127.0.0.1:1"  # nothing listens: the probe fails closed
@@ -300,7 +307,7 @@ async def test_unreachable_api_server_refuses_the_upgrade():
 
 @pytest.mark.asyncio
 async def test_no_credential_start_frame_closes_unauthorized():
-    async with Harness(FakeRunsAPI(API_KEY)) as client:
+    async with Harness(FakeHermes(API_KEY)) as client:
         ws = await client.ws_connect("/v1/audio/converse")
         try:
             await ws.send_str(_start_msg())
@@ -312,7 +319,7 @@ async def test_no_credential_start_frame_closes_unauthorized():
 
 @pytest.mark.asyncio
 async def test_query_token_and_cookie_are_not_credentials():
-    async with Harness(FakeRunsAPI(API_KEY)) as client:
+    async with Harness(FakeHermes(API_KEY)) as client:
         ws = await client.ws_connect(f"/v1/audio/converse?token={API_KEY}",
                                      headers={"Cookie": "session=pretend-valid"})
         try:
@@ -326,7 +333,7 @@ async def test_query_token_and_cookie_are_not_credentials():
 @pytest.mark.asyncio
 async def test_foreign_profile_in_start_frame_is_refused(monkeypatch):
     _patch_speech(monkeypatch, _FakeStreamer([b"\x01"]))
-    async with Harness(FakeRunsAPI(API_KEY)) as client:
+    async with Harness(FakeHermes(API_KEY)) as client:
         ws = await client.ws_connect("/v1/audio/converse", protocols=(VOICE_PROTOCOL, _key_protocol()))
         try:
             await ws.send_str(_start_msg(profile="work"))
@@ -349,7 +356,7 @@ def _write_tone_wav(path, *, rate=24000, ms=40, freq=440.0):
 
 @pytest.mark.asyncio
 async def test_no_streaming_provider_uses_one_shot_fallback(monkeypatch, tmp_path):
-    fake = FakeRunsAPI(API_KEY, deltas=("Sure ", "thing."))
+    fake = FakeHermes(API_KEY, deltas=("Sure ", "thing."))
     monkeypatch.setattr(speech, "streaming_provider", lambda cfg: None)
     monkeypatch.setattr(speech, "load_tts_config", dict)
     monkeypatch.setattr(speech, "tts_text_cap", lambda cfg: 4000)
@@ -388,7 +395,7 @@ async def test_no_streaming_provider_uses_one_shot_fallback(monkeypatch, tmp_pat
 
 @pytest.mark.asyncio
 async def test_equal_input_output_rates_reported_and_full_turn(monkeypatch):
-    fake = FakeRunsAPI(API_KEY)
+    fake = FakeHermes(API_KEY)
     streamer = _FakeStreamer([b"\x01\x02\x03\x04", b"\x05\x06"])
     streamer.sample_rate = 16000
     _patch_speech(monkeypatch, streamer, transcript="turn it on")
@@ -402,7 +409,7 @@ async def test_equal_input_output_rates_reported_and_full_turn(monkeypatch):
             for frame in _speech_then_silence_pcm():
                 await ws.send_bytes(frame)
             frames, pcm = await _collect_turn(ws)
-            assert next(f["text"] for f in frames if f["type"] == "transcript") == "turn it on"
+            assert fake.turns[-1]["text"] == "turn it on"
             assert pcm == [b"\x01\x02\x03\x04", b"\x05\x06"]  # no-op resample: bytes unchanged
         finally:
             await _end(ws)
@@ -422,7 +429,7 @@ def _calibration_frames(block=480, blocks=40):
 
 @pytest.mark.asyncio
 async def test_quiet_speech_full_turn_over_ws(monkeypatch):
-    fake = FakeRunsAPI(API_KEY)
+    fake = FakeHermes(API_KEY)
     streamer = _FakeStreamer([b"\x01\x02\x03\x04"])
     _patch_speech(monkeypatch, streamer, transcript="quiet please")
     async with Harness(fake) as client:
@@ -437,7 +444,7 @@ async def test_quiet_speech_full_turn_over_ws(monkeypatch):
             for f in _pcm_frames(_silence_pcm(seconds=1.7)):
                 await ws.send_bytes(f)
             frames, pcm = await _collect_turn(ws)
-            got = next((f["text"] for f in frames if f["type"] == "transcript"), None)
+            got = fake.turns[-1]["text"] if fake.turns else None
             assert got == "quiet please", f"soft voice was not heard: {got!r}"
             assert pcm
         finally:
@@ -446,7 +453,7 @@ async def test_quiet_speech_full_turn_over_ws(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_room_noise_never_becomes_a_phantom_turn(monkeypatch):
-    fake = FakeRunsAPI(API_KEY)
+    fake = FakeHermes(API_KEY)
     _patch_speech(monkeypatch, _FakeStreamer([b"\x09\x09"]), transcript="the real one")
     async with Harness(fake) as client:
         ws = await client.ws_connect("/v1/audio/converse", protocols=(VOICE_PROTOCOL, _key_protocol()))
@@ -462,14 +469,14 @@ async def test_room_noise_never_becomes_a_phantom_turn(monkeypatch):
             for f in _pcm_frames(_silence_pcm(seconds=1.7)):
                 await ws.send_bytes(f)
             frames, _ = await _collect_turn(ws)
-            assert [f["text"] for f in frames if f["type"] == "transcript"] == ["the real one"]
+            assert [turn["text"] for turn in fake.turns] == ["the real one"]
         finally:
             await _end(ws)
 
 
 @pytest.mark.asyncio
 async def test_socket_stays_open_across_quiet_then_takes_a_turn(monkeypatch):
-    fake = FakeRunsAPI(API_KEY)
+    fake = FakeHermes(API_KEY)
     _patch_speech(monkeypatch, _FakeStreamer([b"\x01\x02"]), transcript="still here")
     async with Harness(fake) as client:
         ws = await client.ws_connect("/v1/audio/converse", protocols=(VOICE_PROTOCOL, _key_protocol()))
@@ -494,14 +501,14 @@ async def test_socket_stays_open_across_quiet_then_takes_a_turn(monkeypatch):
             for f in _pcm_frames(_silence_pcm(seconds=1.7)):
                 await ws.send_bytes(f)
             frames, _ = await _collect_turn(ws)
-            assert next(f["text"] for f in frames if f["type"] == "transcript") == "still here"
+            assert fake.turns[-1]["text"] == "still here"
         finally:
             await _end(ws)
 
 
 @pytest.mark.asyncio
 async def test_no_audio_sent_yields_no_quiet_ping(monkeypatch):
-    fake = FakeRunsAPI(API_KEY)
+    fake = FakeHermes(API_KEY)
     _patch_speech(monkeypatch, _FakeStreamer([b"\x01"]), transcript="unused")
     async with Harness(fake) as client:
         ws = await client.ws_connect("/v1/audio/converse", protocols=(VOICE_PROTOCOL, _key_protocol()))
@@ -518,10 +525,10 @@ async def test_no_audio_sent_yields_no_quiet_ping(monkeypatch):
 # ── the run is never orphaned ──
 
 @pytest.mark.asyncio
-async def test_barge_in_stops_the_live_run(monkeypatch):
+async def test_barge_in_stops_the_live_turn(monkeypatch):
     """The user talks over the reply: playback is cut, the plugin POSTs /stop, the turn ends with
     `interrupted` + `turn_done`, and the socket is still open for the next utterance."""
-    fake = FakeRunsAPI(API_KEY, deltas=("Here is a long answer that keeps going. ",), hang=True)
+    fake = FakeHermes(API_KEY, deltas=("Here is a long answer that keeps going. ",), hang=True)
     streamer = _FakeStreamer([b"\x01\x02\x03\x04"])
     _patch_speech(monkeypatch, streamer, transcript="tell me everything")
     async with Harness(fake) as client:
@@ -547,13 +554,12 @@ async def test_barge_in_stops_the_live_run(monkeypatch):
             assert not ws.closed
         finally:
             await _end(ws)
-    run_id = next(iter(fake.runs))
-    assert fake.stop_calls[0] == run_id and fake.runs[run_id]["status"] == "cancelled"
+    assert fake.turns[0]["status"] == "interrupted"
 
 
 @pytest.mark.asyncio
-async def test_closing_the_socket_mid_turn_stops_the_run(monkeypatch):
-    fake = FakeRunsAPI(API_KEY, deltas=("Thinking out loud. ",), hang=True)
+async def test_closing_the_socket_mid_turn_stops_the_turn(monkeypatch):
+    fake = FakeHermes(API_KEY, deltas=("Thinking out loud. ",), hang=True)
     _patch_speech(monkeypatch, _FakeStreamer([b"\x01\x02"]), transcript="go")
     async with Harness(fake) as client:
         ws = await client.ws_connect("/v1/audio/converse", protocols=(VOICE_PROTOCOL, _key_protocol()))
@@ -566,26 +572,19 @@ async def test_closing_the_socket_mid_turn_stops_the_run(monkeypatch):
             if msg.type == web.WSMsgType.BINARY:
                 break
         await ws.close()
-        run_id = next(iter(fake.runs))
-        for _ in range(100):  # while the server is still up: the close itself must stop the run
-            if fake.runs[run_id]["status"] == "cancelled":
+        for _ in range(100):  # while the server is still up: the close itself must stop the turn
+            if fake.stopped:
                 break
             await asyncio.sleep(0.05)
-        assert fake.stop_calls == [run_id]
-        assert fake.runs[run_id]["status"] == "cancelled"
+        assert fake.stopped == fake.turns and len(fake.turns) == 1
 
 
 @pytest.mark.asyncio
-async def test_run_refusal_is_spoken_as_an_error_frame(monkeypatch):
-    """A 409 from /v1/runs (a session another surface owns, a draining profile) reaches the client
-    as an error frame followed by turn_done — never a hung socket."""
-    fake = FakeRunsAPI(API_KEY)
-
-    async def _refuse(request):
-        return web.json_response({"error": {"message": "session is owned by another surface",
-                                            "code": "permission_denied"}}, status=409)
-
-    fake.create_run = _refuse
+async def test_failed_turn_reaches_the_client_as_an_error_frame(monkeypatch):
+    """A turn the gateway could not run reaches the client as an error frame followed by
+    turn_done — never a hung socket."""
+    fake = FakeHermes(API_KEY)
+    fake.fail = RuntimeError("session is owned by another surface")
     _patch_speech(monkeypatch, _FakeStreamer([b"\x01"]), transcript="hello")
     async with Harness(fake) as client:
         ws = await client.ws_connect("/v1/audio/converse", protocols=(VOICE_PROTOCOL, _key_protocol()))
@@ -596,7 +595,7 @@ async def test_run_refusal_is_spoken_as_an_error_frame(monkeypatch):
                 await ws.send_bytes(frame)
             frames, pcm = await _collect_turn(ws)
             errors = [f for f in frames if f["type"] == "error"]
-            assert errors and "409" in errors[0]["error"] and "another surface" in errors[0]["error"]
+            assert errors and errors[0]["error"] == "agent run failed"
             assert pcm == [] and frames[-1]["type"] == "turn_done"
             assert frames[-1]["next_action"] == "listen"
         finally:

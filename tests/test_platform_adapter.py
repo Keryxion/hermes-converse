@@ -18,29 +18,9 @@ from gateway.config import PlatformConfig  # noqa: E402
 
 from hermes_converse.conversation import ConversationHub  # noqa: E402
 from hermes_converse.platform_adapter import ConverseAdapter, GatewayTurns, register_platform  # noqa: E402
+from tests.support.fake_hermes import FakeStore  # noqa: E402
 
 NOTIFY = {"notify": True}
-
-
-class FakeStore:
-    def __init__(self):
-        self.ids, self.switched, self.models = {}, [], {}
-
-    def get_or_create_session(self, source, force_new=False, touch_activity=True):
-        key = f"agent:main:converse:dm:{source.chat_id}"
-        self.ids.setdefault(key, f"sid-{source.chat_id}")
-        return SimpleNamespace(session_key=key, session_id=self.ids[key])
-
-    def switch_session(self, session_key, target):
-        self.switched.append((session_key, target))
-        self.ids[session_key] = target
-        return SimpleNamespace(session_key=session_key, session_id=target)
-
-    def peek_session_id(self, session_key):
-        return self.ids.get(session_key)
-
-    def get_model_override(self, session_key):
-        return self.models.get(session_key)
 
 
 class Device:
@@ -50,18 +30,6 @@ class Device:
         self.stopped = False
         self.outputs = []
         self.transcripts = SimpleNamespace(put=self.outputs.append)
-
-
-@pytest.fixture(autouse=True, scope="module")
-def _registered_platform():
-    """``Platform("converse")`` resolves only for a registered plugin platform."""
-    from gateway.platform_registry import PlatformEntry, platform_registry
-
-    platform_registry.register(PlatformEntry(
-        name="converse", label="Converse", adapter_factory=lambda config: None, check_fn=lambda: True,
-        trusted_inbound=True, source="builtin"))  # unscoped: visible to every profile scope
-    yield
-    platform_registry.unregister("converse")
 
 
 @pytest.fixture
@@ -114,7 +82,7 @@ async def test_streamed_reply_is_spoken_once_and_final_is_the_result(rig):
     assert seen == {"text": "weather?", "prompt": "be brief", "control": False, "chat": "den",
                     "name": "Arya: Den Echo"}
     assert (turns.tool_calls, turns.reasoning_tokens) == (1, 42)
-    assert turns.settled and not turns.unsettled_run_ids
+    assert turns.settled
 
 
 async def test_unstreamed_final_is_spoken(rig):
@@ -256,7 +224,6 @@ async def test_turn_that_outlives_its_stop_never_blocks_or_speaks(rig):
     await started.wait()
     await turns.stop()
     assert (await first).status == "interrupted" and not turns.settled
-    assert not turns.unsettled_run_ids  # a new socket for the device is not refused
     second = asyncio.ensure_future(turns.run_turn(text="again", on_delta=spoken.append))
     await asyncio.sleep(0.05)
     finish.set()

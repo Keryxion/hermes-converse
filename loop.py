@@ -61,8 +61,8 @@ IDLE_POLLS_TO_FLUSH = 4
 THINKING_FRAME_INTERVAL = 5.0
 SMART_TURN_DEFAULT_THRESHOLD = 0.5
 # Bound on the per-connection conversation history kept in memory (~20 user+assistant turns): a
-# simple tail-cap so a long-lived socket can't grow it without limit. The Runs API owns the real
-# transcript (the socket's session_id continues it); this copy backs the sign-off / next_action
+# simple tail-cap so a long-lived socket can't grow it without limit. The gateway session owns the real
+# transcript; this copy backs the sign-off / next_action
 # decisions and the latency log.
 HISTORY_MAX_MESSAGES = 40
 QUIET_INTERVAL_MAX = 3600.0
@@ -848,7 +848,7 @@ def parse_start_config(frame: dict[str, Any], *, default_name: str = DEFAULT_NAM
     return input_rate, output_rate, quiet_interval, name, (str(profile).strip() if profile else None)
 
 
-# Voice replies are spoken aloud — keep them short and speakable. Sent as the run's ``instructions``
+# Voice replies are spoken aloud — keep them short and speakable. Sent as the turn's channel prompt
 # (the ephemeral system prompt) so spoken replies don't balloon to full chat length.
 VOICE_PROMPT = (
     "You are in a live, low-latency voice conversation and your reply is spoken aloud. Speed "

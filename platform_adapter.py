@@ -32,7 +32,6 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 
-from .agent_client import TurnResult
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +40,14 @@ PLATFORM = "converse"
 OUTPUT_TTL = 60.0
 SILENT = "[SILENT]"
 COMMAND_TIMEOUT = 15.0
+
+
+@dataclass
+class TurnResult:
+    reply: str
+    error: Optional[str]  # what the client should hear about
+    status: str  # completed | interrupted | cancelled | failed
+    turn_id: Optional[str]
 
 
 @dataclass
@@ -109,6 +116,10 @@ class ConverseAdapter(BasePlatformAdapter):
     def source_for(self, *, chat_id: str, title: str, recipient_id: str, device_name: str):
         return self.build_source(chat_id=chat_id, chat_name=title, chat_type="dm",
                                  user_id=recipient_id, user_name=device_name)
+
+    def has_conversation(self, source: Any) -> bool:
+        store = getattr(self, "_session_store", None)
+        return store is not None and store.lookup_by_session_key(self._source_session_key(source)) is not None
 
     async def bind(self, source: Any, *, adopt_session_id: Optional[str] = None) -> str:
         """Make sure the device's gateway conversation exists; optionally continue an existing
@@ -329,10 +340,7 @@ def _reasoning_tokens(usage: Any) -> Optional[int]:
 
 
 class GatewayTurns:
-    """Run one socket's voice turns in its gateway conversation. Same surface the route drives
-    :class:`~.agent_client.RunsClient` through."""
-
-    admission_uncertain = False
+    """Run one socket's voice turns in its gateway conversation."""
 
     def __init__(self, adapter: ConverseAdapter, source: Any, session_key: str, *,
                  settle_timeout: float = 10.0) -> None:
@@ -356,12 +364,9 @@ class GatewayTurns:
     def settled(self) -> bool:
         return self._turn is None or self._turn.done.is_set()
 
-    # The gateway owns a turn that outlives its socket; nothing is left for the route to settle.
-    unsettled_run_ids: frozenset = frozenset()
-
     async def run_turn(self, *, text: str, on_delta: Callable[[str], None],
                        instructions: Optional[str] = None, model: Optional[str] = None,
-                       provider: Optional[str] = None, **_: Any) -> TurnResult:
+                       provider: Optional[str] = None) -> TurnResult:
         adapter = self._adapter
         if self._turn is not None:
             # A stopped turn the gateway has not finished. The gateway serializes the session, so

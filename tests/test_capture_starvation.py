@@ -191,11 +191,11 @@ async def test_websocket_starvation_drops_old_capture_and_preserves_new_turn(mon
         await ws.send_bytes(speech_like(4000, seconds=0.5, seed=7).tobytes())
         assert await asyncio.to_thread(tripped.wait, 2)
         assert await asyncio.to_thread(released.wait, 2)
-        assert not fake.runs  # No stray agent run from the abandoned fragment.
+        assert not fake.turns  # No stray agent run from the abandoned fragment.
         await ws.send_bytes(speech_like(6000, seconds=0.5, seed=22).tobytes())
         await ws.send_bytes(silence(seconds=2).tobytes())
         frames, pcm = await asyncio.wait_for(_collect_turn(ws), timeout=3)
-        assert len(fake.runs) == 1
+        assert len(fake.turns) == 1
         assert any(frame['type'] == 'thinking' for frame in frames)
         assert frames[-1]['type'] == 'turn_done' and pcm
         await ws.close()
