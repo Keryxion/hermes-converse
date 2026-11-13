@@ -98,8 +98,6 @@ class RunsClient:
         self.unsettled_run_ids: set[str] = set()
         self.admission_uncertain = False
         self.tool_calls = 0  # Observed tool starts for the most recent run; retained through TTS.
-        # Cumulative reasoning tokens Hermes reported for the most recent run; None = never reported.
-        self.reasoning_tokens: Optional[int] = None
 
     @property
     def current_run_id(self) -> Optional[str]:
@@ -124,7 +122,7 @@ class RunsClient:
                        provider: Optional[str] = None, idempotency_key: Optional[str] = None) -> TurnResult:
         """Start a run and stream it to completion. Returns the reply for the history and the error
         (if any) the client should hear about; ``status`` is the run's terminal status."""
-        self.tool_calls, self.reasoning_tokens = 0, None
+        self.tool_calls = 0
         if self.admission_uncertain:
             return TurnResult("", "Previous request admission is unresolved; reconnect before retrying.", "failed", None)
         for previous in tuple(self.unsettled_run_ids):
@@ -343,13 +341,6 @@ class RunsClient:
         name = event.get("event")
         if name == "tool.started":
             self.tool_calls += 1
-            return None
-        if name == "usage.updated":
-            # Cumulative for the run, so a replayed or late report replaces rather than adds.
-            # A null or absent count means the provider did not report reasoning usage.
-            value = event.get("reasoning_tokens")
-            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
-                self.reasoning_tokens = value
             return None
         if name == "message.delta":
             delta = event.get("delta")

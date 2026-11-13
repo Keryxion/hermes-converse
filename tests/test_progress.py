@@ -246,10 +246,10 @@ async def test_thinking_reports_reasoning_tokens_during_speech():
 
 
 @pytest.mark.asyncio
-async def test_reasoning_tokens_reach_the_websocket_and_progress_stays_within_timeout(monkeypatch):
+async def test_runs_api_turns_report_reasoning_tokens_unavailable(monkeypatch):
     fake = _patch(monkeypatch)
     fake.hang = True
-    fake.pre_events = (('usage.updated', {'reasoning_tokens': 2400}),)
+    fake.pre_events = (('tool.started', {'tool_call_id': 'a', 'tool': 'read_file'}),)
     async with Harness(fake, settings={'turn_timeout_seconds': 0.12}) as client:
         ws = await _connect(client)
         for chunk in _speech_then_silence_pcm():
@@ -259,7 +259,6 @@ async def test_reasoning_tokens_reach_the_websocket_and_progress_stays_within_ti
             while not frames or frames[-1]['type'] != 'turn_done':
                 frames.append(await _next_frame(ws))
         thinking = [f for f in frames if f['type'] == 'thinking']
-        assert thinking[0]['reasoning_tokens'] is None
-        assert any(f['reasoning_tokens'] == 2400 for f in thinking[1:])
+        assert len(thinking) >= 2 and all(f['reasoning_tokens'] is None for f in thinking)
         assert any(f['type'] == 'error' and 'timed out' in f['error'] for f in frames)
         await ws.close()

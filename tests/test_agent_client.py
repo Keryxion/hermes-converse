@@ -218,38 +218,3 @@ async def test_tool_count_survives_sse_reconnect_and_resets_for_next_turn():
             assert result.error is None
             assert client.tool_calls == 0
 
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize('events, expected', [
-    ((), None),  # no usage reported at all
-    ((('usage.updated', {'reasoning_tokens': None}),), None),  # provider does not report reasoning
-    ((('usage.updated', {'reasoning_tokens': 0}),), 0),  # a measured zero stays zero
-])
-async def test_reasoning_tokens_distinguish_unavailable_from_zero(events, expected):
-    fake = FakeRunsAPI(API_KEY, pre_events=events)
-    async with TestClient(TestServer(fake.app())) as tc:
-        client, http = await _client_for(tc.server)
-        async with http:
-            result = await client.run_turn(text='go', session_id='s', on_delta=lambda _: None)
-            assert result.error is None
-            assert client.reasoning_tokens == expected
-
-
-@pytest.mark.asyncio
-async def test_reasoning_tokens_are_cumulative_across_reconnect_and_reset_for_next_turn():
-    fake = FakeRunsAPI(API_KEY, pre_events=(
-        ('usage.updated', {'reasoning_tokens': 900}),
-        ('tool.started', {'tool_call_id': 'a', 'tool': 'read_file'}),
-        ('usage.updated', {'reasoning_tokens': 2400}),
-    ), drop_after=2)
-    async with TestClient(TestServer(fake.app())) as tc:
-        client, http = await _client_for(tc.server)
-        async with http:
-            result = await client.run_turn(text='go', session_id='s', on_delta=lambda _: None)
-            assert result.error is None
-            assert len(fake.subscriptions) >= 2  # reconnected with Last-Event-ID
-            assert client.reasoning_tokens == 2400  # replaced, not summed with the replay
-            assert client.tool_calls == 1
-            fake.pre_events, fake.drop_after = (), None
-            await client.run_turn(text='hello', session_id='s', on_delta=lambda _: None)
-            assert client.reasoning_tokens is None

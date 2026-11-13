@@ -117,6 +117,37 @@ async def test_streamed_reply_is_spoken_once_and_final_is_the_result(rig):
     assert turns.settled and not turns.unsettled_run_ids
 
 
+
+@pytest.mark.parametrize("usages, expected", [
+    ((), None),  # no model call finished
+    ((None, {"reasoning_tokens": None}, {"output_tokens": 12}), None),  # calls without a count
+    (({"reasoning_tokens": 0, "reasoning_tokens_reported": False},), None),  # normalized, not measured
+    (({"reasoning_tokens": 0, "reasoning_tokens_reported": True},), 0),
+    (({"reasoning_tokens": 0},), 0),  # a measured zero stays zero
+    (({"reasoning_tokens": None}, {"reasoning_tokens": 7}, {"reasoning_tokens": 0}), 7),
+])
+async def test_reasoning_tokens_distinguish_unavailable_from_zero_and_reset_each_turn(rig, usages, expected):
+    turns, key = await _turns(rig)
+
+    async def handler(event):
+        sid = rig.store.peek_session_id(key)
+        for usage in usages:
+            rig.adapter.on_api_request(session_id=sid, usage=usage)
+        rig.adapter.on_stream_delta(delta="Done.", kind="text", session_id=sid)
+        return "Done."
+
+    rig.adapter.set_message_handler(handler)
+    await turns.run_turn(text="go", on_delta=lambda _: None)
+    assert turns.reasoning_tokens == expected
+
+    async def quiet(event):
+        return "Done."
+
+    rig.adapter.set_message_handler(quiet)
+    await turns.run_turn(text="again", on_delta=lambda _: None)
+    assert turns.reasoning_tokens is None
+
+
 async def test_unstreamed_final_is_spoken(rig):
     turns, _ = await _turns(rig)
 

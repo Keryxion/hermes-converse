@@ -96,18 +96,14 @@ past (TTS was slower than real time), restart from now. Send the first chunks
 without delay, stop waiting as soon as the turn is interrupted, and do not count
 pacing waits toward the turn timeout. `drained` remains the end of playback.
 
-`thinking` progress is measured, never estimated. `tool_calls` counts the run's
-`tool.started` events. `reasoning_tokens` comes from the Runs API's `usage.updated` run event, which
-Hermes emits after each model call with the run's cumulative provider-reported
-count (`null` when the provider reports none):
-
-```json
-{"event": "usage.updated", "run_id": "run_abc", "reasoning_tokens": 2400}
-```
-
-Take the latest value rather than summing, so an SSE replay or late report cannot
-double count. Do not derive tokens from elapsed time or `reasoning.available`
-previews, and never forward reasoning text. Counters reset at each run's start.
+`thinking` progress is measured, never estimated. In a gateway conversation,
+`tool_calls` counts `pre_tool_call` hooks and `reasoning_tokens` sums the
+`usage.reasoning_tokens` of each `post_api_request` hook for the turn. A call whose
+usage carries no integer count, or has `reasoning_tokens_reported: false`, adds
+nothing; the turn reports `null` until a call reports one. Over the Runs API, `tool_calls` counts `tool.started` events and
+`reasoning_tokens` is `null`: that API reports no per-call usage. Do not derive
+tokens from elapsed time or reasoning text, and never forward reasoning text.
+Counters reset for each turn.
 Send opt-in user and assistant `transcript` frames as defined in
 [the client spec](client.md), for both voice replies and outbound output. Send
 reply text before `turn_done` without delaying PCM. Distinguish generated text,
