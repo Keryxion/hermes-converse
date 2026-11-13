@@ -17,7 +17,7 @@ import tempfile
 import wave
 from collections import deque
 from contextlib import suppress
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -58,10 +58,6 @@ CONVERSE_ENDPOINT_FLOOR_MULT = 1.3
 CALIBRATION_MS = 450
 GRACE_MS = 500
 PRE_ROLL_MS = 1200
-# How long speech must stay un-sustained before the utterance ends: the bulk of the "listening" tail
-# the user waits through after they stop talking, so keep it short — 700 ms rides over a normal
-# between-word pause without feeling laggy.
-ENDPOINT_SILENCE_MS = 700
 # Hard cap on one capture, so "listening" can never run to half a minute in a pathological room.
 MAX_UTTERANCE_MS = 12_000
 
@@ -103,31 +99,6 @@ def utterance_volume(np: Any, audio: Any) -> float:
     this module (a quiet room is ~30-80, normal speech ~3000-8000). This is a local
     capture measurement, separate from the normalized 0–1 wake volume reported by clients."""
     return rms(np, audio)
-
-
-def capture_until_quiet(stream: Any, np: Any, block: int, pre_roll: Any, *, endpoint_blocks: int,
-                        max_blocks: int, sample_rate: int = SAMPLE_RATE,
-                        silence_rms: float = SILENCE_RMS_THRESHOLD,
-                        is_quiet: Optional[Callable[[Any], bool]] = None,
-                        no_data_seconds: Optional[float] = None) -> tuple[str, float]:
-    """After a trip, read until *endpoint_blocks* of quiet (or *max_blocks*) and write pre-roll +
-    capture to a WAV at *sample_rate*. *silence_rms* is the end-of-utterance threshold: raised above
-    the absolute 200 so an utterance ends when the level returns to a NOISY ambient floor. Returns
-    ``(wav_path, volume)`` — see :func:`utterance_volume`. With a no-data timeout, the caller
-    must drop the WAV when ``stream.no_data_return`` is true."""
-    frames: list[Any] = list(pre_roll)
-    quiet = 0
-    for _ in range(max_blocks):
-        data, _ = stream.read(block, no_data_seconds=no_data_seconds)
-        if stream.no_data_return:
-            break
-        frames.append(data.copy())
-        quiet_block = is_quiet(data) if is_quiet is not None else rms(np, data) < silence_rms
-        quiet = quiet + 1 if quiet_block else 0
-        if quiet >= endpoint_blocks:
-            break
-    audio = np.concatenate(frames, axis=0)
-    return write_wav(np, audio, sample_rate=sample_rate), utterance_volume(np, audio)
 
 
 class BargeDetector:

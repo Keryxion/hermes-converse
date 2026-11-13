@@ -98,7 +98,7 @@ All are JSON text frames:
 | frame | meaning |
 |---|---|
 | `{"stop": true}` | Stops live work and closes the socket. Preserves the device's Hermes conversation and its history for reconnection (section 11). |
-| `{"commit": true}` | Forces the current utterance to endpoint now (runs a turn on it). |
+| `{"commit": true}` | Ends the current utterance now, with the audio already sent (runs a turn on it). |
 | `{"type": "cancel", "turn_id": "..."}` | Cancels the **current** turn — stops TTS and the agent — but keeps the socket, session, and history alive. |
 | `{"type": "wake", "claim_id": "...", "wake_word": "Hey Arya"}` | request an advisory wake decision while buffering the new activation locally; see section 8. |
 | `{"type": "drained", "turn_id": "..."}` | Tells the server the reply's last audio has left the speaker, so the server won't transcribe its own echo as a new turn. |
@@ -324,6 +324,8 @@ contract.
    the matching grant for up to 1000 ms. On denial/timeout, discard the buffer.
 3. On grant, flush the buffered PCM and continue with live PCM. Server VAD
    endpoints the user request, then emits `thinking` (preceded by `transcript` if enabled).
+   The user may pause after the wake word, or mid-request, for up to
+   `endpoint_max_silence_ms` (default 3 s) without the request being split.
 4. Keep sending live PCM during thinking, `speaking` + reply PCM, and queued
    playback. The server captures accepted interruptions as continuations.
 5. Receive `turn_done`; send `drained` after actual speaker drain/discard.

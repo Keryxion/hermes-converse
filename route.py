@@ -397,6 +397,7 @@ def _resolve_session(settings: Settings, input_rate: int, output_rate: int, quie
     session = ConverseSession(
         np, input_rate=input_rate, quiet_interval=quiet_interval, transcribe=_transcribe,
         endpoint_model=settings.endpoint_model, endpoint_threshold=settings.endpoint_threshold,
+        endpoint_silence_ms=settings.endpoint_silence_ms, endpoint_max_silence_ms=settings.endpoint_max_silence_ms,
         vad_model=settings.vad_model, capture_no_data_seconds=settings.capture_no_data_seconds)
     return synth, cap, session
 
@@ -487,6 +488,8 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
     async def _reply_wake(frame: dict) -> None:
         try:
             reply = await _wake_response(frame, arbitrator=arbitrator, device_id=device_id)
+            if reply["type"] == "wake_grant":
+                session.note_wake()
             await ws.send_json(reply)
         except Exception:
             logger.debug("converse wake reply failed", exc_info=True)

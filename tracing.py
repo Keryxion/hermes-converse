@@ -25,8 +25,9 @@ _provider_lock = threading.Lock()
 _ATTRIBUTE_KEYS = frozenset({
     "turn_id", "session.id", "input_rate", "session_mode", "outcome", "interrupted", "next_action",
     "vad.model", "endpoint.mode", "endpoint.probability", "endpoint.threshold", "endpoint.decision", "endpoint.reason",
-    "endpoint.holds", "stt.success", "stt.model", "stt.transcript_chars", "llm.ttft_ms", "reply.chars",
-    "input.continuation", "input.audio_ms", "endpoint.silence_ms",
+    "stt.success", "stt.model", "stt.transcript_chars", "llm.ttft_ms", "reply.chars",
+    "input.continuation", "input.audio_ms", "endpoint.silence_ms", "endpoint.max_silence_ms", "endpoint.wake",
+    "endpoint.pause_ms", "endpoint.longest_pause_ms",
     "llm.deltas", "error", "llm.timed_out", "tts.pcm_chunks", "tts.first_pcm_ms",
 })
 

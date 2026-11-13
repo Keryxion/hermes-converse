@@ -145,6 +145,8 @@ plugin settings form):
 | `end_phrases` | `[over and out]` | session mode: a reply ending with one of these signs off |
 | `vad_model` | `silero` | speech detection with automatic energy fallback; set `energy` to use RMS detection only |
 | `endpoint_model`, `endpoint_threshold` | off, `0.5` | Smart Turn v3 semantic endpointer (see below) |
+| `endpoint_silence_ms` | `700` | silence that ends an utterance; with Smart Turn, the first completion check |
+| `endpoint_max_silence_ms` | `3000` | longest pause allowed after the wake word or, with Smart Turn, inside an unfinished request |
 | `approval_choice` | `deny` | what a voice turn answers when the agent asks for a command approval |
 | `api_base_url` | `""` | loopback URL of the API server when it cannot be derived from the listener |
 | `arbitrate_enabled` | `false` | enable advisory wake selection for cooperating clients |
@@ -214,7 +216,11 @@ addressed to the assistant.
 Silero and Smart Turn work together: Silero finds candidate pauses; Smart Turn,
 when enabled, decides whether the person has finished their thought. Speech
 onset needs at least 250 ms above Silero's speech threshold (0.5, continuing down
-to 0.35). The existing silence window and utterance cap still apply.
+to 0.35). After `endpoint_silence_ms` of silence the utterance ends, unless Smart Turn
+judges it unfinished; then it keeps listening, rechecking each window, for up to
+`endpoint_max_silence_ms`. After a wake word the first pause also waits up to
+`endpoint_max_silence_ms`, so "Hey Arya … set a timer" stays one request. The 12 s
+utterance cap still applies.
 
 **Smart Turn v3** (optional): with `endpoint_model: smart-turn-v3` the fixed silence endpoint
 becomes adaptive — on each candidate pause the model estimates whether the utterance sounds
@@ -272,7 +278,11 @@ the existing transcript/thinking/speaking frames, preserving the host's sampling
 Disconnected turns are closed, and app cleanup attempts a bounded five-second flush in a
 worker thread. Tracing failures do not interrupt voice operation.
 Capture spans include `input.audio_ms` and `endpoint.silence_ms` so buffered audio duration
-can be distinguished from elapsed processing time when investigating early endpoints.
+can be distinguished from elapsed processing time when investigating early endpoints. They also
+record `endpoint.mode`, `endpoint.max_silence_ms`, `endpoint.wake`, `endpoint.reason`
+(`silence`, `threshold`, `max_silence`, `client_commit`, ...), the final `endpoint.pause_ms`,
+and `endpoint.longest_pause_ms`, the longest pause the user spoke through. With
+`HERMES_VOICE_DEBUG=1` the same decision is logged per capture.
 
 **Browser clients and CORS.** The API server's origin guard runs before any route. A browser or
 Electron client (which sends `Origin: null`) must have its origin listed in
