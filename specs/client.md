@@ -122,6 +122,12 @@ wake word again mid-turn and you want to keep the conversation going.
 | `quiet` | session mode: the stream has been silent for another `quiet_interval` seconds |
 | `error` | the turn failed (spoken-safe text) |
 
+Reply PCM arrives at about playback speed: the first audio is sent immediately,
+then the server stays at most about 1.5 s ahead of real-time playback. Keep
+reading the socket while you play. A buffer of 1.5 s plus network jitter never
+has to stop reading, so `interrupted`, `turn_done`, and pings reach you without
+waiting behind queued audio.
+
 ### Microphone streaming and barge-in
 
 Wake-word detection is **client-side**. Before a wake activation, keep the

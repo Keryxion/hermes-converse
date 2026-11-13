@@ -49,6 +49,11 @@ WAKE_SPEECH_MS = 1000
 # Received-audio gap that marks the client stopping and resuming its stream. Live clients send
 # frames every few tens of milliseconds; a longer network stall only delays the next quiet tick.
 STREAM_RESUME_GAP_SECONDS = 1.0
+# Reply audio is sent at most this far ahead of the client's playback position, so control frames
+# (`interrupted`, `turn_done`, pongs) never queue behind a long backlog on the shared socket.
+MAX_AUDIO_LEAD_SECONDS = 1.5
+# Pacing waits in short steps so an interruption stops sending promptly.
+AUDIO_PACE_STEP_SECONDS = 0.05
 # Reply speech: poll for deltas every 0.5 s; after 4 empty polls (~2 s) speak the buffered tail.
 IDLE_POLL_SECONDS = 0.5
 IDLE_POLLS_TO_FLUSH = 4
@@ -1311,6 +1316,10 @@ async def _stream_reply(d: _Driver, turn: _Turn, turn_task: asyncio.Future) -> N
     turn_done still go out, so the client is never left "thinking" forever."""
     speaking = False
     deadline = d.loop.time() + d.turn_timeout if d.turn_timeout > 0 else None
+    # Where the client's queued audio ends on this clock. Behind `now` means it ran dry (TTS was
+    # slower than real time), so playback restarts at `now` rather than counting audio never played.
+    rate = getattr(d.synth, "sample_rate", None)
+    play_end = d.loop.time()
     while True:
         try:
             if deadline is None:
@@ -1335,6 +1344,16 @@ async def _stream_reply(d: _Driver, turn: _Turn, turn_task: asyncio.Future) -> N
             speaking = True
         if turn.tts_stop.is_set():
             break
+        if rate:
+            # The first chunks go out at once; pacing starts only once the lead is reached.
+            paced = d.loop.time()
+            while play_end - d.loop.time() > MAX_AUDIO_LEAD_SECONDS and not turn.tts_stop.is_set():
+                await asyncio.sleep(min(AUDIO_PACE_STEP_SECONDS, play_end - d.loop.time() - MAX_AUDIO_LEAD_SECONDS))
+            if deadline is not None:
+                deadline += d.loop.time() - paced  # waiting on playback is not a stalled run
+            if turn.tts_stop.is_set():
+                break
+            play_end = max(play_end, d.loop.time()) + len(chunk) / 2 / rate
         turn.pcm_chunks += 1
         await d.send_bytes(chunk)
     turn.ns["pcm_done"] = time.time_ns()
