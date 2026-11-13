@@ -40,6 +40,7 @@ PLATFORM = "converse"
 # A proactive reply is only worth speaking while it is fresh; the hub drops it afterwards.
 OUTPUT_TTL = 60.0
 SILENT = "[SILENT]"
+COMMAND_TIMEOUT = 15.0
 
 
 @dataclass
@@ -60,6 +61,16 @@ class _VoiceTurn:
     reasoning_tokens: Optional[int] = None
 
 
+@dataclass
+class _Command:
+    """A gateway command the plugin sent on the device's behalf; its reply is for the log."""
+
+    event: MessageEvent
+    done: asyncio.Event = field(default_factory=asyncio.Event)
+    started: bool = False
+    reply: Optional[str] = None
+
+
 class ConverseAdapter(BasePlatformAdapter):
     """Gateway adapter for voice devices attached through ``/v1/audio/converse``."""
 
@@ -70,6 +81,7 @@ class ConverseAdapter(BasePlatformAdapter):
         self._lock = threading.Lock()  # stream hooks arrive on worker threads
         self._turns: dict[str, _VoiceTurn] = {}  # chat_id -> the voice turn in flight
         self._processing: dict[str, int] = {}  # chat_id -> gateway turns being processed
+        self._commands: dict[str, _Command] = {}  # chat_id -> the plugin's own command in flight
         self._session_chats: dict[str, str] = {}  # session_id -> chat_id
 
     # ── lifecycle ──
@@ -109,21 +121,33 @@ class ConverseAdapter(BasePlatformAdapter):
             entry = switched
         return entry.session_key
 
-    async def set_model(self, session_key: str, model: Optional[str], provider: Optional[str]) -> None:
+    async def set_model(self, source: Any, session_key: str, model: Optional[str],
+                        provider: Optional[str]) -> None:
+        """Make the conversation use *model* (None = its default) by sending the gateway's own
+        ``/model`` command, the same way a chat user would. Its confirmation is not spoken."""
         store = getattr(self, "_session_store", None)
-        if store is None:
+        current = (store.get_model_override(session_key) if store is not None else None) or {}
+        if (current.get("model") or None, current.get("provider") or None) == (model or None, provider or None):
             return
-        override = {k: v for k, v in (("model", model), ("provider", provider)) if v}
-        await asyncio.to_thread(store.set_model_override, session_key, override or None)
-        # The runner keeps its own copy and a built agent per session; without dropping both the
-        # stored override only takes effect after a restart. Core has no public call for this.
-        runner = self.gateway_runner
+        text = "/model reset"
+        if model or provider:
+            text = "/model " + " ".join(part for part in (model, f"--provider {provider}" if provider else "") if part)
+        event = MessageEvent(text=text, message_type=MessageType.COMMAND, source=source,
+                             message_id=f"model-{uuid.uuid4().hex}")
+        command = _Command(event)
+        self._commands[source.chat_id] = command
         try:
-            runner._session_model_overrides.pop(session_key, None)
-            runner._evict_cached_agent(session_key)
-        except AttributeError:
-            if runner is not None:
-                logger.warning("converse: this gateway cannot apply a model change before restart")
+            await self.handle_message(event)
+            if not event._gateway_accepted:
+                logger.warning("converse: the gateway did not accept %r", text)
+                return
+            await asyncio.wait_for(command.done.wait(), COMMAND_TIMEOUT)
+            logger.info("converse: %s -> %s", text, " ".join((command.reply or "").split())[:200])
+        except TimeoutError:
+            logger.warning("converse: %r did not finish in %.0fs", text, COMMAND_TIMEOUT)
+        finally:
+            if self._commands.get(source.chat_id) is command:
+                self._commands.pop(source.chat_id, None)
 
     # ── turn bracket ──
     def _own(self, event: MessageEvent) -> Optional[_VoiceTurn]:
@@ -139,6 +163,10 @@ class ConverseAdapter(BasePlatformAdapter):
         chat_id = event.source.chat_id
         with self._lock:
             self._processing[chat_id] = self._processing.get(chat_id, 0) + 1
+        command = self._commands.get(chat_id)
+        if command is not None and command.event.message_id == event.message_id:
+            command.started = True
+            return
         turn = self._own(event)
         if turn is None:
             return
@@ -154,6 +182,10 @@ class ConverseAdapter(BasePlatformAdapter):
                 self._processing[chat_id] = left
             else:
                 self._processing.pop(chat_id, None)
+        command = self._commands.get(chat_id)
+        if command is not None and command.event.message_id == event.message_id:
+            command.done.set()
+            return
         turn = self._own(event)
         if turn is not None:
             turn.outcome = outcome
@@ -163,6 +195,10 @@ class ConverseAdapter(BasePlatformAdapter):
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                    metadata: Optional[dict[str, Any]] = None) -> SendResult:
         notify = bool((metadata or {}).get("notify"))
+        command = self._commands.get(chat_id)
+        if command is not None and command.started and not command.done.is_set():
+            command.reply = content
+            return SendResult(success=True, message_id=uuid.uuid4().hex)
         turn = self._turns.get(chat_id)
         if turn is not None and turn.started and turn.outcome is None:
             # The voice turn's own output: its final completes the streamed speech.
@@ -317,8 +353,8 @@ class GatewayTurns:
             await adapter.cancel_session_processing(self._session_key)
             if not self.settled:
                 return TurnResult("", "Previous request is still stopping; please try again.", "failed", None)
-        if (model, provider) != (self._model or (None, None)):
-            await adapter.set_model(self._session_key, model, provider)
+        if self._model != (model, provider):  # the first turn also clears a stale earlier choice
+            await adapter.set_model(self._source, self._session_key, model, provider)
             self._model = (model, provider)
         turn_id = uuid.uuid4().hex
         event = MessageEvent(

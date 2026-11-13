@@ -39,8 +39,8 @@ class FakeStore:
     def peek_session_id(self, session_key):
         return self.ids.get(session_key)
 
-    def set_model_override(self, session_key, override):
-        self.models[session_key] = override
+    def get_model_override(self, session_key):
+        return self.models.get(session_key)
 
 
 class Device:
@@ -362,33 +362,45 @@ async def test_bind_continues_an_earlier_conversation_once(rig):
     assert len(rig.store.switched) == 1
 
 
-async def test_model_selection_is_applied_to_the_conversation(rig):
+async def test_model_selection_is_sent_as_the_gateway_model_command(rig):
     turns, key = await _turns(rig)
+    seen = []
 
     async def handler(event):
+        seen.append((event.text, event.get_command(), event.allow_gateway_control))
+        if event.get_command() == "model":
+            args = event.get_command_args().split()
+            rig.store.models[key] = None if args == ["reset"] else {"model": args[0], "provider": args[2]}
+            return "Model switched."
+        return "ok"
+
+    rig.adapter.set_message_handler(handler)
+    spoken = []
+    await turns.run_turn(text="a", on_delta=spoken.append)
+    assert [text for text, _, _ in seen] == ["a"]  # no selection, nothing stored: no command
+    await turns.run_turn(text="b", on_delta=spoken.append, model="flash", provider="litellm")
+    await turns.run_turn(text="c", on_delta=spoken.append, model="flash", provider="litellm")
+    await turns.run_turn(text="d", on_delta=spoken.append)
+    assert [text for text, _, _ in seen] == [
+        "a", "/model flash --provider litellm", "b", "c", "/model reset", "d"]
+    assert seen[1][1:] == ("model", True) and seen[2][1:] == (None, False)
+    assert spoken == ["ok"] * 4  # the command's confirmation is never spoken
+
+
+async def test_new_socket_clears_a_model_left_by_an_earlier_one(rig):
+    turns, key = await _turns(rig)
+    rig.store.models[key] = {"model": "terra", "provider": "litellm"}
+    seen = []
+
+    async def handler(event):
+        seen.append(event.text)
+        if event.get_command() == "model":
+            rig.store.models[key] = None
         return "ok"
 
     rig.adapter.set_message_handler(handler)
     await turns.run_turn(text="a", on_delta=lambda _: None)
-    assert key not in rig.store.models  # no selection: the conversation's own model stands
-    await turns.run_turn(text="a", on_delta=lambda _: None, model="m1", provider="p1")
-    assert rig.store.models[key] == {"model": "m1", "provider": "p1"}
-    await turns.run_turn(text="a", on_delta=lambda _: None)
-    assert rig.store.models[key] is None
-
-
-async def test_model_change_reaches_the_running_gateway(rig):
-    """The runner caches an override and an agent per session; both must go for the change to apply."""
-    turns, key = await _turns(rig)
-    evicted = []
-    runner = SimpleNamespace(_session_model_overrides={key: {"model": "old"}}, _evict_cached_agent=evicted.append)
-    rig.adapter.gateway_runner = runner
-    try:
-        await rig.adapter.set_model(key, "flash", "litellm")
-    finally:
-        rig.adapter.gateway_runner = None
-    assert rig.store.models[key] == {"model": "flash", "provider": "litellm"}
-    assert runner._session_model_overrides == {} and evicted == [key]
+    assert seen == ["/model reset", "a"]
 
 
 async def test_approval_and_clarify_prompts_are_answered_at_once(rig, monkeypatch):

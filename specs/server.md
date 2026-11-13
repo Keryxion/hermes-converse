@@ -228,7 +228,7 @@ and API-key authentication stay on the API server.
 | Turn settled | `on_processing_complete` |
 | Barge-in, cancel, disconnect | `interrupt_session_activity`, then wait for the turn to settle |
 | Tool and reasoning progress | `pre_tool_call` and `post_api_request` plugin hooks |
-| Model selection | the session's model override |
+| Model selection | the gateway `/model` command, sent only when the choice differs from the session's; its confirmation is not spoken |
 
 The chat is the device's conversation: chat name `<assistant_name>: <device_name>`,
 user `recipient_id`, user name `device_name`. Hermes owns the session, its history,
