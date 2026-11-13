@@ -7,9 +7,10 @@ kind: standalone
 description: >-
   Off-device realtime voice: GET /v1/audio/converse on the API server. A client streams
   microphone PCM16 up one WebSocket; the plugin owns VAD, endpointing, STT, the agent turn
-  (through the public Runs API, so the session, tools and approvals stay Hermes's) and
-  per-sentence streaming TTS back down the same socket, with barge-in. Built for an ESP32
-  or a browser that has a microphone and a speaker and nothing else.
+  (a gateway session on the plugin's converse platform, so the session, tools, scheduling
+  and approvals stay Hermes's) and per-sentence streaming TTS back down the same socket,
+  with barge-in. Built for an ESP32 or a browser that has a microphone and a speaker and
+  nothing else.
 author: "Darrell (@DTTerastar)"
 license: MIT
 homepage: https://github.com/Keryxion/hermes-converse
@@ -25,7 +26,7 @@ python_dependencies:
   - "transformers>=4.46,<6"
   - "huggingface_hub>=0.26,<2"
 provides_tools: []
-provides_hooks: [post_llm_call]
+provides_hooks: [on_stream_start, on_stream_delta, pre_tool_call, post_tool_call, post_api_request]
 config_schema:
   vad_model:
     type: str
@@ -40,15 +41,15 @@ config_schema:
   voice_model:
     type: str
     default: ""
-    description: "Voice-only model override sent with every run ('' = the gateway default)."
+    description: "Model for voice conversations ('' = the gateway default)."
   voice_provider:
     type: str
     default: ""
-    description: "Provider for the voice-only model override ('' = the configured one)."
+    description: "Provider for the voice model ('' = the configured one)."
   turn_timeout_seconds:
     type: float
     default: 120
-    description: "A turn that produces nothing for this long is stopped and reported as an error."
+    description: "A turn that makes no progress for this long (no tool call starting or finishing, no model call, no reply text) is stopped and reported as an error."
   playback_tail_timeout_seconds:
     type: float
     default: 45

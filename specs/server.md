@@ -96,18 +96,11 @@ past (TTS was slower than real time), restart from now. Send the first chunks
 without delay, stop waiting as soon as the turn is interrupted, and do not count
 pacing waits toward the turn timeout. `drained` remains the end of playback.
 
-`thinking` progress is measured, never estimated. `tool_calls` counts the run's
-`tool.started` events. `reasoning_tokens` comes from the Runs API's `usage.updated` run event, which
-Hermes emits after each model call with the run's cumulative provider-reported
-count (`null` when the provider reports none):
-
-```json
-{"event": "usage.updated", "run_id": "run_abc", "reasoning_tokens": 2400}
-```
-
-Take the latest value rather than summing, so an SSE replay or late report cannot
-double count. Do not derive tokens from elapsed time or `reasoning.available`
-previews, and never forward reasoning text. Counters reset at each run's start.
+`thinking` progress is measured, never estimated. `tool_calls` counts the turn's
+tool calls as each starts. `reasoning_tokens` sums the provider-reported count of
+each model call in the turn, and stays `null` until a provider reports one. Do not
+derive tokens from elapsed time or reasoning previews, and never forward reasoning
+text. Counters reset at each turn's start.
 Send opt-in user and assistant `transcript` frames as defined in
 [the client spec](client.md), for both voice replies and outbound output. Send
 reply text before `turn_done` without delaying PCM. Distinguish generated text,
@@ -163,32 +156,16 @@ There is no client conversation override, selection protocol, or separate
 conversation extension. Reject a supplied `start.conversation` as an invalid
 field rather than silently accepting it.
 
-Use Hermes's existing session APIs for title lookup, creation, history,
-and compression continuation. Reuse an authorized compatible named session or
-create it when confirmed absent; on concurrent creation conflict, re-read the
-winner. When the saved session returns an authenticated `404`, look up the
-exact conversation title again. Reuse a compatible existing conversation or,
-when the title lookup confirms none exists, create a fresh session with a new
-ID and update the saved reference. Preserve the device's routing identity.
-Use a new session ID because deleted IDs may be retired by Hermes. A lost create
-response must recover the already-created conversation through title lookup.
-The same recovery applies while connected: when Hermes refuses a run with
-`not_found` because the session was deleted, resolve the device's conversation
-again as on connect, move the live attachment to the result, and retry that
-turn once there. Retry only if resolution produced a different session.
-Authentication failures, timeouts, malformed responses, ambiguous titles, and
-server errors must not create or replace history. Save the session reference
-for reconnect; do not build a
-parallel conversation store or expose Hermes session mechanics to clients.
+The device's conversation is a gateway session, described under Gateway
+conversation. The gateway creates it, keeps its history, and continues it through
+compaction. Preserve the device's routing identity. Do not build a parallel
+conversation store or expose Hermes session mechanics to clients.
 
 Use the authenticated socket for named-device and timer behavior. A
-replacement fences the old connection and stops/settles its in-flight work
-before new admission. Report busy while settlement is pending. The Runs client must verify a terminal
-status for previously accepted runs before admitting a continuation. If admission
-is uncertain or settlement cannot be confirmed within its timeout, report an error
-and admit no competing run. Supply trusted
-source-device context to the agent/tools; transcript text cannot impersonate it.
-Fencing does not prove that a disconnected speaker is silent.
+replacement fences the old connection and stops its in-flight turn before the new
+one is ready. Supply trusted source-device context to the agent/tools; transcript
+text cannot impersonate it. Fencing does not prove that a disconnected speaker is
+silent.
 
 There is no inactivity expiry. Use Hermes's existing compression settings to
 keep voice context short and compact it frequently: `compression.threshold`
@@ -204,12 +181,58 @@ lookup, unauthorized access, compression continuation, and replacement
 attachments without duplicate history or competing work. Include the case
 `assistant_name: Arya`, `device_name: Den Echo`, title `Arya: Den Echo`.
 
-The implementation stores only routing metadata in the profile's
-`plugin-data/hermes-converse/devices.db`. It uses authenticated exact-title lookup and the
-public messages resource to resolve compression continuations, and refuses unsupported API
-responses. A confirmed missing session recovers through exact-title lookup;
-other lookup failures leave the existing reference unchanged.
+The implementation stores only device identity in the profile's
+`plugin-data/hermes-converse/devices.db`.
 The prompt supplies both names and the routing identity, explains proactive output without
 another wake word, and requires successful scheduling receipts before confirming timers.
-Heartbeat 2's current API-session restriction still requires an integration change; a prompt
-does not bypass a scheduling tool's refusal.
+A prompt does not bypass a scheduling tool's refusal.
+
+## Gateway conversation
+
+Every voice conversation is a gateway session on the `converse` platform, the
+same kind of session a Telegram or Slack chat has. The plugin registers the platform;
+it needs no credentials and is enabled with the plugin. The WebSocket route, its URL,
+and API-key authentication stay on the API server.
+
+| Voice event | Gateway interface |
+|---|---|
+| Endpointed utterance | `handle_message` with a text `MessageEvent`; the voice prompt is its `channel_prompt` |
+| Reply text as it is generated | `on_stream_delta` plugin hook |
+| Final reply | `send` marked `notify`; speaks only what the stream did not carry |
+| Turn settled | `on_processing_complete` |
+| Barge-in, cancel, disconnect | `interrupt_session_activity`, then wait for the turn to settle |
+| Tool and reasoning progress | `pre_tool_call` and `post_api_request` plugin hooks |
+| Model selection | the gateway `/model` command, sent only when the choice differs from the session's; its confirmation is not spoken |
+
+For a named device the chat is the device's conversation: chat name
+`<assistant_name>: <device_name>`, user `recipient_id`, user name `device_name`. A
+socket that sends no names gets a chat whose id is its `conversation_id`; sending
+that id in a later `start` reattaches to it, and an unknown id is refused. Hermes owns the session, its history,
+compaction, and its place in the web UI. Every event comes from a socket that
+presented the API key, so the platform is registered as trusted inbound and needs no
+user allowlist or pairing.
+
+A message another producer submits to the session, such as a Heartbeat wake or a
+background process completion, runs as an ordinary turn. Its final reply reaches
+`send` and is spoken on the attached device without a wake word. Outcomes:
+
+| Situation | Outcome |
+|---|---|
+| Device attached and idle | Spoken once. |
+| Device capturing or replying | Spoken after the current exchange. |
+| No device attached, or the reply expired after 60 s | `send` reports failure; nothing is queued for a later connection. |
+| Silent result (`[SILENT]` or empty) | No speech. |
+| Voice turn interrupted | Its late reply is discarded. |
+| Stream delta arriving after the final | Discarded, so nothing is spoken twice. |
+
+Status text meant for a screen (busy acknowledgements, tool progress, error notices)
+is never spoken; the platform's display defaults turn it off. Approval prompts are
+answered at once with `approval_choice`, and clarify prompts are cancelled.
+
+The gateway serializes the session. A stopped turn can outlive its stop, for
+example inside a long tool call; the next request is admitted behind it, and the
+stopped turn's late reply is discarded. A device is never refused because an
+earlier turn has not settled.
+
+At startup a socket waits up to 30 s for the platform to connect. When the
+platform is not hosted, the connection is refused with `conversation_unavailable`.

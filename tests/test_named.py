@@ -1,13 +1,12 @@
-"""Named-device contract over authenticated HTTP/WebSockets and persistent routing metadata."""
+"""Named-device contract: authenticated sockets, persistent device identity, one gateway
+conversation per assistant and device."""
 import asyncio
 
 import pytest
-from aiohttp import web
 
-from hermes_converse import route, speech
 from hermes_converse.named import DeviceStore, NamedError, parse_names
-from tests.test_arbitrate_integration import _audio_turn, _patch, _speech_seams
-from tests.test_route import API_KEY, Harness, _start_msg, _speech_then_silence_pcm, _collect_turn
+from tests.test_arbitrate_integration import _audio_turn, _patch
+from tests.test_route import API_KEY, Harness, _start_msg, _speech_then_silence_pcm
 
 
 def frame(**overrides):
@@ -16,7 +15,7 @@ def frame(**overrides):
 
 async def connect(client, **overrides):
     ws = await client.ws_connect('/v1/audio/converse')
-    await ws.send_str(_start_msg(key=API_KEY, **frame(**overrides)))
+    await ws.send_str(_start_msg(key=API_KEY, transcripts=True, **frame(**overrides)))
     return ws, await ws.receive_json(timeout=3)
 
 
@@ -39,66 +38,51 @@ def test_both_names_are_required_together(missing):
         parse_names(start)
 
 
-def test_store_keeps_device_identity_and_separate_assistant_references(tmp_path):
+def test_store_keeps_device_identity_and_separate_assistant_conversations(tmp_path):
     path = tmp_path/'devices.db'
     store = DeviceStore(path)
     first = store.reserve('Arya', 'Den Echo')
-    store.remember(first, 'saved')
     store.close()
     reopened = DeviceStore(path)
     same = reopened.reserve('Arya', 'Den Echo')
     other_assistant = reopened.reserve('Nova', 'Den Echo')
     other_device = reopened.reserve('Arya', 'Kitchen')
-    assert same.recipient_id == first.recipient_id and same.session_id == 'saved'
-    assert other_assistant.recipient_id == first.recipient_id and other_assistant.session_id is None
-    assert other_device.recipient_id != first.recipient_id and other_device.session_id is None
-    assert same.candidate_id == first.candidate_id
+    assert same.recipient_id == first.recipient_id and same.candidate_id == first.candidate_id
+    assert other_assistant.recipient_id == first.recipient_id
+    assert other_assistant.candidate_id != first.candidate_id
+    assert other_device.recipient_id != first.recipient_id
     reopened.close()
 
 
 @pytest.mark.asyncio
-async def test_names_select_title_and_identity_prompt_without_exposing_conversation(tmp_path, monkeypatch):
+async def test_names_select_the_conversation_without_exposing_it(tmp_path, monkeypatch):
     fake = _patch(monkeypatch)
     async with Harness(fake, device_store=DeviceStore(tmp_path/'devices.db')) as client:
         ws, ready = await connect(client)
-        assert ready['type'] == 'ready'
-        assert ready['assistant_name'] == 'Arya'
+        assert ready['type'] == 'ready' and ready['assistant_name'] == 'Arya'
         assert 'conversation_id' not in ready and 'extensions' not in ready
-        recipient = ready
-        assert recipient['device_name'] == 'Den Echo' and recipient['recipient_id']
-        assert len(fake.sessions) == 1
-        cid, saved = next(iter(fake.sessions.items()))
-        assert saved['title'] == 'Arya: Den Echo' and cid != ready['session_id']
+        assert ready['device_name'] == 'Den Echo' and ready['recipient_id']
         await _audio_turn(ws)
-        body = next(iter(fake.runs.values()))['body']
-        assert body['session_id'] == cid
-        prompt = body['instructions']
+        (turn,) = fake.turns
+        assert turn['chat_name'] == 'Arya: Den Echo' and turn['chat_id'] != ready['session_id']
+        prompt = turn['instructions']
         assert 'Your name is Arya' in prompt
         assert '"assistant_name": "Arya"' in prompt and '"device_name": "Den Echo"' in prompt
-        assert 'physical microphone/speaker' in prompt and recipient['recipient_id'] in prompt
+        assert 'physical microphone/speaker' in prompt and ready['recipient_id'] in prompt
         assert 'pulse' in prompt and 'without a new user' in prompt
         await ws.close()
 
 
 @pytest.mark.asyncio
-async def test_existing_title_is_reused_and_restart_keeps_same_history(tmp_path, monkeypatch):
+async def test_restart_keeps_the_same_conversation(tmp_path, monkeypatch):
     fake = _patch(monkeypatch)
-    fake.sessions['existing'] = {'id': 'existing', 'source': 'api_server', 'title': 'Arya: Den Echo'}
-    fake.messages['existing'] = [{'role': 'user', 'content': 'Remember the blue lamp.'},
-                                 {'role': 'assistant', 'content': 'I will.'}]
-    path = tmp_path/'devices.db'
-    recipient = None
-    for _ in range(2):
-        async with Harness(fake, device_store=DeviceStore(path)) as client:
-            ws, ready = await connect(client)
-            assert ready['type'] == 'ready'
-            current = ready['recipient_id']
-            assert recipient is None or recipient == current
-            recipient = current
+    for _ in range(2):  # a new route and device store, as after a gateway restart
+        async with Harness(fake, device_store=DeviceStore(tmp_path/'devices.db')) as client:
+            ws, _ = await connect(client)
             await _audio_turn(ws)
-            assert all(run['body']['session_id'] == 'existing' for run in fake.runs.values())
             await ws.close()
-    assert list(fake.sessions) == ['existing']
+        _patch(monkeypatch)
+    assert len({turn['chat_id'] for turn in fake.turns}) == 1 and len(fake.turns) == 2
 
 
 @pytest.mark.asyncio
@@ -107,8 +91,7 @@ async def test_two_devices_sharing_assistant_keep_separate_conversations(tmp_pat
     async with Harness(fake, device_store=DeviceStore(tmp_path/'devices.db')) as client:
         first, a = await connect(client)
         second, b = await connect(client, device_name='Kitchen')
-        assert a['recipient_id'] != b['recipient_id']
-        assert {s['title'] for s in fake.sessions.values()} == {'Arya: Den Echo', 'Arya: Kitchen'}
+        assert a['recipient_id'] != b['recipient_id'] and len(fake.store.ids) == 2
         await first.close()
         await second.close()
 
@@ -124,13 +107,13 @@ async def test_replacement_closes_old_socket_before_admitting_new_audio(tmp_path
         assert (await closing).data == 4409
         assert first.close_code == 4409
         assert a['session_id'] != b['session_id']
-        assert a['recipient_id'] == b['recipient_id'] and len(fake.sessions) == 1
+        assert a['recipient_id'] == b['recipient_id'] and len(fake.store.ids) == 1
         await _audio_turn(second)
         await second.close()
 
 
 @pytest.mark.asyncio
-async def test_replacement_stops_and_settles_inflight_run(tmp_path, monkeypatch):
+async def test_replacement_stops_the_turn_in_flight(tmp_path, monkeypatch):
     fake = _patch(monkeypatch)
     fake.hang = True
     async with Harness(fake, device_store=DeviceStore(tmp_path/'devices.db')) as client:
@@ -140,216 +123,27 @@ async def test_replacement_stops_and_settles_inflight_run(tmp_path, monkeypatch)
         while (await first.receive_json(timeout=2))['type'] != 'thinking':
             pass
         for _ in range(100):
-            if fake.runs:
+            if fake.turns:
                 break
             await asyncio.sleep(.01)
         second, ready = await connect(client)
-        assert ready['type'] == 'ready' and fake.stop_calls
-        assert all(run['status'] == 'cancelled' for run in fake.runs.values())
+        assert ready['type'] == 'ready'
+        assert [turn['status'] for turn in fake.turns] == ['interrupted']
         fake.hang = False
         await _audio_turn(second)
         await second.close()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('status', [401, 403, 500])
-async def test_failed_lookup_does_not_create_history(tmp_path, monkeypatch, status):
-    fake = _patch(monkeypatch)
-    async def failed(request):
-        return web.json_response({'error': 'unavailable'}, status=status)
-    fake.list_sessions = failed
-    async with Harness(fake, device_store=DeviceStore(tmp_path/'devices.db')) as client:
-        ws, error = await connect(client)
-        assert error['error'] == 'conversation_unavailable'
-        await ws.receive(timeout=2)
-        assert ws.close_code == 4404 and fake.sessions == {}
-
-
-@pytest.mark.asyncio
-async def test_deleted_saved_history_reconnects_with_new_id_and_same_device(tmp_path, monkeypatch):
-    fake = _patch(monkeypatch)
-    path = tmp_path/'devices.db'
-    async with Harness(fake, device_store=DeviceStore(path)) as client:
-        ws, first = await connect(client)
-        old = next(iter(fake.sessions))
-        await ws.close()
-    fake.sessions.clear()
-    # Hermes retires deleted IDs; recreating the old ID is not a supported recovery.
-    create = fake.create_session
-    async def refuse_retired(request):
-        assert (await request.json())['id'] != old
-        return await create(request)
-    fake.create_session = refuse_retired
-    async with Harness(fake, device_store=DeviceStore(path)) as client:
-        ws, ready = await connect(client)
-        assert ready['type'] == 'ready' and ready['recipient_id'] == first['recipient_id']
-        assert len(fake.sessions) == 1 and old not in fake.sessions
-        await _audio_turn(ws)
-        new = next(iter(fake.sessions))
-        assert next(iter(fake.runs.values()))['body']['session_id'] == new
-        await ws.close()
-    async with Harness(fake, device_store=DeviceStore(path)) as client:
-        ws, ready = await connect(client)
-        assert ready['type'] == 'ready' and list(fake.sessions) == [new]
-        await ws.close()
-
-
-@pytest.mark.asyncio
-async def test_compressed_conversation_uses_public_continuation_and_routes_background_output(tmp_path, monkeypatch):
-    fake = _patch(monkeypatch)
-    store = DeviceStore(tmp_path/'devices.db')
-    dev = store.reserve('Arya', 'Den Echo')
-    store.remember(dev, 'root')
-    fake.sessions['root'] = {'id': 'root', 'source': 'api_server', 'end_reason': 'compression'}
-    fake.sessions['tip'] = {'id': 'tip', 'source': 'api_server', 'title': 'Arya: Den Echo', 'parent_session_id': 'root'}
-    fake.continuations['root'] = 'tip'
-    harness = Harness(fake, device_store=store)
-    async with harness as client:
-        ws, ready = await connect(client)
-        assert ready['type'] == 'ready'
-        harness.route.hub.on_response(session_id='tip', task_id='root', turn_id='background',
-                                     assistant_response='Your reminder is due.')
-        frames, pcm = await _collect_turn(ws)
-        assert pcm and frames[0]['event_id'] == 'turn:background' and not fake.runs
-        # Compression during a turn keeps the API task identity and can add another live alias.
-        harness.route.hub.on_response(session_id='next-tip', task_id='root', turn_id='next',
-                                     assistant_response='Another update.')
-        frames, pcm = await _collect_turn(ws)
-        assert pcm and frames[0]['event_id'] == 'turn:next'
-        await ws.close()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize('row', [
-    {'id': 'existing', 'source': 'telegram', 'title': 'Arya: Den Echo'},
-    {'id': 'existing', 'source': 'api_server', 'title': 'Arya: Den Echo', 'hidden': True},
-    {'id': 'existing', 'source': 'api_server', 'title': 'Arya: Den Echo', 'archived': True},
-    {'id': 'existing', 'source': 'api_server', 'title': 'Arya: Den Echo', 'is_internal_child': True},
-])
-async def test_incompatible_title_never_creates_parallel_history(tmp_path, monkeypatch, row):
-    fake = _patch(monkeypatch)
-    fake.sessions['existing'] = row
-    async with Harness(fake, device_store=DeviceStore(tmp_path/'devices.db')) as client:
-        ws, error = await connect(client)
-        assert error['error'] == 'conversation_unavailable'
-        assert list(fake.sessions) == ['existing']
-        await ws.close()
-
-
-@pytest.mark.asyncio
-async def test_title_create_conflict_rereads_winner(tmp_path, monkeypatch):
-    fake = _patch(monkeypatch)
-    async def conflicting_create(request):
-        body = await request.json()
-        fake.sessions['winner'] = {'id': 'winner', 'source': 'api_server', 'title': body['title']}
-        return web.json_response({'error': {'code': 'invalid_title'}}, status=400)
-    fake.create_session = conflicting_create
-    async with Harness(fake, device_store=DeviceStore(tmp_path/'devices.db')) as client:
-        ws, ready = await connect(client)
-        assert ready['type'] == 'ready'
-        await _audio_turn(ws)
-        assert next(iter(fake.runs.values()))['body']['session_id'] == 'winner'
-        await ws.close()
-
-
-@pytest.mark.asyncio
-async def test_unsupported_title_filter_fails_closed(tmp_path, monkeypatch):
-    fake = _patch(monkeypatch)
-    async def unfiltered(request):
-        return web.json_response({'data': [{'id': 'wrong', 'source': 'api_server', 'title': 'Other'}]})
-    fake.list_sessions = unfiltered
-    async with Harness(fake, device_store=DeviceStore(tmp_path/'devices.db')) as client:
-        ws, error = await connect(client)
-        assert error['error'] == 'conversation_unavailable' and not fake.sessions
-        await ws.close()
-
-
-@pytest.mark.asyncio
-async def test_wrong_key_cannot_create_device_or_history(tmp_path, monkeypatch):
+async def test_wrong_key_cannot_create_device_or_conversation(tmp_path, monkeypatch):
     fake = _patch(monkeypatch)
     store = DeviceStore(tmp_path/'devices.db')
     async with Harness(fake, device_store=store) as client:
         ws = await client.ws_connect('/v1/audio/converse')
         await ws.send_str(_start_msg(key='wrong', **frame()))
         assert (await ws.receive_json(timeout=2))['error'] == 'unauthorized'
-        assert store._db is None and not fake.sessions
+        assert store._db is None and not fake.store.ids
         await ws.close()
-
-
-@pytest.mark.asyncio
-async def test_replacement_waits_for_delayed_admission_then_stops_it(tmp_path, monkeypatch):
-    fake = _patch(monkeypatch)
-    fake.hang = True
-    accepted, release = asyncio.Event(), asyncio.Event()
-    create = fake.create_run
-    async def delayed_create(request):
-        response = await create(request)
-        accepted.set()
-        await release.wait()
-        return response
-    fake.create_run = delayed_create
-    async with Harness(fake, device_store=DeviceStore(tmp_path/'devices.db')) as client:
-        first, _ = await connect(client)
-        for chunk in _speech_then_silence_pcm():
-            await first.send_bytes(chunk)
-        while (await first.receive_json(timeout=2))['type'] != 'thinking':
-            pass
-        await asyncio.wait_for(accepted.wait(), 2)
-        replacement = asyncio.create_task(connect(client))
-        await asyncio.sleep(.05)
-        assert not replacement.done()
-        release.set()
-        second, ready = await replacement
-        assert ready['type'] == 'ready'
-        assert fake.stop_calls and all(r['status'] == 'cancelled' for r in fake.runs.values())
-        await second.close()
-
-
-@pytest.mark.asyncio
-async def test_unsettled_run_refuses_replacement_until_terminal(tmp_path, monkeypatch):
-    fake = _patch(monkeypatch)
-    fake.hang = True
-    async def stop_still_settling(request):
-        rid = request.match_info['run_id']
-        fake.stop_calls.append(rid)
-        fake.runs[rid]['stopped'].set()
-        return web.json_response({'run_id': rid, 'status': 'stopping'})
-    fake.stop = stop_still_settling
-    async with Harness(fake, device_store=DeviceStore(tmp_path/'devices.db')) as client:
-        first, _ = await connect(client)
-        for chunk in _speech_then_silence_pcm():
-            await first.send_bytes(chunk)
-        while (await first.receive_json(timeout=2))['type'] != 'thinking':
-            pass
-        while not fake.runs:
-            await asyncio.sleep(.01)
-        second, error = await connect(client)
-        assert error['error'] == 'conversation_busy'
-        assert len(fake.runs) == 1
-        await second.close()
-        for run in fake.runs.values():
-            run['status'] = 'cancelled'
-        third, ready = await connect(client)
-        assert ready['type'] == 'ready'
-        await third.close()
-
-
-@pytest.mark.asyncio
-async def test_unknown_admission_does_not_allow_a_second_run(tmp_path, monkeypatch):
-    fake = _patch(monkeypatch)
-    create = fake.create_run
-    async def lost_receipt(request):
-        await create(request)
-        return web.json_response({'error': 'response lost after admission'}, status=503)
-    fake.create_run = lost_receipt
-    async with Harness(fake, device_store=DeviceStore(tmp_path/'devices.db')) as client:
-        first, _ = await connect(client)
-        for chunk in _speech_then_silence_pcm():
-            await first.send_bytes(chunk)
-        await _collect_turn(first)
-        second, error = await connect(client)
-        assert error['error'] == 'conversation_busy' and len(fake.runs) == 1
-        await second.close()
 
 
 def test_prompt_explains_names_proactivity_and_real_scheduling_receipts():
@@ -378,140 +172,8 @@ async def test_concurrent_first_connections_create_one_conversation(tmp_path, mo
     async with harness as client:
         results = await asyncio.gather(connect(client), connect(client))
         assert all(ready['type'] == 'ready' for _, ready in results)
-        assert len(fake.sessions) == 1
+        assert len(fake.store.ids) == 1
         assert len({r['recipient_id'] for _, r in results}) == 1
         assert len(harness.route.hub._attachments) == 1
         for ws, _ in results:
             await ws.close()
-
-
-@pytest.mark.asyncio
-async def test_compression_title_handoff_and_hidden_root_do_not_lose_history(tmp_path, monkeypatch):
-    fake = _patch(monkeypatch)
-    store = DeviceStore(tmp_path/'devices.db')
-    device = store.reserve('Arya', 'Den Echo')
-    store.remember(device, 'root')
-    fake.sessions['root'] = {'id': 'root', 'source': 'api_server', 'title': 'Arya: Den Echo',
-                             'end_reason': 'compression', 'hidden': True, 'archived': True}
-    fake.sessions['tip'] = {'id': 'tip', 'source': 'api_server', 'title': None, 'parent_session_id': 'root'}
-    fake.continuations['root'] = 'tip'
-    async with Harness(fake, device_store=store) as client:
-        ws, ready = await connect(client)
-        assert ready['type'] == 'ready'
-        await _audio_turn(ws)
-        assert next(iter(fake.runs.values()))['body']['session_id'] == 'root'
-        await ws.close()
-
-
-@pytest.mark.asyncio
-async def test_title_lookup_adopts_lineage_root_from_projected_tip(tmp_path, monkeypatch):
-    fake = _patch(monkeypatch)
-    fake.sessions['root'] = {'id': 'root', 'source': 'api_server', 'title': None, 'end_reason': 'compression'}
-    fake.sessions['tip'] = {'id': 'tip', 'source': 'api_server', 'title': 'Arya: Den Echo',
-                            '_lineage_root_id': 'root'}
-    fake.continuations['root'] = 'tip'
-    store = DeviceStore(tmp_path/'devices.db')
-    async with Harness(fake, device_store=store) as client:
-        ws, ready = await connect(client)
-        assert ready['type'] == 'ready'
-        saved = store.reserve('Arya', 'Den Echo')
-        assert saved.session_id == 'root'
-        await _audio_turn(ws)
-        assert next(iter(fake.runs.values()))['body']['session_id'] == 'root'
-        await ws.close()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize('status', [401, 403, 500, 200])
-async def test_saved_session_lookup_failure_preserves_reference(tmp_path, monkeypatch, status):
-    fake = _patch(monkeypatch)
-    store = DeviceStore(tmp_path/'devices.db')
-    device = store.reserve('Arya', 'Den Echo')
-    store.remember(device, 'saved')
-    async def failed(request):
-        return web.json_response({'error': 'unavailable'}, status=status)
-    fake.get_session = failed
-    async with Harness(fake, device_store=store) as client:
-        ws, error = await connect(client)
-        assert error['error'] == 'conversation_unavailable'
-        assert fake.sessions == {}
-        assert store.reserve('Arya', 'Den Echo').session_id == 'saved'
-        await ws.close()
-
-
-@pytest.mark.asyncio
-async def test_deleted_session_recovery_reuses_title_after_lost_create_response(tmp_path, monkeypatch):
-    from hermes_converse.named import NamedSessions
-    fake = _patch(monkeypatch)
-    store = DeviceStore(tmp_path/'devices.db')
-    device = store.reserve('Arya', 'Den Echo')
-    store.remember(device, 'deleted')
-    request = NamedSessions.request
-    creates = []
-    async def lost(self, method, path, **kwargs):
-        result = await request(self, method, path, **kwargs)
-        if method == 'POST' and path == '/api/sessions':
-            creates.append(kwargs['json']['id'])
-            raise NamedError()  # accepted create, response lost before the reference is updated
-        return result
-    monkeypatch.setattr(NamedSessions, 'request', lost)
-    async with Harness(fake, device_store=store) as client:
-        ws, error = await connect(client)
-        assert error['error'] == 'conversation_unavailable'
-        assert len(fake.sessions) == 1 and store.reserve('Arya', 'Den Echo').session_id == 'deleted'
-        await ws.close()
-        ws, ready = await connect(client)
-        assert ready['type'] == 'ready'
-        assert store.reserve('Arya', 'Den Echo').session_id == creates[0]
-        assert len(creates) == len(fake.sessions) == 1
-        await ws.close()
-
-
-def test_stale_recovery_cannot_overwrite_a_different_saved_session(tmp_path):
-    store = DeviceStore(tmp_path/'devices.db')
-    device = store.reserve('Arya', 'Den Echo')
-    store.remember(device, 'old')
-    stale = store.reserve('Arya', 'Den Echo')
-    store.remember(stale, 'recovered')
-    store.remember(stale, 'recovered')  # another resolver found the same title winner
-    with pytest.raises(NamedError):
-        store.remember(stale, 'different')
-    assert store.reserve('Arya', 'Den Echo').session_id == 'recovered'
-
-
-async def _spoken_turn(ws):
-    for chunk in _speech_then_silence_pcm():
-        await ws.send_bytes(chunk)
-    frames, _ = await _collect_turn(ws)
-    return frames
-
-
-@pytest.mark.asyncio
-async def test_conversation_deleted_while_connected_continues_in_a_replacement(tmp_path, monkeypatch):
-    """A live socket must recover without reconnecting when Hermes deletes its conversation."""
-    fake = _patch(monkeypatch)
-    create = fake.create_run
-    refused = []
-
-    async def create_run(request):
-        body = await request.json()
-        if body['session_id'] not in fake.sessions:  # Hermes: a deleted session refuses new runs
-            refused.append(body['session_id'])
-            return web.json_response({'error': {'message': 'not_found', 'code': 'not_found'}}, status=409)
-        return await create(request)  # aiohttp caches the body it already read
-
-    fake.create_run = create_run
-    async with Harness(fake, device_store=DeviceStore(tmp_path/'devices.db')) as client:
-        ws, ready = await connect(client)
-        old = next(iter(fake.sessions))
-        await _spoken_turn(ws)
-        del fake.sessions[old]  # deleted out from under the connection
-        frames = await _spoken_turn(ws)
-        assert refused == [old]
-        assert not any(f['type'] == 'error' for f in frames)
-        new = next(iter(fake.sessions))
-        assert new != old and fake.sessions[new]['title'] == 'Arya: Den Echo'
-        await _spoken_turn(ws)
-        assert [run['body']['session_id'] for run in fake.runs.values()] == [old, new, new]
-        assert refused == [old]  # later turns go straight to the replacement
-        await ws.close()

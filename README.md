@@ -7,9 +7,9 @@ text, the agent turn, and per-sentence streaming text to speech back down the sa
 barge-in. Built for devices that have a microphone and a speaker and nothing else: an ESP32, a
 browser tab, a kiosk.
 
-The agent turn runs through Hermes's public Runs API, so every turn is an ordinary Hermes session:
-the agent's tools, memory, skills and approvals all apply, and the conversation continues across
-turns on one socket.
+Every conversation is a gateway session on the plugin's `converse` platform, the same kind of
+session a Telegram or Slack chat has: the agent's tools, memory, skills, scheduling and compaction
+all apply, and a named device's conversation shows up in the web UI under its device name.
 
 ## Install
 
@@ -139,7 +139,7 @@ plugin settings form):
 |---|---|---|
 | `name` | `Arya` | the assistant's name in the voice prompt when the start frame has none |
 | `voice_model`, `voice_provider` | `""` | a voice-only model override sent with every run |
-| `turn_timeout_seconds` | `120` | a turn with no output for this long is stopped and reported |
+| `turn_timeout_seconds` | `120` | a turn that makes no progress for this long is stopped and reported; each tool call and model call counts as progress |
 | `playback_tail_timeout_seconds` | `45` | how long to wait for the client's `drained` frame |
 | `max_tts_chars_per_turn` | `1500` | safety cap on how much of one reply is spoken |
 | `end_phrases` | `[over and out]` | session mode: a reply ending with one of these signs off |
@@ -296,7 +296,7 @@ API-server client.
 | `route.py` | the WebSocket handler, auth flow and the per-connection wiring |
 | `loop.py` | the mic shim, the VAD/STT session worker, the turn driver (sentence-by-sentence TTS, barge-in, session mode) |
 | `arbitrate.py` | advisory selection among wake claims; audio processing is independent |
-| `agent_client.py` | the Runs API client: idempotent run creation, SSE with replay-safe sequence tracking, stop, approval answers |
+| `platform_adapter.py` | the `converse` gateway platform: voice turns as gateway messages, reply text from stream hooks, proactive output |
 | `auth.py` | key verification through the API server's own `/v1/capabilities` |
 | `vad.py`, `speech_detector.py`, `silero_vad.py` | energy/Silero speech detection, verified model cache, endpointing and WAV capture |
 | `synth.py` | one `text → int16 PCM` seam over streaming or one-shot TTS, plus resampling |
@@ -340,8 +340,9 @@ hermes plugins validate .
 Tracing SDK/exporter tests run when `opentelemetry-sdk` is installed (included in Hermes's
 `otlp` extra); otherwise those cases skip while the missing-OTEL fallback test still runs.
 
-The suite drives the real VAD, endpointer, capture, resampler, Runs client and route against a
-scripted in-process stand-in for the Runs API; only STT, the TTS provider and the model are faked.
+The suite drives the real VAD, endpointer, capture, resampler, route and platform adapter (on
+Hermes's real adapter base class) against a scripted stand-in for the API server and the gateway
+runner; only STT, the TTS provider and the model are faked.
 
 
 Real Silero regression tests use the checked-in human-speech fixture and a separately cached

@@ -61,8 +61,8 @@ IDLE_POLLS_TO_FLUSH = 4
 THINKING_FRAME_INTERVAL = 5.0
 SMART_TURN_DEFAULT_THRESHOLD = 0.5
 # Bound on the per-connection conversation history kept in memory (~20 user+assistant turns): a
-# simple tail-cap so a long-lived socket can't grow it without limit. The Runs API owns the real
-# transcript (the socket's session_id continues it); this copy backs the sign-off / next_action
+# simple tail-cap so a long-lived socket can't grow it without limit. The gateway session owns the real
+# transcript; this copy backs the sign-off / next_action
 # decisions and the latency log.
 HISTORY_MAX_MESSAGES = 40
 QUIET_INTERVAL_MAX = 3600.0
@@ -848,7 +848,7 @@ def parse_start_config(frame: dict[str, Any], *, default_name: str = DEFAULT_NAM
     return input_rate, output_rate, quiet_interval, name, (str(profile).strip() if profile else None)
 
 
-# Voice replies are spoken aloud — keep them short and speakable. Sent as the run's ``instructions``
+# Voice replies are spoken aloud — keep them short and speakable. Sent as the turn's channel prompt
 # (the ephemeral system prompt) so spoken replies don't balloon to full chat length.
 VOICE_PROMPT = (
     "You are in a live, low-latency voice conversation and your reply is spoken aloud. Speed "
@@ -938,6 +938,7 @@ class _Driver:
     transcripts: bool
     tool_calls: Optional[Callable[[], int]]
     reasoning_tokens: Optional[Callable[[], Optional[int]]]
+    last_progress: Optional[Callable[[], float]]
 
 
 class _Turn:
@@ -958,10 +959,12 @@ class _Turn:
         self.output: Optional[ConversationOutput] = None
         self.pcm_chunks = 0
         self.timed_out = False
+        self.progress_at = 0.0  # monotonic time of the last reply text
 
     def on_delta(self, delta: str) -> None:
         # Called from run_turn's execution context (loop coroutine or a worker thread); thread-safe.
         if delta:
+            self.progress_at = time.monotonic()
             self.ns.setdefault("first_delta", time.time_ns())
             self.reply_parts.append(delta)
             self.text_q.put(delta)
@@ -990,6 +993,7 @@ async def drive_converse_turns(
     transcripts: bool = False,
     tool_calls: Optional[Callable[[], int]] = None,
     reasoning_tokens: Optional[Callable[[], Optional[int]]] = None,
+    last_progress: Optional[Callable[[], float]] = None,
 ) -> None:
     """Run the per-transcript incremental-TTS turn loop.
 
@@ -1014,7 +1018,7 @@ async def drive_converse_turns(
                 quiet_interval=quiet_interval, interrupt_turn=interrupt_turn,
                 turn_timeout=turn_timeout, tail_fallback=tail_fallback, max_tts_chars=max_tts_chars,
                 end_phrases=tuple(end_phrases), transcripts=transcripts, tool_calls=tool_calls,
-                reasoning_tokens=reasoning_tokens)
+                reasoning_tokens=reasoning_tokens, last_progress=last_progress)
     session.enable_turn_control()
     async def notify_tail_barge(turn_id):
         await send_json({"type": "interrupted", "turn_id": turn_id})
@@ -1312,10 +1316,19 @@ def _produce_speech(d: _Driver, turn: _Turn) -> None:
 
 async def _stream_reply(d: _Driver, turn: _Turn, turn_task: asyncio.Future) -> None:
     """Stream the reply's PCM out; flip `playing` on only when real audio starts. A turn deadline
-    backstops a hung run: once it trips the turn is abandoned, the task cancelled, and an error +
-    turn_done still go out, so the client is never left "thinking" forever."""
+    backstops a hung turn: after `turn_timeout` with no progress at all the turn is abandoned, the
+    task cancelled, and an error + turn_done still go out, so the client is never left "thinking"
+    forever. Progress is reply text, audio, and whatever the host reports through `last_progress`
+    (each tool call starting or finishing, each model call)."""
     speaking = False
     deadline = d.loop.time() + d.turn_timeout if d.turn_timeout > 0 else None
+
+    def expired() -> bool:
+        """Move the deadline to `turn_timeout` after the latest progress; True when that has passed."""
+        nonlocal deadline
+        latest = max(turn.progress_at, d.last_progress() if d.last_progress is not None else 0.0)
+        deadline = max(deadline, latest + d.turn_timeout)
+        return deadline <= d.loop.time()
     # Where the client's queued audio ends on this clock. Behind `now` means it ran dry (TTS was
     # slower than real time), so playback restarts at `now` rather than counting audio never played.
     rate = getattr(d.synth, "sample_rate", None)
@@ -1325,14 +1338,17 @@ async def _stream_reply(d: _Driver, turn: _Turn, turn_task: asyncio.Future) -> N
             if deadline is None:
                 chunk = await turn.pcm_q.get()
             else:
-                remaining = deadline - d.loop.time()
-                if remaining <= 0:
+                if deadline <= d.loop.time() and expired():
                     turn.timed_out = True
                     break
-                chunk = await asyncio.wait_for(turn.pcm_q.get(), timeout=remaining)
+                chunk = await asyncio.wait_for(turn.pcm_q.get(), timeout=deadline - d.loop.time())
         except TimeoutError:
-            turn.timed_out = True
-            break
+            if expired():
+                turn.timed_out = True
+                break
+            continue
+        if deadline is not None:
+            deadline = d.loop.time() + d.turn_timeout  # audio arriving is progress
         if chunk is None or turn.tts_stop.is_set():
             break
         if not speaking:
@@ -1360,8 +1376,8 @@ async def _stream_reply(d: _Driver, turn: _Turn, turn_task: asyncio.Future) -> N
     if turn.timed_out:
         turn.tts_stop.set()
         turn_task.cancel()
-        turn.result.setdefault("err", f"voice turn timed out after {d.turn_timeout:.0f}s")
-        logger.warning("converse: turn abandoned after %.0fs (no completion)", d.turn_timeout)
+        turn.result.setdefault("err", f"voice turn timed out after {d.turn_timeout:.0f}s without progress")
+        logger.warning("converse: turn abandoned after %.0fs without progress", d.turn_timeout)
     if speaking:
         d.session.set_playing(False)
 

@@ -120,10 +120,10 @@ async def test_short_turn_has_no_keepalive(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_progress_over_websocket_does_not_extend_server_timeout(monkeypatch):
+async def test_thinking_frames_do_not_extend_the_server_timeout(monkeypatch):
     fake = _patch(monkeypatch)
     fake.hang = True
-    fake.pre_events = (('tool.started', {'tool_call_id': 'a', 'tool': 'read_file'}),)
+    fake.tool_calls = 1
     async with Harness(fake, settings={'turn_timeout_seconds': 0.12}) as client:
         ws = await _connect(client)
         for chunk in _speech_then_silence_pcm():
@@ -246,10 +246,10 @@ async def test_thinking_reports_reasoning_tokens_during_speech():
 
 
 @pytest.mark.asyncio
-async def test_reasoning_tokens_reach_the_websocket_and_progress_stays_within_timeout(monkeypatch):
+async def test_reasoning_tokens_reach_the_websocket_and_a_stalled_turn_still_times_out(monkeypatch):
     fake = _patch(monkeypatch)
     fake.hang = True
-    fake.pre_events = (('usage.updated', {'reasoning_tokens': 2400}),)
+    fake.reasoning_tokens = (2400,)
     async with Harness(fake, settings={'turn_timeout_seconds': 0.12}) as client:
         ws = await _connect(client)
         for chunk in _speech_then_silence_pcm():
@@ -263,3 +263,38 @@ async def test_reasoning_tokens_reach_the_websocket_and_progress_stays_within_ti
         assert any(f['reasoning_tokens'] == 2400 for f in thinking[1:])
         assert any(f['type'] == 'error' and 'timed out' in f['error'] for f in frames)
         await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_turn_that_keeps_making_progress_outlives_the_timeout_then_stalls_out():
+    """The timeout counts time with no progress: a turn working through tool calls far longer
+    than the limit is not cut off, and it is stopped once progress ceases."""
+    import time
+    frames, progress = [], {'at': 0.0}
+    working = 0.5  # more than four times the limit
+
+    async def run_turn(transcript, on_delta, *, interrupted):
+        if transcript == 'busy':
+            until = time.monotonic() + working
+            while time.monotonic() < until:
+                progress['at'] = time.monotonic()  # a tool call starting or finishing
+                await asyncio.sleep(0.02)
+            return 'Done.', None
+        await asyncio.sleep(3600)  # no progress at all
+
+    async def send_json(frame):
+        frames.append(frame)
+
+    async def send_bytes(data):
+        pass
+
+    started = time.monotonic()
+    await cl.drive_converse_turns(
+        session=_FakeConverseSession(['busy', 'stuck']), synth=_EchoSynth(), cap=4000,
+        loop=asyncio.get_running_loop(), send_json=send_json, send_bytes=send_bytes,
+        run_turn=run_turn, history=[], turn_timeout=0.12, last_progress=lambda: progress['at'])
+    turns = list(dict.fromkeys(f['turn_id'] for f in frames))
+    errors = [f for f in frames if f['type'] == 'error']
+    assert [e['turn_id'] for e in errors] == [turns[1]] and 'without progress' in errors[0]['error']
+    assert time.monotonic() - started >= working
+    assert not _progress_tasks()

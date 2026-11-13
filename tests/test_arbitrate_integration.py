@@ -10,7 +10,7 @@ import pytest
 from aiohttp import web
 
 from hermes_converse import speech
-from tests.support.fake_api import FakeRunsAPI
+from tests.support.fake_hermes import FakeHermes
 from tests.test_route import (
     Harness, _FakeStreamer, _patch_speech, _collect_turn, _speech_then_silence_pcm, _start_msg,
 )
@@ -61,14 +61,13 @@ def _patch(monkeypatch):
     streamer = _FakeStreamer([b"\x01\x02\x03\x04"])
     _patch_speech(monkeypatch, streamer)
     monkeypatch.setattr(speech, 'transcribe_wav', lambda *a, **kw: 'hello')
-    return FakeRunsAPI('-'.join(('fixture', 'converse', 'api', 'key', '0123456789')), deltas=('Hello.',))
+    return FakeHermes('-'.join(('fixture', 'converse', 'api', 'key', '0123456789')), deltas=('Hello.',))
 
 
 async def _audio_turn(ws):
     for chunk in _speech_then_silence_pcm():
         await ws.send_bytes(chunk)
     frames, pcm = await _collect_turn(ws)
-    assert any(f['type'] == 'transcript' for f in frames)
     assert any(f['type'] == 'thinking' and f['turn_id'] for f in frames)
     assert any(f['type'] == 'speaking' for f in frames)
     assert pcm
@@ -95,8 +94,8 @@ async def test_wake_report_does_not_filter_or_rewrite_transcript(monkeypatch, tr
         await ws.send_json({'type': 'wake', 'claim_id': 'activation', 'wake_word': 'Hey Arya'})
         assert (await ws.receive_json(timeout=1))['type'] == 'wake_grant'
         await _audio_turn(ws)
-        assert len(fake.runs) == 1
-        assert next(iter(fake.runs.values()))['body']['input'] == transcript
+        assert len(fake.turns) == 1
+        assert fake.turns[0]['text'] == transcript
         await ws.close()
 
 
@@ -121,8 +120,8 @@ async def test_denial_is_advisory_and_followups_run(monkeypatch, first_signals, 
         # A client ignoring the advice still gets a full answer, and so does its follow-up.
         await _audio_turn(second)
         await _audio_turn(second)
-        assert len(fake.runs) == 2
-        assert len({run['body']['session_id'] for run in fake.runs.values()}) == 1
+        assert len(fake.turns) == 2
+        assert len({turn['chat_id'] for turn in fake.turns}) == 1
         await first.close()
         await second.close()
 
@@ -133,7 +132,7 @@ async def test_clients_without_wake_both_answer_same_transcript(monkeypatch):
     async with Harness(fake, settings={'arbitrate_enabled': True}) as client:
         first, second = await _connect(client), await _connect(client)
         await asyncio.gather(_audio_turn(first), _audio_turn(second))
-        assert len(fake.runs) == 2
+        assert len(fake.turns) == 2
         await first.close()
         await second.close()
 
@@ -228,7 +227,7 @@ async def test_default_window_over_websockets(monkeypatch, spacing, second_phras
             assert [r['wake_word'] for r, _ in results] == ['Hey Arya', second_phrase]
             for index, (_, latency) in enumerate(results):
                 record_property(f'claim_{index}_latency_ms', round(latency * 1000, 1))
-            assert not fake.runs  # No audio, agent run, or TTS needed to reproduce the election.
+            assert not fake.turns  # No audio, agent run, or TTS needed to reproduce the election.
         finally:
             first_task.cancel()
             await asyncio.gather(first_task, return_exceptions=True)

@@ -211,8 +211,8 @@ until the turn ends, including agent/TTS waits and speech:
 
 Both counters are measured for this turn and reset for each turn:
 
-- `tool_calls` is the cumulative number of `tool.started` events observed from
-  the Runs API. SSE replays are not counted again. The count includes calls that
+- `tool_calls` is the cumulative number of tool calls started in this turn. The
+  count includes calls that
   later fail; it is not a count of completed or currently running calls, or a
   percentage complete.
 - `reasoning_tokens` is the cumulative reasoning-token count the model provider
@@ -242,8 +242,12 @@ the turn trace when tracing is enabled. A short turn may send only the initial f
 An unchanged count still indicates turn liveness, not proof that model/tool work
 has advanced.
 
-Keep any absolute client turn limit independent: repeated `thinking` frames
-never extend it or the server's `turn_timeout_seconds` (default 120 seconds).
+The server ends a turn that makes no progress for `turn_timeout_seconds`
+(default 120 seconds) with an `error` and `turn_done`. Progress is a tool call
+starting or finishing, a model call, reply text, or reply audio; a turn that
+keeps working is not cut off. Repeated `thinking` frames are liveness, not
+progress: they never extend this limit, and any absolute client turn limit
+stays independent of them.
 The server stops these updates before terminal `interrupted`, `error`, or
 `turn_done` frames and on disconnect. Network delays can still deliver an old
 frame after local cancellation, so check its turn ID before refreshing timers.
@@ -524,8 +528,7 @@ its playback drain; discard stale announcements instead of replaying them
 late. Ordinary barge-in, `cancel`, and `drained` apply equally to these turns.
 Output is routed to the one attached client for its exact conversation ID,
 within this plugin profile. It is never implicitly broadcast and never runs
-a wake election. Creation and attachment use the client's validated API key
-against `/api/sessions`; only `api_server` conversations are supported.
+a wake election. Creation and attachment use the client's validated API key.
 Cross-platform/messaging-conversation ownership is not changed by this API.
 
 ### Publishing completed output
@@ -799,15 +802,15 @@ acknowledges it without cancelling an in-flight run or changing its TTS/audio:
 {"type":"model_changed","request_id":"model-7","model":"beta","provider":"litellm","uses_default":false,"applies_to":"next_turn"}
 ```
 
-Each new run snapshots the current selection at submission. Already-submitted
-runs retain their model. Selection changes preserve the conversation, wake
+Each new turn snapshots the current selection at submission. Already-submitted
+turns retain their model. Selection changes preserve the conversation, wake
 activation, microphone stream, current phase, and queued playback. They do not
 create a new voice turn or run another wake election. Outbound supplied-text
 announcements have no LLM selection to change.
 
 `model_changed` confirms the stored request, not that an upstream provider has
 successfully executed it. Model/provider access and execution still use the
-normal authenticated Runs API and its error reporting. No global configuration
+conversation's normal execution and its error reporting. No global configuration
 or another device's selection is modified. A client may persist the confirmed
 preference per server and resend it after `ready` on reconnect.
 
