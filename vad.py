@@ -169,7 +169,7 @@ class BargeDetector:
         if not self.floor_locked and not self._calibrate(rms_value, playing):
             return None
         self._track_playback(playing)
-# Track the playback bleed level so the barge-in threshold adapts to the actual speaker
+        # Track the playback bleed level so the barge-in threshold adapts to the actual speaker
         # bleed (room volume + playback level) instead of a fixed dB clamp.
         if playing:
             self._bleed_ambient.append(rms_value)
