@@ -22,6 +22,7 @@ Sections 9–10 define conversation output and timers. Section 11 defines named
 Aryas and attachment to Hermes conversations.
 
 Server lifecycle and integration details are in [the server spec](server.md).
+Cross-device observability is defined in [client tracing](client_tracing.md).
 
 ## 1. Connect and authenticate
 
