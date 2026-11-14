@@ -145,7 +145,7 @@ wake word again mid-turn and you want to keep the conversation going.
 | `turn_done` | the reply is fully sent; `next_action` tells the client to listen or enter standby after drain |
 | `quiet` | session mode: the stream has been silent for another `quiet_interval` seconds |
 | `error` | the turn failed (spoken-safe text) |
-| `countdown`, `countdown_cancel` | Start or cancel a countdown that ends with a tone (section 10). |
+| `countdown`, `countdown_cancel` | Start, extend, or cancel a countdown that ends with a tone (section 10). |
 
 These are the only server frames, apart from `model_changed` and `model_error`
 (section 11). Turn liveness is the repeated `thinking` frame; there is no
@@ -550,26 +550,26 @@ wake election.
 ## 10. Countdowns
 
 A countdown is a timer that ends with a tone. It is set by asking the
-assistant; the client sends no frames to create one. A countdown defaults to
-the requesting device and may target another named device, as in "set a timer
-on Bedroom". The requesting device speaks the confirmation; the countdown goes
-to the destination. A spoken reminder is not a countdown: it arrives as an
-ordinary server-started turn (section 9).
+assistant; the client sends no frames to create one. A countdown is always for
+the device that receives it. A spoken reminder is not a countdown: it arrives
+as an ordinary server-started turn (section 9).
 
-The server sends `countdown` only to the device it is for, so the frame names
-no device. It arrives when the countdown is set, not when it ends:
+The frame arrives when the countdown is set, not when it ends:
 
 ```json
-{"type":"countdown","countdown_id":"countdown-9","deadline_unix_ms":1794143100000,"sound":"alarm-1","label":"tea"}
+{"type":"countdown","countdown_id":"countdown-9","deadline_unix_ms":1794143100000,"ring_seconds":900,"sound":"alarm-1","label":"tea"}
 ```
 
 `deadline_unix_ms` is server time; convert it with the clock offset from `ready`
 (section 2). `label` may be absent. A device with a screen shows the time
-remaining and the label. A repeated `countdown` with the same `countdown_id`
-replaces the earlier one; the server sends pending countdowns again after
+remaining and the label. The server sends a device its countdowns again after
 `ready`.
 
-A countdown can be cancelled before it ends:
+A `countdown` with a `countdown_id` the device already has replaces it. This is
+how a countdown is extended or snoozed: if it was ringing, stop the tone and
+count down to the new deadline.
+
+A countdown can be cancelled, whether it is still counting or already ringing:
 
 ```json
 {"type":"countdown_cancel","countdown_id":"countdown-9"}
@@ -579,28 +579,38 @@ A countdown can be cancelled before it ends:
 
 At the deadline the device rings, whether or not it is connected. Every client
 bundles four sounds: `alarm-1`, `alarm-2`, `alarm-3`, and `alarm-4`. Play the
-one named in `sound`, repeating it. If a reply is playing, ring when it has
-drained. A countdown whose deadline passed while the device was off is not rung
-late.
+one named in `sound`, repeating it. A countdown whose deadline passed while the
+device was off is not rung late.
 
-Stop ringing on the first of:
+The alarm keeps ringing until the first of:
 
 - a local dismissal, such as a button or tap;
 - `interrupted` with the `countdown_id` as its `turn_id`, which the server
   sends when it hears "stop";
-- the wake word, which then proceeds as an ordinary wake;
-- 60 seconds.
+- `countdown_cancel` for it;
+- a new `countdown` for it, which starts it counting again;
+- `ring_seconds` of ringing.
 
-When the sound has actually stopped, send `drained` with the `countdown_id` as
-its `turn_id`:
+When the alarm has ended, send `drained` with the `countdown_id` as its
+`turn_id`. Do not send it for a snooze.
 
 ```json
 {"type":"drained","turn_id":"countdown-9"}
 ```
 
-Send microphone audio while ringing, unless muted, so the countdown can be
-stopped by saying "stop" without the wake word. After it stops, return to the
-state the device was in before; ringing does not open a user activation.
+### Talking during an alarm
+
+The assistant can speak while an alarm rings. When a reply plays, or the wake
+word is heard, duck the tone: keep it playing, quiet enough that speech is
+clearly heard over it, and bring it back to full volume when the exchange is
+over. A reply or a wake word does not end the alarm and does not restart
+`ring_seconds`. "Hey Arya, snooze five minutes" and "Hey Arya, stop" are
+ordinary requests; the server answers them with a new `countdown` or a
+`countdown_cancel`.
+
+Send microphone audio while ringing, unless muted, so the alarm can be ended by
+saying "stop" without the wake word. After the alarm ends, return to the state
+the device was in before; ringing does not open a user activation.
 
 
 ## 11. Changing the chat model on an attached voice connection
