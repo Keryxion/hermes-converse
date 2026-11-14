@@ -59,7 +59,6 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 | `device_name` | The configured device label, such as `Den Echo`; required for named-device connections (section 11). |
 | `models` | Boolean; only `true` includes the model catalog in `ready`. Defaults to `false`. See section 12. |
 | `transcripts` | Boolean; request user and assistant transcript frames when `true`. Defaults to `false`. See section 4. |
-| `sound_ids` | Bundled alarm sounds this client can play, such as `["timer-v1"]`; omitted or empty uses server PCM (section 10). |
 | `assistant_name` | What you call the assistant, normally `Arya`, without “Hey”. Used in the voice system prompt; separate from the device label, such as `Den Echo`. |
 
 **Client profile selection is removed.**
@@ -671,15 +670,8 @@ has one destination Arya.
 
 ### Alarm sounds
 
-Include `sound_ids` in `start` to list the bundled alarm sounds this client can play:
-
-```json
-{"type":"start","key":"<API_SERVER_KEY>","input_rate":16000,"output_rate":24000,
- "assistant_name":"Arya","device_name":"Bedroom","sound_ids":["timer-v1"]}
-```
-
-Omit `sound_ids` or send an empty array if the bundled alarm is unavailable;
-the server then sends alarm PCM through the ordinary playback path.
+Every client bundles four alarm sounds: `alarm-1`, `alarm-2`, `alarm-3`, and
+`alarm-4`.
 
 ### Set and manage timers
 
@@ -730,13 +722,12 @@ a lost reply; it must not create a second timer. Never change a retry's payload.
 The destination receives an alarm without a wake word or user transcript:
 
 ```json
-{"type":"alarm","timer_id":"timer-7","turn_id":"alarm-9","sound":"timer-v1"}
+{"type":"alarm","timer_id":"timer-7","turn_id":"alarm-9","sound":"alarm-1"}
 ```
 
-Play the bundled sound named in `alarm.sound`, or the following `speaking`/PCM
-when the client did not list that sound in `start.sound_ids`. Use the ordinary
-`turn_done`, interruption, and `drained` lifecycle. Do not overlap it with another reply. `turn_done` finishes transport,
-not local ringing: send `drained` only after actual playback stops. Ring for at
+Play the bundled sound named in `alarm.sound`. Use the ordinary `turn_done`,
+interruption, and `drained` lifecycle. Do not overlap it with another reply.
+`turn_done` finishes transport, not local ringing: send `drained` only after actual playback stops. Ring for at
 most 60 seconds; stop immediately on local dismissal or server interruption.
 A local dismissal stops sound immediately and sends `dismiss` when connected.
 Remote dismissal is confirmed as physically stopped only after destination drain.
