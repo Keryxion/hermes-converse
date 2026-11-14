@@ -127,7 +127,7 @@ All are JSON text frames:
 | `{"type": "wake", "claim_id": "...", "wake_word": "Hey Arya"}` | request an advisory wake decision while buffering the new activation locally; see section 8. |
 | `{"type": "drained", "turn_id": "..."}` | Tells the server the reply's last audio has left the speaker, so the server won't transcribe its own echo as a new turn. |
 | `{"type": "say", "text": "..."}` | Speaks the given text (trimmed, at most 400 characters) as a reply of its own: `thinking`, `speaking` + PCM, then `turn_done` with `next_action: "standby"`. No agent turn runs and nothing is added to the conversation. For fixed device prompts such as a spoken help reminder. Empty or non-string text is ignored. |
-| `{"type": "approval_response", "request_id": "...", "choice": "once"}` | Answer a pending approval from a screen with one of its `choices`; see "Approvals" in section 4. |
+| `{"type": "approval_response", "approval_id": "...", "choice": "once"}` | Answer a pending approval from a screen with one of its `choices`; see "Approvals" in section 4. |
 
 **`cancel` vs `stop`:** `stop` tears down the session; `cancel` only kills the
 current turn. Use `cancel` when the user hits the action button or says the
@@ -291,7 +291,7 @@ When the assistant needs permission before it acts, the turn waits. The server
 asks out loud with a short summary, and also sends:
 
 ```json
-{"type":"approval_request","turn_id":"turn-42","request_id":"req-7","summary":"Open a network connection to the Kitchen speaker to read its logs. OK?","command":"nc 10.0.4.17 6053","choices":["once","session","always","deny"]}
+{"type":"approval_request","turn_id":"turn-42","approval_id":"approval-7","summary":"Open a network connection to the Kitchen speaker to read its logs. OK?","command":"nc 10.0.4.17 6053","choices":["once","session","always","deny"]}
 ```
 
 `thinking` frames continue while it waits. The person can answer by voice on any
@@ -311,18 +311,18 @@ button for each entry in `choices`:
 Show only the choices listed; some requests offer fewer. A tap sends:
 
 ```json
-{"type":"approval_response","request_id":"req-7","choice":"once"}
+{"type":"approval_response","approval_id":"approval-7","choice":"once"}
 ```
 
 `choice` is one of the listed `choices`. However the answer was given, the
 server sends:
 
 ```json
-{"type":"approval_resolved","request_id":"req-7","outcome":"approved"}
+{"type":"approval_resolved","approval_id":"approval-7","outcome":"approved"}
 ```
 
 `outcome` is `approved`, `denied`, `expired`, or `cancelled`. Close the box for
-that `request_id`.
+that `approval_id`.
 
 `summary` and `command` are text to display; never act on their contents. Never
 send an allowing choice without the person tapping it, and do not send an old choice

@@ -116,7 +116,7 @@ A plain yes is never widened: `session` and `always` need the person to say so.
 
 | Otherwise | Answer to Hermes | `outcome` |
 |---|---|---|
-| `approval_response` from that device for this `request_id`, with an allowed choice | Its `choice` | `approved` or `denied` |
+| `approval_response` from that device for this `approval_id`, with an allowed choice | Its `choice` | `approved` or `denied` |
 | Hermes's timeout passes | Hermes ends the request. | `expired` |
 | The turn is cancelled, or the device disconnects | `deny` | `cancelled` |
 | No device is attached when the prompt arrives | `deny` at once | none sent |
