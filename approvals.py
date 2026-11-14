@@ -36,6 +36,18 @@ ANSWER_SYSTEM = (
 )
 
 
+_SPOKEN = (("once", "yes"), ("deny", "no"), ("session", "yes for now"), ("always", "always"))
+
+
+def _answers(choices: Any) -> str:
+    """How to answer, naming only what this request allows: "Say yes, no, or always." """
+    offered = set(choices or ())
+    words = [word for choice, word in _SPOKEN if choice in offered] or ["yes", "no"]
+    if len(words) == 1:
+        return f"Say {words[0]}."
+    return "Say " + ", ".join(words[:-1]) + (", or " if len(words) > 2 else " or ") + words[-1] + "."
+
+
 def _aux(system: str, user: str, max_tokens: int) -> str:
     from agent.auxiliary_client import call_llm
 
@@ -134,18 +146,18 @@ class Approvals:
                 "choices": p.choices})
             # The tone says a question is coming; it plays before the summary is spoken.
             self._send(attachment, {"type": "tone", "tone": "approval"})
-        self._speak(p, self._cue(speech or p.summary))
+        self._speak(p, self._cue(speech or p.summary, p.choices))
 
     @staticmethod
-    def _cue(text: str) -> str:
-        """The summary as a question, with how to answer it. The approval tone has already said
-        that a question is coming."""
+    def _cue(text: str, choices: Any = ()) -> str:
+        """The summary as a question, with the answers Hermes allows for this request. The
+        approval tone has already said that a question is coming."""
         text = " ".join((text or "").split())
         if not text:
             text = "Run a command that needs permission?"
         if not text.endswith(("?", ".", "!")):
             text += "?"
-        return f"{text} Say yes, no, or always."
+        return f"{text} {_answers(choices)}"
 
     def _speak(self, p: _Pending, text: str) -> None:
         turn = self._adapter._turns.get(p.chat_id)
