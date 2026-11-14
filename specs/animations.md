@@ -26,7 +26,7 @@ A device shows one state at a time.
 | State | Meaning | Color | Animation |
 |---|---|---|---|
 | `booting` | Starting up | Neutral | One 400 ms fade-in |
-| `unconfigured` | Connection or settings required | Orange | Travelling chase, 1.38 s per lap, until configured |
+| `unconfigured` | Connection or settings required | Blue | Travelling chase, 1.38 s per lap, until configured |
 | `connecting` | Opening the connection or awaiting `ready` | Blue | Smooth 1.6 s breath |
 | `reconnecting` | Connection lost; retrying | Orange | Two 180 ms pulses 180 ms apart, then a 1.46 s rest |
 | `idle` | No active session and no wake detector | Neutral | Small, gently breathing or twinkling mark |
@@ -39,7 +39,8 @@ A device shows one state at a time.
 | `error` | Connection, authentication, capture, or playback failure | Fault red | Persistent pulse, with error text or a warning symbol where available |
 | `ended` | Session explicitly ended | Neutral | 600 ms fade to idle |
 
-Faults pulse and never rotate: rotation means work is in progress. Idle and
+An orange travelling animation always means thinking. Faults pulse and never
+rotate: rotation means work is in progress. Idle and
 standby motion stays small and slow so it does not look like an input meter.
 A level meter always shows real audio: microphone input while listening, reply
 output while speaking.
