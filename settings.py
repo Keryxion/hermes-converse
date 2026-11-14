@@ -24,10 +24,10 @@ DEFAULT_ARBITRATE_ENABLED = False
 # the primary device. Long enough to cover detector jitter across devices, short enough that a
 # client is not left waiting before it starts streaming.
 DEFAULT_ARBITRATE_WAKE_WINDOW_SECONDS = DEFAULT_WAKE_WINDOW
-# Hard cap on a single agent turn (LLM think + stream). A turn that produces nothing — an LLM call
-# hung with no request timeout — otherwise never ends: no reply, no turn_done, so the client is stuck
-# "thinking" forever. The driver stops the run at this deadline, sends an error + turn_done, and
-# returns to listening. This is a backstop; the root-cause cap is a provider request timeout.
+# How long an agent turn may go with no progress at all: no tool call starting or finishing, no
+# model call, no reply text or audio. A hung turn otherwise never ends: no reply, no turn_done, so
+# the client is stuck "thinking" forever. The driver stops the turn at this point, sends an error +
+# turn_done, and returns to listening. A turn that keeps working is never cut off by it.
 DEFAULT_TURN_TIMEOUT = 120.0
 # How long the server keeps the "playback tail" state — turn_done sent, waiting for the client's
 # `drained` — before resuming quiet/VAD on its own. Only a backstop for a client that never sends it.
@@ -36,6 +36,14 @@ DEFAULT_TAIL_FALLBACK = 45.0
 # brevity prompt, a tool result read aloud) can't play for minutes.
 DEFAULT_MAX_TTS_CHARS = 1500
 DEFAULT_ENDPOINT_THRESHOLD = 0.5
+# Received silence that makes a candidate pause: the fixed endpoint, and Smart Turn's first check.
+DEFAULT_ENDPOINT_SILENCE_MS = 700
+# Longest pause the user may take inside a request: Smart Turn keeps listening through an
+# incomplete-sounding pause until this much silence, and a wake activation waits this long for the
+# request after the wake word.
+DEFAULT_ENDPOINT_MAX_SILENCE_MS = 3000
+# Capture-only wall-clock timeout; idle quiet still counts received audio.
+DEFAULT_CAPTURE_NO_DATA_SECONDS = 5.0
 APPROVAL_CHOICES = ("deny", "once")
 
 Getter = Callable[..., Any]
@@ -52,6 +60,9 @@ class Settings:
     end_phrases: tuple[str, ...] = DEFAULT_END_PHRASES
     endpoint_model: bool = False
     endpoint_threshold: float = DEFAULT_ENDPOINT_THRESHOLD
+    endpoint_silence_ms: int = DEFAULT_ENDPOINT_SILENCE_MS
+    endpoint_max_silence_ms: int = DEFAULT_ENDPOINT_MAX_SILENCE_MS
+    capture_no_data_seconds: float = DEFAULT_CAPTURE_NO_DATA_SECONDS
     vad_model: str = DEFAULT_VAD_MODEL
     approval_choice: str = "deny"
     api_base_url: str = ""
@@ -92,9 +103,20 @@ def _wake_window(raw: Any) -> float:
     return value if math.isfinite(value) and value >= 0 else DEFAULT_ARBITRATE_WAKE_WINDOW_SECONDS
 
 
+def _capture_timeout(raw: Any) -> float:
+    value = _number(raw, DEFAULT_CAPTURE_NO_DATA_SECONDS)
+    return max(0.0, value) if math.isfinite(value) else DEFAULT_CAPTURE_NO_DATA_SECONDS
+
+
+def _milliseconds(raw: Any, default: int) -> int:
+    value = _number(raw, default)
+    return int(value) if math.isfinite(value) and value > 0 else default
+
+
 def load_settings(get: Getter) -> Settings:
     """Build :class:`Settings` from ``get(key, default)`` (``ctx.get_config`` or a dict's ``.get``)."""
     approval = str(get("approval_choice", "deny") or "deny").strip().lower()
+    silence_ms = _milliseconds(get("endpoint_silence_ms", DEFAULT_ENDPOINT_SILENCE_MS), DEFAULT_ENDPOINT_SILENCE_MS)
     return Settings(
         name=_text(get("name", DEFAULT_NAME)) or DEFAULT_NAME,
         model=_text(get("voice_model", "")),
@@ -107,6 +129,11 @@ def load_settings(get: Getter) -> Settings:
         vad_model="energy" if str(get("vad_model", DEFAULT_VAD_MODEL)).strip().lower() == "energy" else "silero",
         endpoint_threshold=min(1.0, max(0.0, _number(get("endpoint_threshold", DEFAULT_ENDPOINT_THRESHOLD),
                                                        DEFAULT_ENDPOINT_THRESHOLD))),
+        endpoint_silence_ms=silence_ms,
+        endpoint_max_silence_ms=max(silence_ms, _milliseconds(
+            get("endpoint_max_silence_ms", DEFAULT_ENDPOINT_MAX_SILENCE_MS), DEFAULT_ENDPOINT_MAX_SILENCE_MS)),
+        capture_no_data_seconds=_capture_timeout(
+            get("capture_no_data_seconds", DEFAULT_CAPTURE_NO_DATA_SECONDS)),
         approval_choice=approval if approval in APPROVAL_CHOICES else "deny",
         api_base_url=str(get("api_base_url", "") or "").strip().rstrip("/"),
         arbitrate_enabled=_model_enabled(get("arbitrate_enabled", DEFAULT_ARBITRATE_ENABLED)),

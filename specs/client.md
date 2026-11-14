@@ -11,9 +11,10 @@ Each Arya has a name and uses an existing Hermes conversation, titled
 which handles voice activity detection, endpointing, speech-to-text, and the
 agent turn, then streams reply PCM back. Conversation history persists across
 turns and reconnects; closing the socket does not end the Hermes conversation.
-If the conversation was deleted in Hermes, reconnecting reuses a compatible
-conversation with the same title or starts a fresh one. The device name and
-routing identity stay the same; deleted history is not restored.
+If the conversation is deleted in Hermes, the next turn reuses a compatible
+conversation with the same title or starts a fresh one, on the open socket or
+after reconnecting. The device name and routing identity stay the same;
+deleted history is not restored.
 
 Wake selection is cooperative: it recommends an answering device without
 restricting audio processing. Section 8 defines the cooperative wake contract.
@@ -55,7 +56,8 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 | `input_rate` | sample rate of the PCM you'll send (8000–48000, default 16000) |
 | `output_rate` | sample rate of PCM the server sends back (default 24000) |
 | `quiet_interval` | session mode: seconds of silence between turns (0 = off) |
-| `device_name` | The configured device label, such as `Den Echo`; required for named-device connections (section 11). |
+| `device_name` | The configured device label, such as `Den Echo` or `Kitchen`. Each device keeps its own conversation, titled `<assistant_name>: <device_name>`. |
+| `models` | Boolean; only `true` includes the model catalog in `ready`. Defaults to `false`. See section 11. |
 | `transcripts` | Boolean; request user and assistant transcript frames when `true`. Defaults to `false`. See section 4. |
 | `assistant_name` | What you call the assistant, normally `Arya`, without “Hey”. Used in the voice system prompt; separate from the device label, such as `Den Echo`. |
 
@@ -87,8 +89,30 @@ then live binary PCM16 mono at `input_rate` without a gap or duplication.
 the granted activation, including thinking and playback (sections 4 and 8).
 A client that does not use wake detection may start streaming after `ready`.
 
-The server replies with `ready` and clock-skew timestamps. Named-device
-attachment IDs and reconnect behavior are defined in section 11.
+The server replies with `ready`:
+
+```json
+{"type": "ready", "session_id": "socket-9", "recipient_id": "device-7",
+ "assistant_name": "Arya", "device_name": "Den Echo", "transcripts": false,
+ "input": {"sample_rate": 16000, "format": "pcm16", "block_ms": 30},
+ "output": {"sample_rate": 24000, "format": "pcm16"},
+ "server_recv_unix_ms": 1794142800100, "server_send_unix_ms": 1794142800140}
+```
+
+`input.sample_rate` and `output.sample_rate` are the rates in use; play reply
+PCM at `output.sample_rate`. The two timestamps are for clock-skew estimation.
+`session_id` identifies the socket for diagnostics and `recipient_id` identifies
+the device. Treat both as opaque.
+
+Reconnect with the same API key and names to continue the device's conversation.
+Do not automatically resend an utterance whose outcome is unknown: its actions
+may already have happened.
+
+| close or error | what to do |
+|---|---|
+| `4409 attachment_replaced` | Another connection with the same names replaced this one. Stop sending on it. |
+| `4404 conversation_unavailable` | The conversation could not be opened. Show the failure rather than claiming restored context. |
+| `conversation_busy` error before `ready` | Earlier work is still stopping. Retry later. |
 
 ## 3. Client control frames (send anytime)
 
@@ -96,12 +120,12 @@ All are JSON text frames:
 
 | frame | meaning |
 |---|---|
-| `{"stop": true}` | Stops live work and closes the socket. Preserves the device's Hermes conversation and its history for reconnection (section 11). |
-| `{"commit": true}` | Forces the current utterance to endpoint now (runs a turn on it). |
+| `{"stop": true}` | Stops live work and closes the socket. The device's conversation and its history are kept for reconnection. |
+| `{"commit": true}` | Ends the current utterance now, with the audio already sent (runs a turn on it). |
 | `{"type": "cancel", "turn_id": "..."}` | Cancels the **current** turn — stops TTS and the agent — but keeps the socket, session, and history alive. |
 | `{"type": "wake", "claim_id": "...", "wake_word": "Hey Arya"}` | request an advisory wake decision while buffering the new activation locally; see section 8. |
 | `{"type": "drained", "turn_id": "..."}` | Tells the server the reply's last audio has left the speaker, so the server won't transcribe its own echo as a new turn. |
-| `{"type": "approval_response", "turn_id": "...", "request_id": "...", "choice": "once"}` | Approve or deny the matching pending tool request; see approval handling below. |
+| `{"type": "say", "text": "..."}` | Speaks the given text (trimmed, at most 400 characters) as a reply of its own: `thinking`, `speaking` + PCM, then `turn_done` with `next_action: "standby"`. No agent turn runs and nothing is added to the conversation. For fixed device prompts such as a spoken help reminder. Empty or non-string text is ignored. |
 
 **`cancel` vs `stop`:** `stop` tears down the session; `cancel` only kills the
 current turn. Use `cancel` when the user hits the action button or says the
@@ -111,19 +135,28 @@ wake word again mid-turn and you want to keep the conversation going.
 
 | frame | meaning |
 |---|---|
-| `ready` | rates, `session_id`, clock-skew timestamps |
+| `ready` | `input` and `output` rates, `session_id`, clock-skew timestamps; see section 2 |
 | `wake_grant` | recommends this client handle the wake activation; echoes its `claim_id` and `wake_word`. |
 | `wake_deny` | recommends this client stand down for the activation; echoes its `claim_id` and `wake_word`. |
 | `transcript` | user input or assistant reply text, identified by `role` and `turn_id`; see below |
-| `thinking` | the agent turn is running (show "thinking", not "listening") |
-| `working` | every 15 seconds during an active turn; refresh its inactivity timer without changing thinking/speaking state |
-| `approval_request` | an agent action needs the user's explicit decision; see below |
-| `approval_resolved` | the matching request is no longer pending |
+| `thinking` | starts a turn, then repeats every 5 seconds with `tool_calls` and `reasoning_tokens`; refresh inactivity without resetting speaking/playback |
 | `speaking` + binary frames | the reply as PCM16 at `output_rate` |
 | `interrupted` | the turn was cancelled (you barged in or sent `cancel`); stop playing |
 | `turn_done` | the reply is fully sent; `next_action` tells the client to listen or enter standby after drain |
 | `quiet` | session mode: the stream has been silent for another `quiet_interval` seconds |
 | `error` | the turn failed (spoken-safe text) |
+| `{"type":"tone","tone":"confirm"}` | Play the named tone, `confirm` or `error` (see `tones.md`). It is not a reply: no `turn_id`, no `drained`. |
+| `countdown`, `countdown_cancel` | Start, extend, or cancel a countdown that ends with a tone (section 10). |
+
+These are the only server frames, apart from `model_changed` and `model_error`
+(section 11). Turn liveness is the repeated `thinking` frame; there is no
+separate keep-alive frame. Ignore a frame type you do not recognize.
+
+Reply PCM arrives at about playback speed: the first audio is sent immediately,
+then the server stays at most about 1.5 s ahead of real-time playback. Keep
+reading the socket while you play. A buffer of 1.5 s plus network jitter never
+has to stop reading, so `interrupted`, `turn_done`, and pings reach you without
+waiting behind queued audio.
 
 ### Microphone streaming and barge-in
 
@@ -198,93 +231,64 @@ continuation. A bounded playback-tail timeout handles a missing `drained`.
 
 ### Handling `thinking`
 
-`thinking` is the server's explicit signal that the agent turn has started.
-For example:
+The server sends `thinking` at turn start, then approximately every **5 seconds**
+until the turn ends, including agent/TTS waits and speech:
 
 ```json
-{"type": "thinking", "turn_id": "<turn_id>"}
+{"type": "thinking", "turn_id": "turn-42", "tool_calls": 3, "reasoning_tokens": 2400}
 ```
 
-Treat it as a turn boundary even if the client has not received a
-`transcript` for that turn. Mark the agent turn active and show "thinking".
+Both counters are measured for this turn and reset for each turn:
+
+- `tool_calls` is the cumulative number of tool calls started in this turn. The
+  count includes calls that
+  later fail; it is not a count of completed or currently running calls, or a
+  percentage complete.
+- `reasoning_tokens` is the cumulative reasoning-token count the model provider
+  reported for this turn, or `null` when none has been reported. `null` means
+  unavailable; `0` is a measured zero. The count is updated when a model call
+  finishes, so it can lag during a long call and can increase while speaking.
+
+The initial frame has `tool_calls: 0` and `reasoning_tokens: null`. Replies
+prepared without an agent run report `tool_calls: 0` and `reasoning_tokens: null`.
+No tool names, arguments, results, or reasoning text are included. When tracing
+is active, frames also carry the turn's `traceparent`.
+
+The first `thinking` starts the turn even without a preceding user `transcript`.
+Mark the turn active and show thinking. Repeated frames with the same active
+`turn_id` update the count and refresh the inactivity timer; preserve any existing
+speaking/playback state. Do not treat them as new turns or restart playback.
+Ignore late frames for completed/cancelled turns and stale IDs. An unfamiliar ID
+may start a server-originated turn as described in section 9.
+
 During an active activation, keep sending microphone PCM so the server can
-accept a continuation. The UI state
-and microphone transport are independent. See section 9 for outbound turns
-that start while the client is otherwise idle.
+accept a continuation. UI state and microphone transport are independent.
 
-If the client uses a turn deadline, arm it on `thinking` when `transcript`
-has not already armed it; do not restart an existing deadline. Record the
-event in the turn trace if tracing is enabled. When both frames arrive,
-`transcript` identifies what was heard and `thinking` confirms that the
-agent has started; they belong to the same `turn_id`.
+Arm an inactivity timer on the initial `thinking` if `transcript` has not already
+armed it. Refresh it on repeated frames for the active turn. Allow more than five
+seconds plus network/scheduling delays (for example, 15 seconds). Record frames in
+the turn trace when tracing is enabled. A short turn may send only the initial frame.
+An unchanged count still indicates turn liveness, not proof that model/tool work
+has advanced.
 
-This is a lifecycle status notification, not streamed reasoning text.
-Continue handling `working`, `speaking`, `interrupted`, `error`, and `turn_done` as
-usual to play the reply or finish the turn.
-
-### Handling `working`
-
-During an active turn, the server sends a keepalive approximately every **15 seconds**,
-starting 15 seconds after `thinking`. It continues through agent and TTS waits,
-including speaking, until the turn completes or is interrupted/cancelled. For example:
-
-```json
-{"type":"working","turn_id":"turn-42"}
-```
-
-When tracing is active, the frame also carries the turn's `traceparent`, as on
-`thinking` and `speaking`. There is no tool name or reasoning text in this frame.
-Shorter turns normally send no `working` frames.
-
-If `turn_id` matches the client's active turn, refresh that turn's **inactivity**
-deadline from receipt time. Choose an inactivity allowance longer than 15 seconds
-with room for network/scheduling delays; a 30-second allowance permits a normal
-keepalive before expiry. Keep the existing thinking/speaking/playback state and
-continue handling PCM and control frames normally. `working` does not begin a turn,
-restart a completed/cancelled turn, or imply that model/tool output has advanced.
-Ignore frames for inactive, stale, or unknown turn IDs.
-
-An optional absolute client turn limit remains independent; do not extend that
-limit on `working`. These frames never extend the server's
-`turn_timeout_seconds` (default 120 seconds). The server stops sending them before
-terminal `interrupted`, `error`, or `turn_done` frames and when the socket closes;
-clients stop refreshing the inactivity timer when their turn ends. Clients that
-ignore unknown frame types remain compatible, but need this handling to avoid
-abandoning long turns prematurely. Network delays can still deliver an old frame
-after local cancellation, so clients must check the active turn ID.
+The server ends a turn that makes no progress for `turn_timeout_seconds`
+(default 120 seconds) with an `error` and `turn_done`. Progress is a tool call
+starting or finishing, a model call, reply text, or reply audio; a turn that
+keeps working is not cut off. Repeated `thinking` frames are liveness, not
+progress: they never extend this limit, and any absolute client turn limit
+stays independent of them.
+The server stops these updates before terminal `interrupted`, `error`, or
+`turn_done` frames and on disconnect. Network delays can still deliver an old
+frame after local cancellation, so check its turn ID before refreshing timers.
+Continue handling `speaking`, PCM, `interrupted`, `error`, and `turn_done` normally.
 
 ### Approval requests
 
-When a tool action requires approval, the server keeps the originating turn
-pending and sends a request to the device that owns it:
-
-```json
-{"type":"approval_request","turn_id":"turn-42","request_id":"req-7","summary":"Connect to the VPE log stream","details":"TCP connection to the device's log port"}
-```
-
-`summary` and `details` identify the actual action and its consequences, not
-merely the tool name. Treat them as untrusted display text; never execute them.
-Do not expose secrets. Show the request on screen where available and speak it
-on voice-only devices. Ask for an explicit approval or denial; do not infer
-consent from silence, an unrelated utterance, or the original task request.
-An ambiguous spoken answer is not approval: ask again while the request remains
-pending. Users can deny or cancel without approving.
-
-The originating device submits the user's decision using the matching IDs:
-
-```json
-{"type":"approval_response","turn_id":"turn-42","request_id":"req-7","choice":"once"}
-```
-
-`choice` is `once` to approve only this request, or `deny` to refuse. When
-voice is used, the server interprets the answer in the context of this pending
-request and submits the decision without treating it as a new task or cancelling
-the waiting run. The server sends `approval_resolved` with the same IDs and an
-`outcome` of `approved`, `denied`, `expired`, or `cancelled`; clients clear the
-prompt only for matching IDs and display the outcome. `working` continues while
-the request is pending. On cancellation, timeout, disconnect, or an unrecognized
-answer, never approve by default. A reconnect must not silently approve or
-resubmit an old decision. Clients without this capability must never auto-approve.
+When the assistant needs permission before it acts, it asks out loud and waits.
+The person answers yes or no, with no wake word. The client does nothing
+special: the question is ordinary reply audio, `thinking` frames continue while
+the turn waits, and the client keeps sending microphone audio as it does during
+any turn. There are no approval frames.
 
 ### Handling `turn_done.next_action`
 
@@ -307,13 +311,14 @@ Continue interruption/control monitoring until queued playback has actually
 finished or been discarded. Send `drained` for that turn, then apply its
 pending action. Do not apply a late completion/action from an abandoned
 turn to a newer activation. Cancellation, interruption, errors, and timeouts
-return `listen`; a partial or failed reply cannot put the client in standby.
+return `listen` for ordinary activation turns; a partial or failed reply cannot
+put the client in standby. Countdown tones restore the prior idle/listening state
+after drain (section 10).
 A normal reply also returns `listen`, even when it does not ask a question.
-The current server requests `standby` only for a successful server-side
-sign-off in session mode; non-session/continuous mode returns `listen`.
+The server requests `standby` when the assistant decides the exchange is over.
 
-The server decides the action. Clients must not inspect reply text, detect
-sign-off phrases, or interpret whether the agent expects a follow-up.
+The server decides the action. Clients must not inspect reply text or
+interpret whether the agent expects a follow-up.
 
 ### User and assistant transcripts
 
@@ -347,10 +352,17 @@ history or replay; those require a separate contract.
 ## 5. Session mode (`quiet_interval > 0`)
 
 For wake-word devices. The server reports quiet in **received** audio (never
-wall-clock, so a held-open socket never accrues phantom quiet). `turn_done.next_action` tells the client whether to continue
-listening or return to standby after playback drain. The mechanism used by
-the server to decide a sign-off is internal; there is no client-side phrase
-contract.
+wall-clock, so a held-open socket never accrues phantom quiet). Each listening
+phase counts from zero: speech, a turn, and resuming upstream audio after
+stopping it all restart the count. The first `quiet` after you start or resume
+listening comes after one full `quiet_interval` of received silence, for example:
+
+```json
+{"type": "quiet", "quiet_seconds": 3.0}
+```
+
+Silence sent before you stopped streaming does not carry over. `turn_done.next_action` tells the client whether to continue
+listening or return to standby after playback drain.
 
 ## 6. Typical flow
 
@@ -359,6 +371,8 @@ contract.
    the matching grant for up to 1000 ms. On denial/timeout, discard the buffer.
 3. On grant, flush the buffered PCM and continue with live PCM. Server VAD
    endpoints the user request, then emits `thinking` (preceded by `transcript` if enabled).
+   The user may pause after the wake word, or mid-request, for up to
+   `endpoint_max_silence_ms` (default 3 s) without the request being split.
 4. Keep sending live PCM during thinking, `speaking` + reply PCM, and queued
    playback. The server captures accepted interruptions as continuations.
 5. Receive `turn_done`; send `drained` after actual speaker drain/discard.
@@ -507,23 +521,10 @@ This does not justify streaming from losing or idle wake-word clients.
 
 ## 9. Conversation output without user input
 
-Converse is an audio transport attached to a conversation. The conversation
-can produce output without a new user utterance, microphone transcript,
-wake detection, or wake grant. A reminder, scheduled follow-up, or server
-event can start an outbound turn while the attached client is idle. Wake
-selection concerns user activations; it must not authorize or gate outbound
-conversation output. The client need not stream ambient audio while idle
-in order to receive outbound events.
-
-The server subscribes to **completed final responses** for attached
-conversations through Hermes's public `post_llm_call` hook. It uses the
-transformed final text, skips the `[SILENT]` control marker, and suppresses
-voice-owned runs that already have streaming TTS. Other processes or
-scheduler integrations can publish completed output using the authenticated
-endpoint below. External output does not create a synthetic transcript or
-another LLM run; TTS begins when the final text is available. Each delivered
-output gets a fresh `turn_id` and carries its `event_id` on the initial
-`thinking` / `speaking` frames.
+The server can start a turn while the client is idle: a reminder, a scheduled
+follow-up, or another server event. No wake word, wake grant, or user
+transcript precedes it, and wake selection does not gate it. The client need
+not stream audio while idle to receive it.
 
 Use the same playback lifecycle as ordinary replies:
 
@@ -545,255 +546,108 @@ wake or arbitration. After the turn and playback drain, stop that temporary
 stream and restore local wake detection unless an activation is now open.
 
 Serialize outbound audio on each socket: never interleave the untagged
-binary PCM of two turns. Queue an announcement behind an active turn and
-its playback drain; discard stale announcements instead of replaying them
-late. Ordinary barge-in, `cancel`, and `drained` apply equally to these turns.
-Output is routed to the one attached client for its exact conversation ID,
-within this plugin profile. It is never implicitly broadcast and never runs
-a wake election. Creation and attachment use the client's validated API key
-against `/api/sessions`; only `api_server` conversations are supported.
-Cross-platform/messaging-conversation ownership is not changed by this API.
+binary PCM of two turns. Output waits behind an active turn and its playback
+drain; stale output is discarded instead of played late. Ordinary barge-in,
+`cancel`, and `drained` apply equally to these turns. Output goes to the one
+device attached to that conversation. It is never broadcast and never runs a
+wake election.
 
-### Publishing completed output
 
-An authenticated producer can send a completed conversation response:
+## 10. Countdowns
 
-```http
-POST /v1/audio/conversations/<conversation_id>/output
-Authorization: Bearer <API_SERVER_KEY>
-Content-Type: application/json
-```
+A countdown is a timer that ends with a tone. It is set by asking the
+assistant; the client sends no frames to create one. A countdown is always for
+the device that receives it. A spoken reminder is not a countdown: it arrives
+as an ordinary server-started turn (section 9).
+
+The frame arrives when the countdown is set, not when it ends:
 
 ```json
-{"event_id":"followup-42","text":"Your task is finished.","expires_at_unix_ms":1794142860000,"next_action":"standby"}
+{"type":"countdown","countdown_id":"countdown-9","deadline_unix_ms":1794143100000,"ring_seconds":900,"sound":"alarm-1","label":"tea"}
 ```
 
-`event_id` is a nonempty string of at most 128 characters; `text` is nonempty
-and at most 20,000 characters. `expires_at_unix_ms` is required. Optional
-`next_action` defaults to `standby`; choose `listen` to request a follow-up.
-The key must pass the same profile API authentication as a voice socket.
+`deadline_unix_ms` is server time; convert it with the clock offset from `ready`
+(section 2). `label` may be absent. A device with a screen shows the time
+remaining and the label. The server sends a device its countdowns again after
+`ready`.
 
-| HTTP result | meaning |
-|---|---|
-| 202 `accepted` | Queued for the attached client; not an acknowledgement of audible playback. |
-| 200 `duplicate` | This attachment has already accepted this event ID; no second playback is queued. |
-| 400 | Invalid payload. |
-| 401 | Authentication failed. |
-| 409 `not_attached` | No live recipient; output is not retained for reconnect. |
-| 410 `expired` | Already expired; not queued. |
-| 429 `busy` | The bounded pending-output queue is full; producer must decide whether to retry before expiry. |
+A `countdown` with a `countdown_id` the device already has replaces it. This is
+how a countdown is extended or snoozed: if it was ringing, stop the tone and
+count down to the new deadline.
 
-An in-progress user capture takes priority over unsolicited output, even
-when its STT result is empty. Expired queued output is skipped before playback. Deduplication retains the
-last 1024 accepted IDs per attachment; it is not a durable delivery ledger.
-Hook output uses `turn:<turn_id>` IDs and a 60-second delivery lifetime.
-Detaching removes the subscription and pending output; reattachment does
-not replay old conversation responses. The scheduler/producer owns delivery
-policy and must not equate an HTTP acceptance with the user hearing it.
-This endpoint delivers supplied text; it does not append a user/model turn
-to persisted history. Producers that require conversation memory must
-record their completed response through the conversation owner.
-
-### Announcement sound and synchronized playback (proposed extension)
-
-An announcement has a distinct lead-in sound before its speech. The server
-may target one attached client or an explicitly selected, authorized device
-group for a system-wide announcement. Use the same announcement ID, content,
-and scheduled playback time on every target; group delivery is deliberate,
-not an automatic broadcast of ordinary conversation replies.
-
-Draft header (requires negotiated announcement support):
+A countdown can be cancelled, whether it is still counting or already ringing:
 
 ```json
-{"type":"announcement","announcement_id":"announce-42","event_id":"delivery-42","turn_id":"turn-10","sound":"announcement-v1","chime_duration_ms":600,"play_at_unix_ms":1794142805000,"expires_at_unix_ms":1794142806000,"late_policy":"skip"}
+{"type":"countdown_cancel","countdown_id":"countdown-9"}
 ```
 
-`play_at_unix_ms` is the intended **audible start of the lead-in sound**,
-in server Unix milliseconds, not the generation time or WebSocket send
-time. `expires_at_unix_ms` bounds how long the event is useful. For a group,
-all members use the same IDs to identify the same announcement; each client
-deduplicates it locally. A rescheduled replacement needs a new delivery
-`event_id` and must explicitly supersede the old one before playback.
+### Ringing
 
-Send the header and the complete `speaking` + PCM payload sufficiently ahead
-of the deadline to buffer it; `turn_done` marks payload completion and may
-arrive before scheduled playback. Play the chime at the scheduled time,
-then start speech at `play_at_unix_ms + chime_duration_ms`. Negotiate a
-versioned chime asset with identical content and duration across clients;
-alternatively send one server-rendered chime-plus-speech PCM payload and
-schedule its first sample at `play_at_unix_ms`. Do not play the chime twice
-when using that fallback. For synchronization, do not generate separate TTS
-for each target. Resampling must preserve the shared audio timeline.
+At the deadline the device rings, whether or not it is connected. Every client
+bundles four sounds: `alarm-1`, `alarm-2`, `alarm-3`, and `alarm-4`. Play the
+one named in `sound`, repeating it. A countdown whose deadline passed while the
+device was off is not rung late.
 
-Estimate the server-minus-client clock offset from the existing `ready`
-timestamps: record client send time `t0` for `start`, server receive/send
-`server_recv_unix_ms = t1`, `server_send_unix_ms = t2`, and client receive
-time `t3`. The estimate is `offset = ((t1 - t0) + (t2 - t3)) / 2`.
-Convert the server deadline to client time with `play_at_unix_ms - offset`,
-then schedule against a local monotonic clock. Account for measured output
-buffer/device latency so the timestamp refers to sound leaving the speaker,
-not merely enqueueing samples. A long-lived connection needs a periodic
-clock-sync exchange (still to be specified); a handshake estimate alone
-cannot bound drift indefinitely.
+The alarm keeps ringing until the first of:
 
-A target that is muted, busy with another turn, lacks complete audio or the
-chime asset, or has insufficient clock confidence must report that it cannot
-meet the scheduled time. Do not silently postpone just that device while
-claiming a synchronized broadcast. The default `late_policy: "skip"` skips
-playback if the start deadline is missed; an explicitly requested immediate
-fallback may play before expiry but must report that it was unsynchronized.
-Never replay an expired announcement on reconnect. Preparation/status and
-cancellation frames must be defined before implementation so the server can
-reschedule or report partial delivery. Group playback is best effort, not
-an atomic or sample-accurate guarantee across independent audio devices.
+- a local dismissal, such as a button or tap;
+- `interrupted` with the `countdown_id` as its `turn_id`, which the server
+  sends when it hears "stop";
+- `countdown_cancel` for it;
+- a new `countdown` for it, which starts it counting again;
+- `ring_seconds` of ringing.
 
-During scheduled buffering, preserve the existing microphone state. When
-announcement playback begins, temporarily stream PCM for interruption/control
-detection even if previously idle, unless explicitly muted. Stop the temporary
-stream after drain if no user activation is open. Mark the full
-chime-and-speech interval as playback for server echo/barge-in handling,
-acknowledge `drained` only after actual playback or discard, and keep the
-scheduled wait separate from the agent-run timeout. User barge-in or cancel
-stops that client's chime and speech; group-wide cancellation is an explicit
-server operation, not an automatic consequence of one device's interruption.
-
-**Heartbeat 2 integration.** Heartbeat 2 currently schedules turns for
-messaging-gateway chats and rejects API-server sessions. Installing it does
-not by itself schedule future voice output. An integration must explicitly
-publish approved output to an attached API conversation; the endpoint above
-is available for that delivery. Timer/scheduler integration and its policy
-remain in [issue #34](https://github.com/Keryxion/hermes-converse/issues/34).
-The voice system prompt does not claim unsupported scheduling abilities.
-
-## 10. Server-owned timers and client alarm sounds (proposed extension)
-
-The server owns timer creation, deadlines, updates, cancellation, and expiry.
-The client may display a countdown, but does not schedule an independent
-offline alarm. An expiry delivered by the server makes the client play a
-bundled alarm sound; it need not wait for an LLM response or TTS to hear the
-alarm. Spoken context, such as "Your pasta timer is done," can follow using
-the outbound-turn lifecycle in section 9. A scheduling confirmation does
-not play the expiry alarm.
-
-A draft expiry frame, sent only after alarm support is negotiated:
+When the alarm has ended, send `drained` with the `countdown_id` as its
+`turn_id`. Do not send it for a snooze.
 
 ```json
-{"type":"alarm","event_id":"expiry-42","timer_id":"timer-7","turn_id":"turn-9","sound":"timer"}
+{"type":"drained","turn_id":"countdown-9"}
 ```
 
-`event_id` identifies one delivery event for deduplication; reconnect or
-retry must not ring it twice. `timer_id` identifies the server timer across
-connections and lets the user cancel the intended timer. `sound` names a
-bundled client asset, not an arbitrary URL or audio file. A client without
-alarm-sound support needs a server-rendered audio fallback using the normal
-`speaking` + PCM path. Negotiate support explicitly before sending new frame
-types; these fields are not supported by the current `start` / `ready`.
+### Talking during an alarm
 
-During the alarm, stream microphone PCM for interruption/control detection,
-even if previously idle, unless explicitly muted. Restore the previous idle
-state after dismissal/drain if no user activation is open.
-Treat its local sound as playback for echo handling. Specify playback-start
-notification to the server, stop/dismiss acknowledgement, bounded ringing,
-and `drained` coordination before implementation; an unannounced local
-alarm must not be transcribed as a new user request. An alarm has priority
-over queued speech, but the server must finish or interrupt the current
-turn before delivering it, so local sound and PCM replies do not overlap.
+The assistant can speak while an alarm rings. When a reply plays, or the wake
+word is heard, duck the tone: keep it playing, quiet enough that speech is
+clearly heard over it, and bring it back to full volume when the exchange is
+over. A reply or a wake word does not end the alarm and does not restart
+`ring_seconds`. "Hey Arya, snooze five minutes" and "Hey Arya, stop" are
+ordinary requests; the server answers them with a new `countdown` or a
+`countdown_cancel`.
 
-Cancellation changes the server record and succeeds only on server
-acknowledgement. If expiry already won the race, report that result and
-allow dismissal of the ringing alarm. Dismissal silences that occurrence;
-it does not cancel another timer. Use correlated, idempotent operations
-and explicit accepted / already-expired / not-found results; do not infer
-success from a spoken promise or from the socket accepting a write.
-
-When disconnected, the client can silence audio already playing, but it
-cannot create, update, or cancel a server timer. Show cancellation as
-unavailable or unconfirmed until acknowledged; do not claim offline
-success. The server keeps its timer state. On reconnect, synchronize active
-and missed timers before displaying them. Report expiries missed during
-the disconnect without automatically replaying stale alarms. There is no
-promise of an audible alarm while the client is disconnected.
-
-Exact alarm capability negotiation, timer-operation frames, acknowledgements,
-recipient attachment, and playback signalling remain implementation work.
-These proposed extensions do not change the current wire protocol by themselves.
+Send microphone audio while ringing, unless muted, so the alarm can be ended by
+saying "stop" without the wake word. After the alarm ends, return to the state
+the device was in before; ringing does not open a user activation.
 
 
-## 11. Named Aryas
-
-Use `assistant_name` for what you call the assistant, normally `Arya`.
-Use `device_name` for the device label, such as `Den Echo` or `Kitchen`.
-Device labels must be unique on the server; configure the label in the client.
-Many devices may share the same assistant name. The detected wake phrase is
-sent separately in `wake.wake_word` (section 8).
-
-Names are case-sensitive labels. The server normalizes Unicode to NFC, trims and collapses
-whitespace, and rejects control/format characters, empty names, or a combined title over 100
-characters. Use the same configured names on reconnect. The names are not additional credentials.
-
-Each device uses a persistent conversation titled
-**`<assistant_name>: <device_name>`**, for example `Arya: Den Echo`.
-Clients cannot choose or override the conversation.
-
-### Start and ready
-
-Authenticate with the existing API key as in section 1. Send both names directly in `start`:
-
-```json
-{"type":"start","key":"<API_SERVER_KEY>","input_rate":16000,"output_rate":24000,
- "assistant_name":"Arya","device_name":"Den Echo"}
-```
-
-Wait for `ready` before streaming audio:
-
-```json
-{"type":"ready","session_id":"socket-9","recipient_id":"device-7",
- "assistant_name":"Arya","device_name":"Den Echo"}
-```
-
-`session_id` identifies the socket for diagnostics. `recipient_id` identifies
-the device for timer routing. Treat these IDs as opaque. The returned names identify
-the assistant and physical device for this conversation.
-
-### Reconnect
-
-Reconnect with the same API key and names to continue its history.
-Inactivity, standby, sign-off, cancellation, and socket closure do not reset it.
-Do not automatically resend an utterance whose outcome is unknown: its actions
-may already have happened.
-
-A replacement connection closes the old one with `4409 attachment_replaced`.
-Stop sending on the old connection. Invalid start fields return `4400 bad_start`.
-If the conversation cannot be opened, show
-`4404 conversation_unavailable` rather than claiming restored context.
-A `conversation_busy` error before ready means retry later while earlier work
-stops. Normal authentication and first-frame errors remain as in section 1.
-
-### Timers on named Aryas
-
-"Set a timer" targets the requesting device. "Set a timer on Bedroom" targets
-Bedroom even when requested from Kitchen. Clarify ambiguous names, and report
-an unavailable destination before confirming audible delivery there (section 10).
-The requesting device receives confirmation; only the destination rings.
-
-## 12. Changing the chat model on an attached voice connection
+## 11. Changing the chat model on an attached voice connection
 
 Model discovery and selection both use the existing authenticated voice
 WebSocket. No additional client HTTP request or authentication flow is needed.
-The server includes the catalog once in the `ready` frame:
+A client requests the model catalog by setting `models: true` in `start`:
+
+```json
+{"type":"start","assistant_name":"Arya","device_name":"Office Mac","models":true}
+```
+
+Only Boolean `models: true` includes `model_catalog` in `ready`. If `models` is
+omitted or false, skip the lookup and omit the catalog. This does not affect
+audio or the ability to select a model with `set_model`.
+
+With `models: true`, the response includes:
+
 
 ```json
 {"type":"ready","model_catalog":{"model":"agent","provider":"litellm","providers":[{"slug":"litellm","name":"LiteLLM","models":["agent","beta"]}]}}
 ```
 
 The example omits the other normal `ready` fields. Clients reuse this catalog
-for the connection. There is no catalog request, request ID, or refresh message.
+for the connection. There is no separate catalog request, request ID, or refresh message.
 `model` / `provider` describe the server's default inventory selection; provider
 entries expose only display names, slugs, and model IDs. No upstream credentials
 or provider configuration are returned. Unconfigured providers are excluded.
 The server reuses its inventory API internally. If lookup fails or exceeds eight
 seconds, `model_catalog` contains `{"providers":[]}` and voice remains available.
-A new connection receives a new catalog.
+A new connection receives a new catalog only if its `start` requests one.
 
 On the existing authenticated socket, send:
 
@@ -814,15 +668,15 @@ acknowledges it without cancelling an in-flight run or changing its TTS/audio:
 {"type":"model_changed","request_id":"model-7","model":"beta","provider":"litellm","uses_default":false,"applies_to":"next_turn"}
 ```
 
-Each new run snapshots the current selection at submission. Already-submitted
-runs retain their model. Selection changes preserve the conversation, wake
+Each new turn snapshots the current selection at submission. Already-submitted
+turns retain their model. Selection changes preserve the conversation, wake
 activation, microphone stream, current phase, and queued playback. They do not
 create a new voice turn or run another wake election. Outbound supplied-text
 announcements have no LLM selection to change.
 
 `model_changed` confirms the stored request, not that an upstream provider has
 successfully executed it. Model/provider access and execution still use the
-normal authenticated Runs API and its error reporting. No global configuration
+conversation's normal execution and its error reporting. No global configuration
 or another device's selection is modified. A client may persist the confirmed
 preference per server and resend it after `ready` on reconnect.
 

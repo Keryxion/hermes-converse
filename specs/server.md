@@ -49,7 +49,7 @@ cancel a reply. Model failure falls back to the energy detector without ending t
 socket. Onset acceptance is separate from the decision to capture its words.
 
 Once capture owns input, old completion, cancellation, `drained`, and tail timeout
-must not clear its audio, pre-roll, or pending transcript. An old sign-off must not
+must not clear its audio, pre-roll, or pending transcript. An old `standby` call must not
 put a client into standby over an accepted continuation. Fence discarded or
 superseded output: it must not send more PCM or create another agent run. Settle
 old work before admitting the next run; never execute both concurrently.
@@ -64,45 +64,76 @@ and leave the socket and conversation usable. `stop` closes the attachment.
 
 ### Tool approvals
 
-Bridge each agent approval request to the originating voice turn and attachment
-using the approval frames in [the client spec](client.md). Preserve the Runs API
-request identity and execution generation internally; only a matching, currently
-pending request on the authorized owning attachment can resolve it. Do not
-broadcast requests to other devices or apply a decision to another turn. Submit
-the explicit decision once to the original Runs API request, then send the
-resolved outcome; a duplicate, stale, malformed, or unauthorized response cannot
-change the result. Never silently convert a missing or ambiguous answer to
-approval. Reject or expire pending requests on cancellation, timeout, and
-disconnect; prevent late replies from authorizing a subsequent action.
+`approval_choice` says what happens when the agent asks for approval during a
+voice turn:
 
-Keep receiving audio and sending `working` while awaiting a decision. A spoken
-answer to the approval prompt is captured and resolved as control input to the
-waiting run, not admitted as an ordinary continuation that cancels it. Protect
-against playback echo and require an unambiguous affirmative or denial. Other
-speech is not approval. Deliver a concise spoken prompt identifying the action
-and consequences, and a matching visual prompt on capable clients. Preserve
-sensitive-data redaction. If a client cannot present a prompt or the request
-expires, fail closed and tell the user the action did not run; do not silently
-withdraw it. Pending approvals must be bounded, and the agent run must remain
-alive long enough for an answer or explicitly report timeout.
+| `approval_choice` | Outcome |
+|---|---|
+| `deny` (default) | Refused at once. |
+| `once` | Approved at once. |
+| `ask` | The person is asked, as below. |
 
-Verify approval and denial by voice and UI; ambiguous input, silence, stale and
-duplicate responses, wrong device/turn/request, cancellation, disconnect,
-timeout, prompt playback echo, and clients without approval support. Verify the
-original action runs only once after approval and never on the failure paths.
+With `ask`, speak a short question that names the action and what it will do,
+on the device attached to that conversation, and keep the turn waiting with
+`thinking` frames. Answer the gateway's approval prompt once, with the first of:
+
+| What happens | Answer |
+|---|---|
+| The person clearly says yes | Approve |
+| The person clearly says no | Deny |
+| Anything else is said | None. Ask once more; the request stays pending. |
+| 60 seconds with no answer | Deny |
+| The turn is cancelled, or the device disconnects | Deny |
+| No device is attached when the prompt arrives | Deny at once |
+
+While a request is pending, speech from the device is an answer to it, not a new
+request and not an interruption of the waiting turn. The spoken question itself
+must not be taken as the answer. Do not speak secrets. When the action did not
+run, the agent's reply says so.
+
+Verify approval and denial by voice; an unclear answer, silence, cancellation,
+disconnect, and the question's own echo. Verify the action runs once after
+approval and never otherwise.
 
 ### Endpointing, completion, and recovery
 
-Keep the configured silence window and optional Smart Turn semantic endpoint
-separate from onset detection. Smart Turn may hold an incomplete utterance through
-a candidate pause, bounded by the configured hold budget and utterance limit.
-Explicit `commit` forces capture to endpoint. A failed/empty STT result starts no
+Keep endpointing separate from onset detection. Received silence of
+`endpoint_silence_ms` (default 700) is a candidate pause. Without Smart Turn it
+ends the capture. With Smart Turn, a complete-sounding turn ends it; an incomplete
+one keeps listening and is checked again after each further window, until
+`endpoint_max_silence_ms` (default 3000) of continuous silence ends it. Speech
+resets the pause. Audio that arrived while Smart Turn ran is checked before
+committing; if it contains speech, keep listening.
+
+After a granted `wake`, the user often pauses to check the device is listening.
+In that activation's first capture, until 1 s of speech has followed onset, a
+pause ends the capture only at `endpoint_max_silence_ms`. This applies with or
+without Smart Turn, so "Hey Arya … set a timer" is one request while a continuous
+"Hey Arya, set a timer" endpoints normally.
+
+Explicit `commit` ends the capture at once with the audio already received,
+bypassing Smart Turn and the wake pause. The utterance limit still applies.
+Capture traces record the endpoint mode, windows, wake flag, end reason, final
+pause, and longest pause spoken through. A failed/empty STT result starts no
 run and releases capture ownership. Continue listening within an open activation.
 Do not claim a VAD or endpoint model can eliminate every premature endpoint:
 continued speech after endpoint must still be handled as continuation.
 
 Emit `thinking`, optional `speaking` and PCM, then the turn's terminal
 frames in order. Interrupted, failed, or superseded replies return `listen`.
+
+Pace reply PCM against the playback it implies so the server, not the client,
+holds the backlog. Track where the client's queued audio ends; before sending a
+chunk, wait until that is at most 1.5 s ahead of now. If it is already in the
+past (TTS was slower than real time), restart from now. Send the first chunks
+without delay, stop waiting as soon as the turn is interrupted, and do not count
+pacing waits toward the turn timeout. `drained` remains the end of playback.
+
+`thinking` progress is measured, never estimated. `tool_calls` counts the turn's
+tool calls as each starts. `reasoning_tokens` sums the provider-reported count of
+each model call in the turn, and stays `null` until a provider reports one. Do not
+derive tokens from elapsed time or reasoning previews, and never forward reasoning
+text. Counters reset at each turn's start.
 Send opt-in user and assistant `transcript` frames as defined in
 [the client spec](client.md), for both voice replies and outbound output. Send
 reply text before `turn_done` without delaying PCM. Distinguish generated text,
@@ -115,7 +146,10 @@ context must not describe a generated or transmitted response as heard.
 After `turn_done`, retain playback protection until matching `drained` or the
 bounded fallback timeout. A tail interruption updates the same turn to `listen`;
 it does not create another reply for that turn. Quiet advisories count received
-idle silence, never wall time or time occupied by a reply/capture. Working frames
+idle silence, never wall time or time occupied by a reply/capture. Restart the
+count on speech onset, turn start and end, playback drain, and when received
+audio resumes after a gap of at least 1 s, so silence from an earlier listening
+phase never shortens the next one. Working frames
 are sent every 15 seconds and stop with their owning turn.
 
 On disconnect, stop capture and generation, settle the attachment, and fence late
@@ -146,8 +180,7 @@ labels are unique within that scope. `assistant_name` is
 the name used in the voice system prompt, often related to the wake word;
 `device_name` identifies the particular device. Neither is a credential.
 
-Authenticate using the existing API key before opening the conversation or
-accepting timer requests. Do not add a separate device/attachment credential.
+Authenticate using the existing API key before opening the conversation. Do not add a separate device/attachment credential.
 The device name identifies a destination, not a separate security principal;
 clients sharing a server API key share its access boundary.
 The device's conversation title is `<assistant_name>: <device_name>`.
@@ -155,28 +188,17 @@ There is no client conversation override, selection protocol, or separate
 conversation extension. Reject a supplied `start.conversation` as an invalid
 field rather than silently accepting it.
 
-Use Hermes's existing session APIs for title lookup, creation, history,
-and compression continuation. Reuse an authorized compatible named session or
-create it when confirmed absent; on concurrent creation conflict, re-read the
-winner. When the saved session returns an authenticated `404`, look up the
-exact conversation title again. Reuse a compatible existing conversation or,
-when the title lookup confirms none exists, create a fresh session with a new
-ID and update the saved reference. Preserve the device's routing identity.
-Use a new session ID because deleted IDs may be retired by Hermes. A lost create
-response must recover the already-created conversation through title lookup.
-Authentication failures, timeouts, malformed responses, ambiguous titles, and
-server errors must not create or replace history. Save the session reference
-for reconnect; do not build a
-parallel conversation store or expose Hermes session mechanics to clients.
+The device's conversation is a gateway session, described under Gateway
+conversation. The gateway creates it, keeps its history, and continues it through
+compaction. Preserve the device's routing identity. Do not build a parallel
+conversation store or expose Hermes session mechanics to clients.
 
-Use the authenticated socket for named-device and timer behavior. A
-replacement fences the old connection and stops/settles its in-flight work
-before new admission. Report busy while settlement is pending. The Runs client must verify a terminal
-status for previously accepted runs before admitting a continuation. If admission
-is uncertain or settlement cannot be confirmed within its timeout, report an error
-and admit no competing run. Supply trusted
-source-device context to the agent/tools; transcript text cannot impersonate it.
-Fencing does not prove that a disconnected speaker is silent.
+Reject empty names and a combined title over 100 characters with
+`4400 bad_start`. A replacement connection for the same names closes the old one
+with `4409 attachment_replaced` and stops its in-flight turn before the new one
+is ready. Supply trusted source-device context to the agent/tools; transcript
+text cannot impersonate it. Fencing does not prove that a disconnected speaker is
+silent.
 
 There is no inactivity expiry. Use Hermes's existing compression settings to
 keep voice context short and compact it frequently: `compression.threshold`
@@ -185,19 +207,191 @@ by token count. Configure these server-side; do not add client fields or another
 compactor. A compaction trigger is not a hard limit on retained context.
 Hermes owns compression and retention. Verify
 required Hermes API support, preserve history through continuation, and recover
-local sign-off bookkeeping where needed. Never replay an unacknowledged request.
+local `standby` bookkeeping where needed. Never replay an unacknowledged request.
 
 Verify first setup, concurrent creation, reconnect/restart, failed
 lookup, unauthorized access, compression continuation, and replacement
 attachments without duplicate history or competing work. Include the case
 `assistant_name: Arya`, `device_name: Den Echo`, title `Arya: Den Echo`.
 
-The implementation stores only routing metadata in the profile's
-`plugin-data/hermes-converse/devices.db`. It uses authenticated exact-title lookup and the
-public messages resource to resolve compression continuations, and refuses unsupported API
-responses. A confirmed missing session recovers through exact-title lookup;
-other lookup failures leave the existing reference unchanged.
+The implementation stores only device identity in the profile's
+`plugin-data/hermes-converse/devices.db`.
 The prompt supplies both names and the routing identity, explains proactive output without
 another wake word, and requires successful scheduling receipts before confirming timers.
-Heartbeat 2's current API-session restriction still requires an integration change; a prompt
-does not bypass a scheduling tool's refusal.
+A prompt does not bypass a scheduling tool's refusal.
+
+## Gateway conversation
+
+Every voice conversation is a gateway session on the `converse` platform, the
+same kind of session a Telegram or Slack chat has. The plugin registers the platform;
+it needs no credentials and is enabled with the plugin. The WebSocket route, its URL,
+and API-key authentication stay on the API server.
+
+| Voice event | Gateway interface |
+|---|---|
+| Endpointed utterance | `handle_message` with a text `MessageEvent`; the voice prompt is its `channel_prompt` |
+| Reply text as it is generated | `on_stream_delta` plugin hook |
+| Final reply | `send` marked `notify`; speaks only what the stream did not carry |
+| Turn settled | `on_processing_complete` |
+| Barge-in, cancel, disconnect | `interrupt_session_activity`, then wait for the turn to settle |
+| Tool and reasoning progress | `pre_tool_call` and `post_api_request` plugin hooks |
+| Model selection | the gateway `/model` command, sent only when the choice differs from the session's; its confirmation is not spoken |
+
+For a named device the chat is the device's conversation: chat name
+`<assistant_name>: <device_name>`, user `recipient_id`, user name `device_name`. A
+socket that sends no names gets a chat whose id is its `conversation_id`; sending
+that id in a later `start` reattaches to it, and an unknown id is refused. Hermes owns the session, its history,
+compaction, and its place in the web UI. Every event comes from a socket that
+presented the API key, so the platform is registered as trusted inbound and needs no
+user allowlist or pairing.
+
+A message another producer submits to the session, such as a Heartbeat wake or a
+background process completion, runs as an ordinary turn. Its final reply reaches
+`send` and is spoken on the attached device without a wake word. Outcomes:
+
+| Situation | Outcome |
+|---|---|
+| Device attached and idle | Spoken once. |
+| Device capturing or replying | Spoken after the current exchange. |
+| No device attached, or the reply expired after 60 s | `send` reports failure; nothing is queued for a later connection. |
+| `speak_this` with `""`, or an empty or `[SILENT]` reply | No speech. |
+| Voice turn interrupted | Its late reply is discarded. |
+| Stream delta arriving after the final | Discarded, so nothing is spoken twice. |
+
+Status text meant for a screen (busy acknowledgements, tool progress, error notices)
+is never spoken; the platform's display defaults turn it off. Approval prompts are
+answered as described under Tool approvals, and clarify prompts are cancelled.
+
+The gateway serializes the session. A stopped turn can outlive its stop, for
+example inside a long tool call; the next request is admitted behind it, and the
+stopped turn's late reply is discarded. A device is never refused because an
+earlier turn has not settled.
+
+At startup a socket waits up to 30 s for the platform to connect. When the
+platform is not hosted, the connection is refused with `conversation_unavailable`.
+
+## Voice tools
+
+The agent has three tools for controlling the device it is talking through.
+They act only on the device whose conversation calls them.
+
+| Tool | Arguments | Effect |
+|---|---|---|
+| `speak_this` | `text` | The device says exactly `text`, and nothing else the turn produces is spoken. |
+| `play_tone` | `tone`: `confirm` or `error` | The device plays that tone (`tones.md`). |
+| `standby` | None | The device goes to standby when this turn's playback has drained: `turn_done` carries `next_action: "standby"`. It stops sending audio and waits for the wake word or Talk. |
+
+### `speak_this`
+
+Without `speak_this`, a turn's reply text is what the device says. The first
+`speak_this` call turns the rest of the turn inside out: from that point on,
+only text given to the tool is spoken. Reply text written before the call is
+spoken as usual; reply text written after it is not.
+
+| In one turn | The device says |
+|---|---|
+| No `speak_this` call | The turn's reply text. |
+| `speak_this` with text | Any reply text written before the call, then that text exactly. Nothing written after the call. |
+| `speak_this` with `""` | Any reply text written before the call, then nothing. Called first, the turn is silent. |
+| Several `speak_this` calls | Each text in order. An empty one adds nothing. |
+
+The next turn starts with reply text spoken again.
+
+`speak_this` works in any turn, including one nobody spoke to start. A turn
+that only calls `play_tone` still speaks its reply text; call `speak_this` with
+`""` as well to confirm with a tone and no words.
+
+### `play_tone`
+
+Send `{"type":"tone","tone":"confirm"}` to the device. A tone plays before any
+speech from the same turn. It is not a reply: it has no `turn_id`, and the
+device sends no `drained` for it.
+
+### `standby`
+
+The agent calls `standby` when the exchange is over, for example after
+"thanks, that's all". The tool, the `next_action` value, and the device state
+share the one name. Standby is not mute: the device still hears its wake word.
+The server does not look for a sign-off phrase in the reply. A turn that does
+not call `standby` ends with `next_action: "listen"`.
+
+| Tool result | Meaning |
+|---|---|
+| `ok` | Accepted. |
+| `not_a_device` | The call was made from a chat that is not a voice device. Nothing happens. |
+| `not_attached` | No device is connected. Nothing is sent or queued. |
+
+## Countdowns
+
+A countdown is a timer that ends with a tone on a device. The device keeps the
+time and rings; the server records its countdowns and relays them. Spoken
+reminders are ordinary turns from a scheduler plugin and are not countdowns.
+
+A countdown belongs to one device's conversation. The server provides one tool,
+which acts only on the device whose conversation calls it:
+
+| `countdown` action | Arguments | Effect |
+|---|---|---|
+| `set` | The future time as `at` (ISO 8601) or `in_seconds`; `sound` (`alarm-1` to `alarm-4`, default `alarm-1`); `label` (optional) | Sends `countdown` to the device. Returns `countdown_id` and the deadline. |
+| `snooze` | `countdown_id`; the new future time as `at` or `in_seconds` | Sends `countdown` again with the same `countdown_id` and the new deadline. Extends a pending countdown; stops a ringing one and starts it counting again. |
+| `cancel` | `countdown_id` | Sends `countdown_cancel` to the device, whether the countdown is pending or ringing. |
+| `list` | None | Returns the device's countdowns with their label, deadline, and state: `pending` or `ringing`. |
+
+The device comes from the session, so transcript text cannot set it. There is
+no device argument. Another room does not operate this device's countdowns; it
+asks this device's conversation, for example "stop your alarm" or "set a
+five-minute timer", through a session-to-session plugin. The server provides
+nothing for that.
+
+| Situation | Result | Outcome |
+|---|---|---|
+| Device attached | `set` | `countdown` is sent at once. |
+| Device not attached | `not_attached` | Nothing is recorded. The caller decides what to do instead. |
+| Called from a chat that is not a voice device | `not_a_device` | Nothing is sent. |
+| Time not in the future | `bad_time` | Nothing is sent. |
+| No such countdown on this device | `unknown_countdown` | Nothing is sent. |
+
+`countdown_ring_timeout_seconds` (default 900) is how long an alarm rings if
+nobody ends it. Send it in each `countdown` frame as `ring_seconds`; the device
+enforces it.
+
+Keep a countdown until its device sends `drained` for it, or until its deadline
+plus the ring timeout has passed. Send a device its countdowns again after
+`ready`, so one that reconnects or restarts shows them. The server does not ring
+anything itself and does not send a frame at the deadline.
+
+### Still ringing
+
+While a countdown rings and the device has not sent `drained`, start a turn in
+that device's conversation at 1, 2, 4, 8 minutes after the deadline, doubling,
+until the alarm ends. With the default timeout that is four turns. Each says
+which countdown is ringing and for how long, so the agent can do more each time:
+say something in the room, tell another room, or tell the owner elsewhere.
+
+The turn is an ordinary message submitted to the gateway session. Its reply is
+spoken on the device like any other, or not at all when the agent calls
+`speak_this` with `""`. No turn starts after `drained`. A snooze starts the sequence again
+from the new deadline.
+
+### Stopping by voice
+
+A ringing alarm can be ended by voice without a wake word. From a countdown's
+deadline until the device sends `drained`, the server transcribes what it hears
+from that device:
+
+| Heard while ringing | Outcome |
+|---|---|
+| A stop phrase, such as "stop" | The server sends `interrupted` with the `countdown_id` as its `turn_id`. No agent turn runs. |
+| The wake word and a request | An ordinary turn. The alarm keeps its place: the agent ends it with `cancel` or `snooze`, or leaves it ringing. |
+| Anything else | Ignored. The tone keeps ringing, so nearby conversation does not silence it. |
+
+Use the existing stop phrases. The tone itself must not be transcribed as
+speech. A sent frame is not proof that a speaker sounded or stopped.
+
+Acceptance scenarios: a timer set in the Kitchen counts down and rings only in
+the Kitchen. Exercise a call from a chat that is not a device, a device that is
+not attached, a reconnect before the deadline, a device that is off at the
+deadline, local dismissal, a spoken stop phrase, other speech while ringing, a
+reply and a wake word while ringing, snooze while pending and while ringing,
+cancel while ringing, still-ringing turns at 1, 2, 4 and 8 minutes and none
+after `drained`, and the ring timeout from the setting.

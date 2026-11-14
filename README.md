@@ -7,9 +7,9 @@ text, the agent turn, and per-sentence streaming text to speech back down the sa
 barge-in. Built for devices that have a microphone and a speaker and nothing else: an ESP32, a
 browser tab, a kiosk.
 
-The agent turn runs through Hermes's public Runs API, so every turn is an ordinary Hermes session:
-the agent's tools, memory, skills and approvals all apply, and the conversation continues across
-turns on one socket.
+Every conversation is a gateway session on the plugin's `converse` platform, the same kind of
+session a Telegram or Slack chat has: the agent's tools, memory, skills, scheduling and compaction
+all apply, and a named device's conversation shows up in the web UI under its device name.
 
 ## Install
 
@@ -44,6 +44,10 @@ unique within this server/profile. The server opens the Hermes conversation titl
 `Arya: Den Echo`, reusing its history across reconnects and gateway restarts. The voice prompt
 explains both names, the default device destination, and proactive output through available
 scheduling tools. Configure the same names on reconnect; changing names does not migrate history.
+Send `"models": true` in `start` to receive the model catalog in `ready`.
+Omitted or false skips the lookup and omits `model_catalog`; audio and model
+selection remain available.
+
 Wait for `ready` before streaming audio. It returns `assistant_name`, `device_name`, and
 `recipient_id` directly.
 
@@ -57,15 +61,14 @@ A non-wake client may stream after `ready`. The server answers:
 |---|---|
 | `ready` | rates, the socket's `session_id`, and two server timestamps for clock-skew estimation |
 | `transcript` | what it heard; carries a `turn_id` every later frame of the turn repeats |
-| `thinking` | the agent turn is running (show "thinking", not "listening") |
-| `working` | active-turn keepalive every 15 seconds; refresh the matching turn’s inactivity timer |
+| `thinking` | turn start, then progress every 5 seconds with `tool_calls` and `reasoning_tokens` |
 | `speaking` + binary frames | the reply as PCM16 at `output_rate` |
 | `interrupted` | you spoke over the reply: stop playing, the turn is cancelled |
 | `error` | the turn failed (the message is spoken-safe text) |
 | `turn_done` | the reply is fully sent; `next_action` tells the client to listen or enter standby after drain |
 | `quiet` | session mode: the stream has been silent for another `quiet_interval` seconds |
 
-Handle `thinking` as an explicit turn boundary even without a preceding `transcript`:
+Handle the first `thinking` for a turn as an explicit boundary even without a preceding `transcript`:
 mark the agent turn active and show "thinking". During the granted activation, keep sending
 microphone PCM through thinking, speaking, and playback drain for server-side interruption/control
 detection. Accepted speech interrupts obsolete output and is captured as a continuation in the
@@ -75,12 +78,14 @@ deadline if it is not already running; do not restart it. This frame reports lif
 not reasoning text. See
 [the client spec](specs/client.md#handling-thinking) for the frame format and tracing behavior.
 
-During a long agent/TTS turn, `working` frames carry the same `turn_id` (and
-`traceparent` when available) every 15 seconds. Clients can refresh that turn's
-inactivity timer without changing thinking/speaking state. Ignore stale IDs and
-keep any absolute turn limit; keepalives do not extend the server's 120-second
-default turn timeout. They stop before terminal frames and on disconnect. See
-[specs/client.md](specs/client.md) for the full deadline contract.
+During a long agent/TTS turn, `thinking` repeats every 5 seconds with the same
+`turn_id` (and `traceparent` when available), the number of tool calls started
+so far, and the provider-reported reasoning tokens (`null` when
+unavailable). Refresh the active turn's inactivity timer and count without changing
+speaking/playback state. Ignore stale/completed turn IDs and keep any absolute
+turn limit; progress frames do not extend the server's 120-second default timeout.
+They stop before terminal frames and on disconnect. See
+[specs/client.md](specs/client.md#handling-thinking) for the full contract.
 
 Client control frames: `{"stop": true}` ends the audio attachment (persisted conversation history remains), `{"commit": true}` forces the current
 utterance to endpoint, `{"type": "cancel", "turn_id": "..."}` cancels the current turn while
@@ -111,19 +116,13 @@ settles its run before accepting new work. Uncertain admission or unfinished can
 The server keeps device identities/session references in profile-local
 `plugin-data/hermes-converse/devices.db`. Messages, compression, and retention stay in Hermes.
 
-Completed responses for the underlying conversation can play without microphone input or a wake word. The public
-final-response hook suppresses voice-owned duplicates and `[SILENT]` output; producers outside
-the process can use authenticated `POST /v1/audio/conversations/<id>/output` with `event_id`,
-`text`, and `expires_at_unix_ms`. Delivery is connected-only and waits for prior speaker drain.
+Completed responses for the underlying conversation can play without microphone input or a wake word.
+Delivery is connected-only and waits for prior speaker drain.
 See [client spec section 9](specs/client.md#9-conversation-output-without-user-input).
 
-Announcement/alarm capabilities and playback acknowledgements, server-owned timers, and
-synchronized group announcements remain in [issue #34](https://github.com/Keryxion/hermes-converse/issues/34).
-Heartbeat 2 scheduling still needs integration with API conversations; installing it alone does
-not enable later voice delivery. Its installed `pulse` tool may refuse API-server sessions;
-the prompt requires the assistant to report that refusal and to confirm only successful scheduling
-receipts. It explains that cancelling speech does not cancel a scheduled timer. Clients do not
-schedule offline alarms.
+A countdown is a timer that ends with a tone on a device; see
+[client spec section 10](specs/client.md#10-countdowns). Spoken reminders come from a scheduler
+plugin such as Cadence and play as ordinary server-started turns.
 
 ## Settings
 
@@ -134,12 +133,14 @@ plugin settings form):
 |---|---|---|
 | `name` | `Arya` | the assistant's name in the voice prompt when the start frame has none |
 | `voice_model`, `voice_provider` | `""` | a voice-only model override sent with every run |
-| `turn_timeout_seconds` | `120` | a turn with no output for this long is stopped and reported |
+| `turn_timeout_seconds` | `120` | a turn that makes no progress for this long is stopped and reported; each tool call and model call counts as progress |
 | `playback_tail_timeout_seconds` | `45` | how long to wait for the client's `drained` frame |
 | `max_tts_chars_per_turn` | `1500` | safety cap on how much of one reply is spoken |
 | `end_phrases` | `[over and out]` | session mode: a reply ending with one of these signs off |
 | `vad_model` | `silero` | speech detection with automatic energy fallback; set `energy` to use RMS detection only |
 | `endpoint_model`, `endpoint_threshold` | off, `0.5` | Smart Turn v3 semantic endpointer (see below) |
+| `endpoint_silence_ms` | `700` | silence that ends an utterance; with Smart Turn, the first completion check |
+| `endpoint_max_silence_ms` | `3000` | longest pause allowed after the wake word or, with Smart Turn, inside an unfinished request |
 | `approval_choice` | `deny` | what a voice turn answers when the agent asks for a command approval |
 | `api_base_url` | `""` | loopback URL of the API server when it cannot be derived from the listener |
 | `arbitrate_enabled` | `false` | enable advisory wake selection for cooperating clients |
@@ -209,7 +210,11 @@ addressed to the assistant.
 Silero and Smart Turn work together: Silero finds candidate pauses; Smart Turn,
 when enabled, decides whether the person has finished their thought. Speech
 onset needs at least 250 ms above Silero's speech threshold (0.5, continuing down
-to 0.35). The existing silence window and utterance cap still apply.
+to 0.35). After `endpoint_silence_ms` of silence the utterance ends, unless Smart Turn
+judges it unfinished; then it keeps listening, rechecking each window, for up to
+`endpoint_max_silence_ms`. After a wake word the first pause also waits up to
+`endpoint_max_silence_ms`, so "Hey Arya … set a timer" stays one request. The 12 s
+utterance cap still applies.
 
 **Smart Turn v3** (optional): with `endpoint_model: smart-turn-v3` the fixed silence endpoint
 becomes adaptive — on each candidate pause the model estimates whether the utterance sounds
@@ -237,6 +242,12 @@ unavailable weights all retain the fixed silence endpoint and log the reason onc
 Doctor leaves the model untouched when Smart Turn is off. A successful doctor check confirms
 model loading, not the quality of endpointing on real speech; tune the threshold with real audio.
 
+If a client stops sending audio during a capture, the partial utterance is dropped after
+`capture_no_data_seconds` (default 5; 0 disables) without transcription or an agent run.
+The next utterance starts a fresh capture on the same socket. This timeout applies to
+both endpointers; received silence still ends utterances normally, and idle session quiet
+continues to count only received audio.
+
 **Voice tracing** (optional): when the host registers a global OpenTelemetry tracer provider,
 the plugin emits a `voice.turn` span with `voice.capture`, `voice.stt`, `voice.agent`, and
 `voice.tts` children through that provider. It uses the host's sampling and exporter settings,
@@ -261,7 +272,11 @@ the existing transcript/thinking/speaking frames, preserving the host's sampling
 Disconnected turns are closed, and app cleanup attempts a bounded five-second flush in a
 worker thread. Tracing failures do not interrupt voice operation.
 Capture spans include `input.audio_ms` and `endpoint.silence_ms` so buffered audio duration
-can be distinguished from elapsed processing time when investigating early endpoints.
+can be distinguished from elapsed processing time when investigating early endpoints. They also
+record `endpoint.mode`, `endpoint.max_silence_ms`, `endpoint.wake`, `endpoint.reason`
+(`silence`, `threshold`, `max_silence`, `client_commit`, ...), the final `endpoint.pause_ms`,
+and `endpoint.longest_pause_ms`, the longest pause the user spoke through. With
+`HERMES_VOICE_DEBUG=1` the same decision is logged per capture.
 
 **Browser clients and CORS.** The API server's origin guard runs before any route. A browser or
 Electron client (which sends `Origin: null`) must have its origin listed in
@@ -275,7 +290,7 @@ API-server client.
 | `route.py` | the WebSocket handler, auth flow and the per-connection wiring |
 | `loop.py` | the mic shim, the VAD/STT session worker, the turn driver (sentence-by-sentence TTS, barge-in, session mode) |
 | `arbitrate.py` | advisory selection among wake claims; audio processing is independent |
-| `agent_client.py` | the Runs API client: idempotent run creation, SSE with replay-safe sequence tracking, stop, approval answers |
+| `platform_adapter.py` | the `converse` gateway platform: voice turns as gateway messages, reply text from stream hooks, proactive output |
 | `auth.py` | key verification through the API server's own `/v1/capabilities` |
 | `vad.py`, `speech_detector.py`, `silero_vad.py` | energy/Silero speech detection, verified model cache, endpointing and WAV capture |
 | `synth.py` | one `text → int16 PCM` seam over streaming or one-shot TTS, plus resampling |
@@ -319,8 +334,9 @@ hermes plugins validate .
 Tracing SDK/exporter tests run when `opentelemetry-sdk` is installed (included in Hermes's
 `otlp` extra); otherwise those cases skip while the missing-OTEL fallback test still runs.
 
-The suite drives the real VAD, endpointer, capture, resampler, Runs client and route against a
-scripted in-process stand-in for the Runs API; only STT, the TTS provider and the model are faked.
+The suite drives the real VAD, endpointer, capture, resampler, route and platform adapter (on
+Hermes's real adapter base class) against a scripted stand-in for the API server and the gateway
+runner; only STT, the TTS provider and the model are faked.
 
 
 Real Silero regression tests use the checked-in human-speech fixture and a separately cached

@@ -26,7 +26,7 @@ Protocol:
            ``{"type":"drained","turn_id":?}`` when the reply's last audio has left the speaker,
            ``{"type":"wake","claim_id":"...","wake_word":"...", ...}`` requests an
            advisory wake recommendation; see ``specs/client.md``. Accepted interruptions are captured as continuations.
-  server → ``ready`` (rates, ``session_id``, clock-skew timestamps), ``transcript``, ``thinking``, ``working``,
+  server → ``ready`` (rates, ``session_id``, clock-skew timestamps), ``transcript``, ``thinking``,
            ``speaking`` + binary PCM, ``interrupted``, ``turn_done`` (``next_action``), ``quiet``, ``error``.
 """
 
@@ -45,13 +45,14 @@ from typing import Any, Awaitable, Callable, Optional
 
 from aiohttp import ClientError, ClientSession, ClientTimeout, web
 
-from .agent_client import RunsClient
 from .arbitrate import Arbitrator
 from .auth import offered_key_protocol, verify_api_key
 from .conversation import ConversationHub
-from .named import DeviceStore, NamedError, NamedSessions, parse_names
+from .named import DeviceStore, NamedError, parse_names
+from .platform_adapter import GatewayTurns
 from .model_selection import parse_model_selection, public_model_catalog
-from .loop import ConverseSession, drive_converse_turns, parse_start_config, voice_system_prompt
+from .loop import (ConversationOutput, ConverseSession, drive_converse_turns, parse_start_config,
+                   voice_system_prompt)
 from .settings import Settings, load_settings
 from .tracing import force_flush
 
@@ -62,10 +63,10 @@ VOICE_WS_PROTOCOL = "hermes-voice-v1"
 # The client must send its ``start`` frame within this window.
 FIRST_FRAME_TIMEOUT = 5.0
 DEFAULT_LOOPBACK = "http://127.0.0.1:8642"
-# Loopback HTTP: no total deadline (the SSE stream lives as long as a turn), bounded connect, and a
-# read gap well past the server's 10 s SSE keepalive.
-HTTP_TIMEOUT = ClientTimeout(total=None, connect=5, sock_read=90)
+# Loopback HTTP to the API server: key verification, the model catalog and session lookups.
+HTTP_TIMEOUT = ClientTimeout(total=30, connect=5)
 REPLACEMENT_TIMEOUT = 12.0
+GATEWAY_WAIT = 30.0
 
 
 @dataclass
@@ -73,7 +74,6 @@ class _NamedConnection:
     done: asyncio.Event = field(default_factory=asyncio.Event)
     replaced: asyncio.Event = field(default_factory=asyncio.Event)
     session: Any = None
-    client: Any = None
 
 
 def loopback_base_url(adapter: Any, override: str = "") -> str:
@@ -146,6 +146,14 @@ class ConverseRoute:
         app.router.add_post("/v1/audio/conversations/{conversation_id}/output", self.output)
         return True
 
+    async def _gateway(self) -> Any:
+        """The connected converse platform adapter. At startup a device can dial in before the
+        platform has connected, so wait for it; None when this Hermes is not hosting it."""
+        deadline = time.monotonic() + GATEWAY_WAIT
+        while self.hub.gateway is None and self.hub.gateway_expected and time.monotonic() < deadline:
+            await asyncio.sleep(0.2)
+        return self.hub.gateway
+
     def _settings(self) -> Settings:
         return load_settings(self._settings_getter)
 
@@ -195,21 +203,14 @@ class ConverseRoute:
                 await _fail(ws, "profile_unsupported", 4400)
                 return ws
             requested = frame.get("conversation_id")
-            if requested is not None:
-                if not isinstance(requested, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", requested):
-                    await _fail(ws, "bad_conversation_id", 4400)
-                    return ws
-                # Delegate conversation existence/profile authorization to Hermes's public API.
-                async with http.get(f"{base_url}/api/sessions/{requested}",
-                                    headers={"Authorization": f"Bearer {api_key}"},
-                                    allow_redirects=False) as response:
-                    if response.status != 200:
-                        await _fail(ws, "conversation_unavailable", 4403)
-                        return ws
-                    existing = (await response.json()).get("session", {})
-                    if existing.get("source") != "api_server":
-                        await _fail(ws, "conversation_source_unsupported", 4403)
-                        return ws
+            if requested is not None and (
+                    not isinstance(requested, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", requested)):
+                await _fail(ws, "bad_conversation_id", 4400)
+                return ws
+            gateway = await self._gateway()
+            if gateway is None:
+                await _fail(ws, "conversation_unavailable", 1011)
+                return ws
             try:
                 synth, cap, session = await asyncio.get_running_loop().run_in_executor(
                     None, lambda: _resolve_session(settings, input_rate, output_rate, quiet_interval))
@@ -217,19 +218,19 @@ class ConverseRoute:
                 logger.exception("converse setup failed")
                 await _fail(ws, "converse setup failed", 1011)
                 return ws
-            if requested is not None:
-                session.session_id = requested
-            else:
-                # Persist a real API conversation before ready; the ID can be reattached later.
-                async with http.post(f"{base_url}/api/sessions",
-                                     json={"source": "api_server", "id": f"voice_{uuid.uuid4().hex}"},
-                                     headers={"Authorization": f"Bearer {api_key}"},
-                                     allow_redirects=False) as response:
-                    if response.status != 201:
-                        await _fail(ws, "conversation_unavailable", 1011)
-                        return ws
-                    body = await response.json()
-                    session.session_id = body["session"]["id"]
+            # The conversation id is the gateway chat; the client reattaches with it.
+            session.session_id = requested or f"voice_{uuid.uuid4().hex}"
+            source = gateway.source_for(chat_id=session.session_id, title=name,
+                                        recipient_id=session.session_id, device_name=name)
+            if requested is not None and not gateway.has_conversation(source):
+                await _fail(ws, "conversation_unavailable", 4403)
+                return ws
+            try:
+                turns = GatewayTurns(gateway, source, await gateway.bind(source))
+            except Exception:
+                logger.warning("converse conversation unavailable", exc_info=True)
+                await _fail(ws, "conversation_unavailable", 1011)
+                return ws
             try:
                 attachment = self.hub.attach(session.session_id, session)
             except ValueError:
@@ -237,7 +238,9 @@ class ConverseRoute:
                 return ws
             try:
                 await self._connected(ws, session, api_key, http, base_url, synth, cap, name,
-                                      quiet_interval, settings, attachment, server_recv_unix_ms, input_rate, output_rate, transcripts=frame.get("transcripts") is True)
+                                      quiet_interval, settings, attachment, server_recv_unix_ms, input_rate, output_rate,
+                                      transcripts=frame.get("transcripts") is True,
+                                      models=frame.get("models") is True, turns=turns)
             finally:
                 self.hub.detach(session.session_id, attachment)
                 session.stop()
@@ -250,7 +253,6 @@ class ConverseRoute:
         try:
             async with self._named_lock:
                 device = await asyncio.to_thread(self._devices.reserve, *names)
-                sessions = NamedSessions(base_url, api_key, http)
                 old = self._named_connections.get(device.recipient_id)
                 if old is not None:
                     if not old.done.is_set():
@@ -262,12 +264,13 @@ class ConverseRoute:
                             await asyncio.wait_for(old.done.wait(), REPLACEMENT_TIMEOUT)
                         except TimeoutError:
                             raise NamedError('conversation_busy', 4404) from None
-                    pending = old.client.unsettled_run_ids if old.client is not None else set()
-                    if old.client is not None and old.client.admission_uncertain:
-                        raise NamedError('conversation_busy', 4404)
-                    if not await sessions.settled(pending):
-                        raise NamedError('conversation_busy', 4404)
-                conversation_id, live_id, history = await sessions.resolve(device, self._devices)
+                gateway = await self._gateway()
+                if gateway is None:
+                    raise NamedError()
+                conversation_id = device.candidate_id.removeprefix('voice_')
+                source = gateway.source_for(chat_id=conversation_id, title=device.title,
+                                            recipient_id=device.recipient_id, device_name=device.device_name)
+                turns = GatewayTurns(gateway, source, await gateway.bind(source))
                 input_rate, output_rate, quiet_interval, _, profile = parse_start_config(frame)
                 if not self._profile_allowed(profile):
                     raise NamedError('profile_unsupported', 4400)
@@ -275,11 +278,11 @@ class ConverseRoute:
                     _resolve_session, settings, input_rate, output_rate, quiet_interval)
                 connection.session = session
                 attachment = self.hub.attach(conversation_id, session)
-                self.hub.alias(live_id, attachment)
                 self._named_connections[device.recipient_id] = connection
             await self._connected(ws, session, api_key, http, base_url, synth, cap, names[0],
                                   quiet_interval, settings, attachment, recv_ms, input_rate, output_rate,
-                                  named=(device, connection, history), transcripts=frame.get("transcripts") is True)
+                                  named=(device, connection), transcripts=frame.get("transcripts") is True,
+                                  models=frame.get("models") is True, turns=turns)
         except NamedError as exc:
             await _fail(ws, exc.error, exc.code)
         except (ClientError, TimeoutError, ValueError):
@@ -296,25 +299,17 @@ class ConverseRoute:
             if connection.session is not None:
                 connection.session.stop()
             connection.done.set()
-            if (device is not None and self._named_connections.get(device.recipient_id) is connection
-                    and (connection.client is None or (not connection.client.unsettled_run_ids
-                                                      and not connection.client.admission_uncertain))):
+            if device is not None and self._named_connections.get(device.recipient_id) is connection:
                 self._named_connections.pop(device.recipient_id, None)
         return ws
 
     async def _connected(self, ws, session, api_key, http, base_url, synth, cap, name,
                          quiet_interval, settings, attachment, server_recv_unix_ms, input_rate, output_rate,
-                         named=None, transcripts=False):
-        client = RunsClient(base_url, api_key, http=http, approval_choice=settings.approval_choice)
-        try:
-            catalog = public_model_catalog(await client.model_options())
-        except Exception:
-            logger.warning("converse model catalog unavailable", exc_info=True)
-            catalog = {'providers': []}
+                         named=None, transcripts=False, models=False, turns=None):
+        client = turns
         ready = {
             "type": "ready",
             "transcripts": transcripts,
-            "model_catalog": catalog,
             "input": {"sample_rate": input_rate, "format": "pcm16", "block_ms": 30},
             "output": {"sample_rate": output_rate, "format": "pcm16"},
             "session_id": session.session_id,
@@ -322,8 +317,14 @@ class ConverseRoute:
             "server_recv_unix_ms": server_recv_unix_ms,
             "server_send_unix_ms": int(time.time() * 1000),
         }
+        if models:
+            try:
+                ready["model_catalog"] = public_model_catalog(await _model_options(base_url, api_key, http))
+            except Exception:
+                logger.warning("converse model catalog unavailable", exc_info=True)
+                ready["model_catalog"] = {"providers": []}
         if named is not None:
-            device, connection, history = named
+            device, connection = named
             ready.pop('conversation_id')
             ready.update(recipient_id=device.recipient_id, assistant_name=device.assistant_name,
                          device_name=device.device_name)
@@ -334,12 +335,14 @@ class ConverseRoute:
         device_id = f"{settings.arbitrate_device_id or 'device'}_{uuid.uuid4().hex}"
         if arbitrator is not None:
             await arbitrator.register(device_id)
-        if named is not None:
-            connection.client = client
+        # The only place a socket's device identity meets its session id; turn and onset lines
+        # carry the session id, so this is what attributes them to a device.
+        logger.info("converse session: session=%s device_id=%s name=%r arbitrated=%s",
+                    getattr(session, "session_id", None), device_id, name, arbitrator is not None)
         await _serve(ws, session=session, synth=synth, cap=cap, client=client, settings=settings,
                      name=name, quiet_interval=quiet_interval, arbitrator=arbitrator,
                      device_id=device_id, hub=self.hub, attachment=attachment,
-                     named_device=named[0] if named else None, history=history if named else None,
+                     named_device=named[0] if named else None,
                      named_connection=named[1] if named else None, transcripts=transcripts)
 
     async def output(self, request: web.Request) -> web.Response:
@@ -370,6 +373,18 @@ class ConverseRoute:
         return web.json_response({"status": result, "event_id": event_id}, status=status)
 
 
+async def _model_options(base_url: str, api_key: str, http: ClientSession) -> dict[str, Any]:
+    """The API server's authenticated model inventory, for the opt-in catalog in ``ready``."""
+    params = {"include_unconfigured": "false", "refresh": "false"}
+    async with asyncio.timeout(8):
+        async with http.get(f"{base_url}/api/model/options", params=params, allow_redirects=False,
+                            headers={"Authorization": f"Bearer {api_key}"}) as response:
+            result = await response.json() if response.status == 200 else None
+    if not isinstance(result, dict) or not isinstance(result.get("providers"), list):
+        raise ValueError("model_catalog_unavailable")
+    return result
+
+
 def _resolve_session(settings: Settings, input_rate: int, output_rate: int, quiet_interval: float):
     """Blocking provider/config resolution — runs off the event loop. Returns ``(synth, cap,
     session)``: a synthesizer emitting int16 PCM at *output_rate* (NEVER ``None``), its per-request
@@ -390,8 +405,17 @@ def _resolve_session(settings: Settings, input_rate: int, output_rate: int, quie
     session = ConverseSession(
         np, input_rate=input_rate, quiet_interval=quiet_interval, transcribe=_transcribe,
         endpoint_model=settings.endpoint_model, endpoint_threshold=settings.endpoint_threshold,
-        vad_model=settings.vad_model)
+        endpoint_silence_ms=settings.endpoint_silence_ms, endpoint_max_silence_ms=settings.endpoint_max_silence_ms,
+        vad_model=settings.vad_model, capture_no_data_seconds=settings.capture_no_data_seconds)
     return synth, cap, session
+
+
+MAX_SAY_CHARS = 400
+
+
+def _say_text(raw: Any) -> str:
+    """The text of a client ``say`` frame: a nonempty string, trimmed and capped."""
+    return raw.strip()[:MAX_SAY_CHARS] if isinstance(raw, str) else ""
 
 
 def _wake_number(raw: Any, *, maximum: Optional[float] = None) -> Optional[float]:
@@ -461,18 +485,15 @@ async def _await_start_frame(ws: web.WebSocketResponse, *,
 
 
 async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: Any, cap: int,
-                 client: RunsClient, settings: Settings, name: str, quiet_interval: float,
+                 client: Any, settings: Settings, name: str, quiet_interval: float,
                  arbitrator: Optional[Arbitrator] = None,
                  device_id: str = "", hub=None, attachment=None, named_device=None,
-                 history: Optional[list[dict[str, str]]] = None, named_connection=None,
-                 transcripts: bool = False) -> None:
-    """Run the client pump and the turn driver until the socket ends; always stop the live run."""
+                 named_connection=None, transcripts: bool = False) -> None:
+    """Run the client pump and the turn driver until the socket ends; always stop the live turn."""
     loop = asyncio.get_running_loop()
     session.enable_turn_control()
     session.start()
-    # The Runs API continues this conversation across turns by session id; one per socket.
-    session_id = attachment.conversation_id if attachment is not None else session.session_id
-    history = [] if history is None else history
+    history: list[dict[str, str]] = []
     allow_signoff = quiet_interval > 0
     default_model = (settings.model, settings.provider)
     selected_model = default_model
@@ -480,6 +501,8 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
     async def _reply_wake(frame: dict) -> None:
         try:
             reply = await _wake_response(frame, arbitrator=arbitrator, device_id=device_id)
+            if reply["type"] == "wake_grant":
+                session.note_wake()
             await ws.send_json(reply)
         except Exception:
             logger.debug("converse wake reply failed", exc_info=True)
@@ -505,6 +528,13 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                         session.notify_drained(frame.get("turn_id"))
                     if frame.get("type") == "cancel":
                         session.cancel(frame.get("turn_id"))
+                    if frame.get("type") == "say":
+                        text = _say_text(frame.get("text"))
+                        if text:
+                            # Fixed text from the device itself (a spoken help reminder): no agent
+                            # turn and no history. The client returns to its wake word afterwards.
+                            session.transcripts.put(ConversationOutput(
+                                text, f"say-{uuid.uuid4().hex}", next_action="standby"))
                     if frame.get("type") == "set_model":
                         request_id = frame.get("request_id")
                         if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", request_id):
@@ -532,22 +562,18 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
         session.stop()
 
     async def _run_turn(transcript: str, on_delta, *, interrupted: bool) -> tuple[str, Optional[str]]:
-        model, provider = selected_model  # Snapshot once; do not alter a run already in flight.
-        with hub.owned_run(attachment, transcript) if hub is not None else contextlib.nullcontext() as owned:
-            result = await client.run_turn(
-                text=transcript, session_id=session_id, on_delta=on_delta,
-                instructions=voice_system_prompt(
-                    name, allow_signoff=allow_signoff, end_phrases=settings.end_phrases,
-                    device_name=named_device.device_name if named_device else None,
-                    recipient_id=named_device.recipient_id if named_device else None),
-                model=model, provider=provider,
-                idempotency_key=f"converse-{session_id}-{uuid.uuid4().hex}")
-            if owned is not None and result.error is None:
-                owned.reply = result.reply
+        model, provider = selected_model  # Snapshot once; do not alter a turn already in flight.
+        result = await client.run_turn(
+            text=transcript, on_delta=on_delta,
+            instructions=voice_system_prompt(
+                name, allow_signoff=allow_signoff, end_phrases=settings.end_phrases,
+                device_name=named_device.device_name if named_device else None,
+                recipient_id=named_device.recipient_id if named_device else None),
+            model=model, provider=provider)
         return result.reply, result.error
 
     def _interrupt_turn() -> None:
-        # Barge-in: stop the in-flight run so the barge utterance isn't queued behind it.
+        # Barge-in: stop the turn in flight so the barge utterance isn't queued behind it.
         loop.create_task(client.stop())
 
     async def _drive_turns() -> None:
@@ -555,6 +581,9 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
             session=session, synth=synth, cap=cap, loop=loop,
             send_json=ws.send_json, send_bytes=ws.send_bytes, run_turn=_run_turn, history=history,
             quiet_interval=quiet_interval, interrupt_turn=_interrupt_turn, transcripts=transcripts,
+            tool_calls=lambda: client.tool_calls,
+            reasoning_tokens=lambda: client.reasoning_tokens,
+            last_progress=lambda: client.last_progress,
             turn_timeout=settings.turn_timeout, tail_fallback=settings.tail_fallback,
             max_tts_chars=settings.max_tts_chars,
             end_phrases=settings.end_phrases,
@@ -591,7 +620,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
             with contextlib.suppress(Exception):
                 await arbitrator.unregister(device_id)
         with contextlib.suppress(Exception):
-            await client.stop()  # a socket that drops mid-turn must not orphan the run
+            await client.stop()  # a socket that drops mid-turn must not leave the turn running
         with contextlib.suppress(Exception):
             if named_connection is not None and named_connection.replaced.is_set():
                 # Send the close frame, but a peer that is not reading cannot hold up admission.
