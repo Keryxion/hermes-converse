@@ -528,16 +528,18 @@ confidence/volume) are treated as missing; omit unavailable signals.
 The server responds on the requesting socket with one of:
 
 ```json
-{"type":"wake_grant","claim_id":"activation-42","wake_word":"Hey Arya"}
+{"type":"wake_grant","claim_id":"activation-42","wake_word":"Hey Arya","election_id":"election-9"}
 ```
 
 ```json
-{"type":"wake_deny","claim_id":"activation-42","wake_word":"Hey Arya","winner_device_id":"device_a1b2c3d4"}
+{"type":"wake_deny","claim_id":"activation-42","wake_word":"Hey Arya","election_id":"election-9","winner_device_id":"device_a1b2c3d4"}
 ```
 
-Both decisions echo the request's `claim_id` and `wake_word`. A denial may also
-include `winner_device_id`, an opaque server device identifier for diagnostics;
-clients do not need it to act on the decision. `claim_id` identifies a wake
+Both decisions echo the request's `claim_id` and `wake_word`, and carry the
+`election_id` of the election that decided them. A denial may also include
+`winner_device_id`. Both are opaque and for diagnostics
+([client tracing](client_tracing.md)); clients do not need them to act on the
+decision. `claim_id` identifies a wake
 detection, not a `turn_id`; wake decisions do not create a conversational turn.
 The server sends one decision for each valid wake request.
 
