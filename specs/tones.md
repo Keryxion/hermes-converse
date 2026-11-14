@@ -6,7 +6,7 @@ in [animations.md](animations.md).
 
 | Tone | When | Sound |
 |---|---|---|
-| Listening | Listening starts: a matching `wake_grant`, manual Talk, or a follow-up | Rising pair: 523 Hz then 784 Hz, 70 ms each |
+| Listening | Every time the device enters listening: a matching `wake_grant`, manual Talk, or a return to listening after a reply | Rising pair: 523 Hz then 784 Hz, 70 ms each |
 | Thinking | Each `thinking` frame | One soft 280 ms pulse at 330 Hz |
 | Listening ended | Listening ends in silence with no request, and the device returns to standby | Falling pair: 784 Hz then 523 Hz, 70 ms each |
 
