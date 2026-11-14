@@ -212,7 +212,7 @@ compaction, and its place in the web UI. Every event comes from a socket that
 presented the API key, so the platform is registered as trusted inbound and needs no
 user allowlist or pairing.
 
-A message another producer submits to the session, such as a Heartbeat wake or a
+A message another producer submits to the session, such as a Cadence wake or a
 background process completion, runs as an ordinary turn. Its final reply reaches
 `send` and is spoken on the attached device without a wake word. Outcomes:
 

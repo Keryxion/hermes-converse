@@ -2,7 +2,7 @@
 
 The WebSocket route stays on the API server (same URL, same API key). What changes is where a turn
 executes: an utterance becomes a ``MessageEvent`` on this adapter, so the conversation is an ordinary
-gateway session — the same admission, busy handling, scheduling (Heartbeat), background-process
+gateway session — the same admission, busy handling, scheduling (Cadence), background-process
 notifications, compaction and web UI listing that Telegram or Slack conversations get.
 
 How a turn maps onto the adapter contract:
@@ -12,7 +12,7 @@ How a turn maps onto the adapter contract:
   (marked ``notify``) completes anything the deltas did not carry, so a non-streaming provider or
   a transformed final is still spoken once.
 * Barge-in: ``interrupt_session_activity`` — the runner's interrupt monitor stops the agent.
-* Output nobody asked for by voice (a Heartbeat wake, a finished background process, a
+* Output nobody asked for by voice (a Cadence wake, a finished background process, a
   ``send_message``) arrives through ``send`` with no voice turn in flight and is spoken through the
   hub, exactly like any other proactive output.
 * Status chatter (busy acks, progress, error notices) is text for a screen; it is never spoken.
