@@ -370,17 +370,24 @@ the server. The server confirms support with `ready.transcripts: true` when
 enabled, or `false` otherwise. A client still receives lifecycle frames and
 audio when transcripts are off.
 
-When enabled, send at most one assistant frame per turn before `turn_done`:
+When enabled, the assistant's text arrives ahead of its audio, a sentence at a
+time, so the words are on screen as they are spoken:
 
 ```json
-{"type":"transcript","id":"m-124","role":"assistant","turn_id":"turn-42","text":"The timer is set."}
+{"type":"transcript","role":"assistant","turn_id":"turn-42","text":"Two things tomorrow. "}
 ```
 
-The text is the complete user-facing text submitted for speech, not a delta. It
-applies to ordinary replies and outbound conversation output, and may arrive
-before or after `speaking` and PCM. Clients associate it by `turn_id`, display
-it once, and continue audio playback. Silent turns need no assistant frame.
-Every `transcript` frame, user or assistant, carries an `id` that is unique in
+```json
+{"type":"transcript","id":"m-124","role":"assistant","turn_id":"turn-42","text":"The dentist at nine and lunch with Sam."}
+```
+
+Each frame is the next piece of the reply, sent before the PCM that speaks it.
+Append the pieces for a `turn_id` in the order they arrive. The piece that
+completes the reply carries `id`; the earlier ones do not. A reply of one
+sentence is a single frame with `id`. This applies to ordinary replies and
+outbound conversation output. Silent turns need no assistant frame.
+
+A user `transcript` is one frame and always carries `id`. An `id` is unique in
 the conversation; treat it as opaque.
 
 The text describes what was prepared for speech, not what the user heard. For
@@ -412,6 +419,9 @@ since then as ordinary `transcript` frames marked `replay`:
 
 Omit `after` the first time; the server then sends the most recent 20. Keep the
 last `id` shown and send it on every connect, so nothing is shown twice.
+
+A replayed assistant transcript is the whole reply in one frame. If the client
+already shows pieces for that `turn_id`, replace them with it.
 
 A `replay` transcript is only for display. It does not start a turn: do not arm
 a timer, show thinking, play audio, resend the request, or open the microphone
