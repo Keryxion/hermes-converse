@@ -69,7 +69,7 @@ Every `voice.turn` carries:
 | Attribute | Value |
 |---|---|
 | `device_name`, `session.id`, `turn_id` | Which device, connection, and turn. |
-| `claim_id` | The wake that started the exchange, if one did. A follow-up keeps it. |
+| `claim_id` | The wake that started the exchange, if one did. An exchange runs from a granted wake until the device next returns to standby, and every turn in it carries the claim. |
 | `turn.source` | How the turn started: `wake` (a granted claim), `speech` (the device was already listening: a follow-up, Talk, or a client that always listens), or `server` (no speech: a reminder or another message submitted to the conversation). |
 | `outcome` | How it ended: `ok`, `interrupted`, `timeout`, or `error`. |
 | `turn.attached` | Whether a device was attached when the reply was ready. `false` means the reply went nowhere. |

@@ -371,6 +371,11 @@ a replayed frame never starts a turn on the client.
 The agent has three tools for controlling the device it is talking through.
 They act only on the device whose conversation calls them.
 
+A tool call always happens inside a turn, and the tools act on that turn however
+it started: by speech, or by the server for a reminder, a still-ringing alarm,
+or another message submitted to the conversation. There is no case of a device
+being connected with no turn for a tool to act on.
+
 | Tool | Arguments | Effect |
 |---|---|---|
 | `speak_this` | `text` | The device says exactly `text`, and nothing else the turn produces is spoken. |
@@ -393,7 +398,10 @@ spoken as usual; reply text written after it is not.
 
 The next turn starts with reply text spoken again.
 
-`speak_this` works in any turn, including one nobody spoke to start. A turn
+In a turn nobody spoke to start, the reply would be spoken on the attached
+device without a wake word; `speak_this` replaces it in the same way, and
+`speak_this` with `""` keeps that turn silent. `standby` in such a turn leaves
+the device in standby. A turn
 that only calls `play_tone` still speaks its reply text; call `speak_this` with
 `""` as well to confirm with a tone and no words.
 
@@ -415,7 +423,7 @@ not call `standby` ends with `next_action: "listen"`.
 |---|---|
 | `ok` | Accepted. |
 | `not_a_device` | The call was made from a chat that is not a voice device. Nothing happens. |
-| `not_attached` | No device is connected. Nothing is sent or queued. |
+| `not_attached` | No device is connected to this conversation. Nothing is sent or queued. It has no other meaning. |
 
 ## Countdowns
 

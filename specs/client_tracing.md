@@ -20,7 +20,7 @@ below.
 |---|---|
 | Connection | `device_name`, `session.id`, how long connecting took, and why it ended: the close code, or that it was lost |
 | Wake claim | `device_name`, `session.id`, `claim_id`, `wake_word`, `wake.outcome` |
-| Turn | `device_name`, `session.id`, `turn_id`, and the `claim_id` of the wake that started it, if one did |
+| Turn | `device_name`, `session.id`, `turn_id`, and the `claim_id` of the wake that started the exchange, if one did. An exchange runs from a granted wake until the device next returns to standby. |
 | Playback | `turn_id`, when the first reply audio played, when the last did, and when `drained` was sent |
 
 Attributes are named after the fields in the client spec. `session.id` is the
