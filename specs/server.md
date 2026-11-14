@@ -84,8 +84,9 @@ answered:
 With `ask`, the person is asked in two ways at once, and the first answer wins:
 
 - **Spoken.** A summary is spoken on the device attached to that conversation.
-- **On screen.** `approval_request` is sent with the summary and Hermes's
-  redacted command, for a device that can show a box.
+- **On screen.** `approval_request` is sent with the summary, Hermes's redacted
+  command, and the choices Hermes allows for this request, for a device that
+  can show a box.
 
 The turn keeps waiting with `thinking` frames.
 
@@ -100,29 +101,38 @@ saying what will happen. If that call fails, use Hermes's description.
 #### The answer
 
 Whatever the person says next goes to a second separate model call, with the
-summary, which returns yes, no, or unclear.
+summary and the choices Hermes allows, which returns one of those choices or
+unclear.
 
-| What happens | Answer to Hermes | `outcome` |
+| The person's reply means | Answer to Hermes | `outcome` |
 |---|---|---|
-| The person's reply means yes | `once` | `approved` |
-| The person's reply means no | `deny` | `denied` |
-| The reply is unclear, or the call fails | None. Ask once more; a second unclear reply answers `deny`. | `denied` |
-| `approval_response` from that device for this `request_id` | Its `choice` | `approved` or `denied` |
+| Yes, with nothing more | `once` | `approved` |
+| Yes for the rest of this conversation, such as "yes, for now" | `session`, or `once` if `session` is not allowed | `approved` |
+| Yes from now on, such as "always allow that" | `always`, or `once` if `always` is not allowed | `approved` |
+| No | `deny` | `denied` |
+| Unclear, or the call fails | None. Ask once more; a second unclear reply answers `deny`. | `denied` |
+
+A plain yes is never widened: `session` and `always` need the person to say so.
+
+| Otherwise | Answer to Hermes | `outcome` |
+|---|---|---|
+| `approval_response` from that device for this `request_id`, with an allowed choice | Its `choice` | `approved` or `denied` |
 | Hermes's timeout passes | Hermes ends the request. | `expired` |
 | The turn is cancelled, or the device disconnects | `deny` | `cancelled` |
 | No device is attached when the prompt arrives | `deny` at once | none sent |
 | The prompt allows only `deny` | `deny` at once; do not ask. | none sent |
 
-Send `approval_resolved` when the request is settled. An answer is never
-`session` or `always`. A response for another request, a second response, or
-one from another device changes nothing.
+Send `approval_resolved` when the request is settled. A response for another
+request, a second response, one from another device, or one with a choice that
+was not offered changes nothing.
 
 While a request is pending, speech from the device is an answer to it, not a new
 request and not an interruption of the waiting turn. The spoken summary itself
 must not be taken as the answer. Do not speak secrets. When the action did not
 run, the agent's reply says so.
 
-Verify approval and denial by voice and by screen; an unclear reply once and
+Verify each allowed choice by voice and by screen; a plain yes answering `once`;
+a choice that was not offered; an unclear reply once and
 twice, a failed summary call, Hermes's timeout, a stale or repeated response,
 cancellation, disconnect, a deny-only prompt, and the summary's own echo. Verify
 the action runs once after approval and never otherwise, and that neither model

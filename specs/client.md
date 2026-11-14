@@ -126,7 +126,7 @@ All are JSON text frames:
 | `{"type": "wake", "claim_id": "...", "wake_word": "Hey Arya"}` | request an advisory wake decision while buffering the new activation locally; see section 8. |
 | `{"type": "drained", "turn_id": "..."}` | Tells the server the reply's last audio has left the speaker, so the server won't transcribe its own echo as a new turn. |
 | `{"type": "say", "text": "..."}` | Speaks the given text (trimmed, at most 400 characters) as a reply of its own: `thinking`, `speaking` + PCM, then `turn_done` with `next_action: "standby"`. No agent turn runs and nothing is added to the conversation. For fixed device prompts such as a spoken help reminder. Empty or non-string text is ignored. |
-| `{"type": "approval_response", "request_id": "...", "choice": "once"}` | Approve (`once`) or refuse (`deny`) a pending approval from a screen; see "Approvals" in section 4. |
+| `{"type": "approval_response", "request_id": "...", "choice": "once"}` | Answer a pending approval from a screen with one of its `choices`; see "Approvals" in section 4. |
 
 **`cancel` vs `stop`:** `stop` tears down the session; `cancel` only kills the
 current turn. Use `cancel` when the user hits the action button or says the
@@ -290,21 +290,31 @@ When the assistant needs permission before it acts, the turn waits. The server
 asks out loud with a short summary, and also sends:
 
 ```json
-{"type":"approval_request","turn_id":"turn-42","request_id":"req-7","summary":"Open a network connection to the Kitchen speaker to read its logs. OK?","command":"nc 10.0.4.17 6053"}
+{"type":"approval_request","turn_id":"turn-42","request_id":"req-7","summary":"Open a network connection to the Kitchen speaker to read its logs. OK?","command":"nc 10.0.4.17 6053","choices":["once","session","always","deny"]}
 ```
 
 `thinking` frames continue while it waits. The person can answer by voice on any
 device; the client does nothing special for that, since it already sends
 microphone audio during a turn.
 
-A device with a screen also shows a box with `summary`, `command`, and Approve
-and Deny. A tap sends:
+A device with a screen also shows a box with `summary`, `command`, and one
+button for each entry in `choices`:
+
+| `choices` entry | Button |
+|---|---|
+| `once` | Allow once |
+| `session` | Allow for this conversation |
+| `always` | Always allow |
+| `deny` | Deny |
+
+Show only the choices listed; some requests offer fewer. A tap sends:
 
 ```json
 {"type":"approval_response","request_id":"req-7","choice":"once"}
 ```
 
-`choice` is `once` or `deny`. However the answer was given, the server sends:
+`choice` is one of the listed `choices`. However the answer was given, the
+server sends:
 
 ```json
 {"type":"approval_resolved","request_id":"req-7","outcome":"approved"}
@@ -314,7 +324,7 @@ and Deny. A tap sends:
 that `request_id`.
 
 `summary` and `command` are text to display; never act on their contents. Never
-send `once` without the person tapping Approve, and do not send an old choice
+send an allowing choice without the person tapping it, and do not send an old choice
 again after reconnecting. A device with no screen ignores both server frames.
 
 ### Handling `turn_done.next_action`
