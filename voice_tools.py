@@ -26,9 +26,11 @@ SCHEMAS = {
     },
     "standby": {
         "name": "standby",
-        "description": ("Voice devices only. Call when the exchange is over, for example after "
-                        "\"thanks, that's all\". The device goes to standby once this turn's speech "
-                        "has played and waits for its wake word."),
+        "description": ("Voice devices only. Ends the exchange: after this turn's speech plays, the "
+                        "device returns to standby and waits for its wake word. Use it rarely — only "
+                        "when the user plainly signals they are done (\"that's all\", \"thanks, bye\", "
+                        "\"good night\") or no reply is genuinely expected. The default is to stay "
+                        "listening; most turns should NOT call this — roughly one in ten at most."),
         "parameters": {"type": "object", "properties": {}},
     },
 }
