@@ -282,14 +282,6 @@ The server stops these updates before terminal `interrupted`, `error`, or
 frame after local cancellation, so check its turn ID before refreshing timers.
 Continue handling `speaking`, PCM, `interrupted`, `error`, and `turn_done` normally.
 
-### Approval requests
-
-When the assistant needs permission before it acts, it asks out loud and waits.
-The person answers yes or no, with no wake word. The client does nothing
-special: the question is ordinary reply audio, `thinking` frames continue while
-the turn waits, and the client keeps sending microphone audio as it does during
-any turn. There are no approval frames.
-
 ### Handling `turn_done.next_action`
 
 Every `turn_done` includes an explicit client action:
