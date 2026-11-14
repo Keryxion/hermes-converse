@@ -44,3 +44,9 @@ def test_recent_limits():
     rows = [row(i, "user", f"m{i}") for i in range(1, 201)]
     assert len(replay_frames(rows, None)) == 20
     assert len(replay_frames(rows, "1")) == 100
+
+
+def test_an_interrupted_turns_notice_is_not_replayed():
+    rows = [row(1, "user", "Put that on the PR."),
+            row(2, "assistant", "Operation interrupted: waiting for model response (10.6s elapsed).")]
+    assert [(f["message_id"], f["role"]) for f in replay_frames(rows, None)] == [("1", "user")]
