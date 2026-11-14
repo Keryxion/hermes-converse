@@ -316,29 +316,44 @@ earlier turn has not settled.
 At startup a socket waits up to 30 s for the platform to connect. When the
 platform is not hosted, the connection is refused with `conversation_unavailable`.
 
-## History
+## Catching up
 
-Answer a client `history` frame from Hermes's own messages for the device's
-conversation. Keep no second copy.
+Give every `transcript` frame an `id`: Hermes's message id for that user or
+assistant message, as an opaque string.
 
-- `id` is Hermes's message id, as an opaque string.
-- Send user and assistant messages only: no tool calls, tool results, reasoning,
-  or system text.
+When a client connects with `transcripts: true`, replay what it missed from
+Hermes's own messages for the device's conversation, right after `ready` and
+before any live frame. Keep no second copy.
+
+- Replay user and assistant messages only, as `transcript` frames with
+  `replay: true`: no tool calls, tool results, reasoning, or system text.
 - An assistant message's `text` is what was submitted for speech in that turn,
-  the same text a live `transcript` frame carries. For a turn that used
+  the same text its live `transcript` frame carried. For a turn that used
   `speak_this`, that is the text given to the tool, not the reply text. A turn
-  that said nothing has no assistant message.
-- With `after`, send every such message after it. Without, send the most recent
-  20. When `after` is not a message of the current conversation, send the most
-  recent 20 with `replace: true`.
+  that said nothing is not replayed.
+- With `after`, replay every such message after it, up to the most recent 100.
+  Without `after`, or when `after` is not a message of the current
+  conversation, replay the most recent 20.
 - Include messages that compaction has folded away when Hermes still has them.
-- `turn_id` names the turn running in the conversation, or is `null`.
 
-Verify: a reply that finished while the device was away is returned and was not
-spoken; asking twice with the same `after` returns the same messages; asking
-with the newest id returns none; a cancelled turn shows a user message with no
-reply; a reconnect during a turn receives the rest of it live; a new
-conversation returns `replace: true`.
+### Nobody attached
+
+A turn can run with no device attached, because a turn outlives a dropped
+connection and other producers start turns too. Its output goes nowhere, and
+that is expected:
+
+- Do not synthesize speech for it. The reply is in the conversation's history
+  and is replayed as a transcript when a client catches up.
+- `speak_this`, `play_tone`, `standby`, and `countdown` return `not_attached`,
+  so the agent can tell nobody is there and tell another room or chat instead.
+- Nothing is queued to be spoken later.
+
+Verify: a reply that finished while the device was away is replayed as a
+transcript and never spoken; no speech is synthesized for it; connecting twice
+with the same `after` replays the same frames; connecting with the newest id
+replays none; a cancelled turn replays a user transcript with no reply; a
+reconnect during a turn receives the replay and then the rest of the turn live;
+a replayed frame never starts a turn on the client.
 
 ## Voice tools
 
