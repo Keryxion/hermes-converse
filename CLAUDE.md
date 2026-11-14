@@ -28,7 +28,6 @@
 - `device_name` labels the physical device, such as `Den Echo` or `Kitchen`.
 - The conversation title is `<assistant_name>: <device_name>`.
 - Use Hermes's existing conversations, titles, history, and compaction settings.
-- Do not add a conversation override, switch/reset protocol, or inactivity reset.
 - Use the existing API key. Do not introduce attachment tokens or device credentials.
 - Names identify the device in this contract. Do not promise identity/history
   preservation through renames or invent a rename mechanism.
