@@ -600,10 +600,11 @@ When the alarm has ended, send `drained` with the `countdown_id` as its
 
 ### Talking during an alarm
 
-The assistant can speak while an alarm rings. When a reply arrives, or the wake
-word is heard, pause the tone for the exchange and resume it afterwards unless
-the alarm has ended. A reply or a wake word does not end the alarm and does not
-restart `ring_seconds`. "Hey Arya, snooze five minutes" and "Hey Arya, stop" are
+The assistant can speak while an alarm rings. When a reply plays, or the wake
+word is heard, duck the tone: keep it playing, quiet enough that speech is
+clearly heard over it, and bring it back to full volume when the exchange is
+over. A reply or a wake word does not end the alarm and does not restart
+`ring_seconds`. "Hey Arya, snooze five minutes" and "Hey Arya, stop" are
 ordinary requests; the server answers them with a new `countdown` or a
 `countdown_cancel`.
 
