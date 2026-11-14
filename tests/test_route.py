@@ -238,6 +238,23 @@ async def test_settings_drive_the_model_and_the_prompt(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_command_frame_runs_the_command_and_new_closes_the_socket(monkeypatch):
+    fake = FakeHermes(API_KEY)
+    async with Harness(fake, {}) as client:
+        ws = await client.ws_connect("/v1/audio/converse", protocols=(VOICE_PROTOCOL, _key_protocol()))
+        await ws.send_str(_start_msg())
+        assert (await ws.receive_json())["type"] == "ready"
+        await ws.send_json({"type": "command", "text": "nope"})
+        assert await ws.receive_json() == {"type": "command", "text": "nope", "error": "bad_command"}
+        await ws.send_json({"type": "command", "text": "/new"})
+        frame = await ws.receive_json()
+        assert frame["type"] == "command" and frame["text"] == "/new" and "reply" in frame
+        await ws.receive()
+        assert ws.close_code == 4410
+    assert [turn["text"] for turn in fake.turns] == ["/new"]  # the fake gateway has no /new of its own
+
+
+@pytest.mark.asyncio
 async def test_start_name_overrides_the_configured_name(monkeypatch):
     fake = FakeHermes(API_KEY)
     _patch_speech(monkeypatch, _FakeStreamer([b"\x01"]), transcript="hi")

@@ -349,13 +349,17 @@ class ConverseRoute:
             ready.pop('conversation_id')
             ready.update(recipient_id=device.recipient_id, assistant_name=device.assistant_name,
                          device_name=device.device_name)
+        history = getattr(client, "history", None)
+        rows = None
+        if transcripts and history is not None:
+            rows = await asyncio.to_thread(history.rows)
+            if isinstance(after, str):
+                ready["after_found"] = after.isdigit() and int(after) in {row["id"] for row in rows or []}
         ready["server_send_unix_ms"] = int(time.time() * 1000)
         await ws.send_json(ready)
         # Catch the client up before anything live, then hand it any turn still running.
         relay, adopted = Relay(ws), None
-        history = getattr(client, "history", None)
-        if transcripts and history is not None:
-            rows = await asyncio.to_thread(history.rows)
+        if rows is not None:
             for replay in replay_frames(rows or [], after if isinstance(after, str) else None):
                 await ws.send_json(replay)
         adopted = self.hub.detached.pop(attachment.conversation_id, None)
@@ -664,6 +668,10 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                 reply["reply"] = result
         if not ws.closed:
             await ws.send_json(reply)
+            if "reply" in reply and text[1:].split(None, 1)[0].lower() in ("new", "reset"):
+                # The client reconnects and finds the fresh conversation with a normal start.
+                _mark_closed(ws, "server", 4410)
+                await ws.close(code=4410, message=b"conversation_changed")
 
     async def _run_turn(transcript: str, on_delta, *, interrupted: bool) -> tuple[str, Optional[str]]:
         model, provider = selected_model  # Snapshot once; do not alter a turn already in flight.
