@@ -11,6 +11,7 @@ in [animations.md](animations.md).
 | Listening ended | Listening ends in silence with no request (a `quiet` frame), and the device returns to standby | Falling pair: 784 Hz then 523 Hz, 70 ms each |
 | Confirm | A `tone` frame naming `confirm`: the assistant did what was asked and has nothing to say | One note: 1047 Hz, 70 ms |
 | Error | A `tone` frame naming `error`: the assistant could not do it | Two low notes: 262 Hz, 70 ms each, 70 ms apart |
+| Approval | A `tone` frame naming `approval`: the assistant needs permission and is about to ask | Three rising notes: 523 Hz, 659 Hz, 784 Hz, 70 ms each |
 
 ## Rules
 
@@ -24,8 +25,8 @@ in [animations.md](animations.md).
 - A thinking tone still sounding when the reply starts, or on interruption,
   cancellation, or error, is cut off. It never overlaps the reply: `thinking`
   frames that arrive while the reply is playing make no sound.
-- While muted, the listening and listening-ended tones do not play. Confirm and
-  error still play.
+- While muted, the listening and listening-ended tones do not play. Confirm,
+  error, and approval still play.
 - A tone never delays audio processing, triggers a wake, or causes an
   interruption. If a tone cannot play, the device carries on silently.
 
