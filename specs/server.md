@@ -1,6 +1,7 @@
 # Server spec
 
 Server responsibilities behind the [client contract](client.md).
+What the server records is defined in [server tracing](server_tracing.md).
 
 ## Voice lifecycle
 

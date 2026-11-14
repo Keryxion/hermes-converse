@@ -22,6 +22,7 @@ Sections 9–10 define conversation output and countdowns. Section 11 defines
 changing the chat model.
 
 Server lifecycle and integration details are in [the server spec](server.md).
+What a client records for tracing is in [client tracing](client_tracing.md).
 
 ## 1. Connect and authenticate
 
