@@ -21,6 +21,7 @@ from collections import deque
 from functools import wraps
 import contextlib
 import logging
+import math
 import queue
 import threading
 import time
@@ -31,28 +32,37 @@ from typing import Any, Awaitable, Callable, Iterator, Optional
 
 from . import speech, vad
 from .speech_detector import DEFAULT_VAD_MODEL, SpeechDetector
-from .phrases import is_end_phrase, is_stop_phrase, strip_end_phrase
+from .phrases import is_end_phrase, strip_end_phrase
 from .settings import (
-    DEFAULT_END_PHRASES, DEFAULT_MAX_TTS_CHARS, DEFAULT_NAME, DEFAULT_STOP_PHRASES,
-    DEFAULT_TAIL_FALLBACK, DEFAULT_TURN_TIMEOUT)
+    DEFAULT_CAPTURE_NO_DATA_SECONDS, DEFAULT_END_PHRASES, DEFAULT_ENDPOINT_MAX_SILENCE_MS,
+    DEFAULT_ENDPOINT_SILENCE_MS, DEFAULT_MAX_TTS_CHARS, DEFAULT_NAME, DEFAULT_TAIL_FALLBACK,
+    DEFAULT_TURN_TIMEOUT)
 from .synth import split_text_for_tts_stream
 from .tracing import PhaseRecorder, emit_turn_trace, start_turn
 
 logger = logging.getLogger(__name__)
 
-# Smart Turn: on reaching the fixed silence window we ask the model whether the utterance *sounds*
-# finished; a "hold" keeps listening for another window. Cap consecutive holds so a user who
-# genuinely stopped mid-phrase is committed after ~3 windows, not at the utterance cap.
-MAX_ENDPOINT_HOLDS = 3
+# After a granted wake the user often pauses to check the device is listening. Until this much speech
+# follows onset, a pause ends that capture only at the max-silence allowance, so "Hey Arya ... set a
+# timer" stays one request. A continuous "Hey Arya, set a timer" passes it before its final pause.
+WAKE_SPEECH_MS = 1000
+# Received-audio gap that marks the client stopping and resuming its stream. Live clients send
+# frames every few tens of milliseconds; a longer network stall only delays the next quiet tick.
+STREAM_RESUME_GAP_SECONDS = 1.0
+# Reply audio is sent at most this far ahead of the client's playback position, so control frames
+# (`interrupted`, `turn_done`, pongs) never queue behind a long backlog on the shared socket.
+MAX_AUDIO_LEAD_SECONDS = 1.5
+# Pacing waits in short steps so an interruption stops sending promptly.
+AUDIO_PACE_STEP_SECONDS = 0.05
 # Reply speech: poll for deltas every 0.5 s; after 4 empty polls (~2 s) speak the buffered tail.
 IDLE_POLL_SECONDS = 0.5
 IDLE_POLLS_TO_FLUSH = 4
 # Keep clients with shorter inactivity deadlines alive during agent/TTS waits.
-WORKING_FRAME_INTERVAL = 15.0
+THINKING_FRAME_INTERVAL = 5.0
 SMART_TURN_DEFAULT_THRESHOLD = 0.5
 # Bound on the per-connection conversation history kept in memory (~20 user+assistant turns): a
-# simple tail-cap so a long-lived socket can't grow it without limit. The Runs API owns the real
-# transcript (the socket's session_id continues it); this copy backs the sign-off / next_action
+# simple tail-cap so a long-lived socket can't grow it without limit. The gateway session owns the real
+# transcript; this copy backs the sign-off / next_action
 # decisions and the latency log.
 HISTORY_MAX_MESSAGES = 40
 QUIET_INTERVAL_MAX = 3600.0
@@ -82,24 +92,42 @@ class NetworkMicStream:
         self._feed_lock = threading.Lock()
         self._epoch = 0
         self._read_epoch = 0
+        self._last_feed = time.monotonic()
+        self.no_data_return = False
+        # A feed after this long without audio means the client stopped and resumed sending (for
+        # example, stopped listening and started again); ``resumed`` flags it for the reader.
+        self.resume_gap_seconds = STREAM_RESUME_GAP_SECONDS
+        self.resumed = False
+        self._pending_resume = False
+        # Set when the reader reaches a client ``commit`` marker, which is queued in order with the
+        # audio so a commit never overtakes the speech sent before it.
+        self.committed = False
 
-    def feed(self, pcm_bytes: bytes) -> None:
+    def feed(self, pcm_bytes: bytes, *, commit: bool = False) -> None:
         if not pcm_bytes:
             return
         with self._feed_lock:
+            now = time.monotonic()
+            # Held until a chunk is queued: a lone odd byte only fills the carry.
+            self._pending_resume = self._pending_resume or now - self._last_feed >= self.resume_gap_seconds
+            self._last_feed = now
             buf = self._byte_carry + pcm_bytes
             if len(buf) % 2:
                 buf, self._byte_carry = buf[:-1], buf[-1:]
             else:
                 self._byte_carry = b""
             if buf:
-                self._chunks.put((self._epoch, self._np.frombuffer(buf, dtype=self._np.int16).copy()))
+                self._chunks.put((self._epoch, self._np.frombuffer(buf, dtype=self._np.int16).copy(),
+                                  self._pending_resume, commit))
+                self._pending_resume = False
 
     def discard(self) -> None:
         """Fence already received audio so control-phase samples cannot be replayed as input."""
         with self._feed_lock:
             self._epoch += 1
             self._byte_carry = b""
+            self._pending_resume = False
+            self.committed = False
             while True:
                 try:
                     self._chunks.get_nowait()
@@ -111,11 +139,18 @@ class NetworkMicStream:
         self._stop.set()
         self._chunks.put(None)
 
-    def read(self, block: int) -> tuple[Any, bool]:
+    def read(self, block: int, *, no_data_seconds: Optional[float] = None) -> tuple[Any, bool]:
         """Exactly *block* int16 samples as ``(np.ndarray, overflow=False)``. Blocks until enough
         samples arrive or the stop event is set; on stop, returns what is buffered zero-padded so
-        the endpointer drains and exits cleanly instead of raising."""
+        the endpointer drains and exits cleanly instead of raising.
+
+        A positive ``no_data_seconds`` bounds capture waits since the last feed. On timeout,
+        return the partial block padded with zeros and set ``no_data_return``; the caller must
+        drop its capture instead of treating the padding as received silence. Idle reads omit it.
+        """
         np = self._np
+        self.no_data_return = False
+        timeout = no_data_seconds if no_data_seconds is not None and no_data_seconds > 0 else None
         if self._read_epoch != self._epoch:
             self._carry = np.zeros(0, dtype=np.int16)
             self._read_epoch = self._epoch
@@ -128,20 +163,46 @@ class NetworkMicStream:
                 out = np.concatenate([self._carry, pad])
                 self._carry = np.zeros(0, dtype=np.int16)
                 return out, False
+            wait = self._poll_seconds
+            if timeout is not None:
+                wait = min(wait, max(0.0, self._last_feed + timeout - time.monotonic()))
             try:
-                chunk = self._chunks.get(timeout=self._poll_seconds)
+                chunk = self._chunks.get(timeout=wait)
             except queue.Empty:
+                # Serialize with feed so a simultaneous arrival cannot be discarded as stale.
+                with self._feed_lock:
+                    if (timeout is not None and not self._stop.is_set() and self._chunks.empty()
+                            and time.monotonic() - self._last_feed >= timeout):
+                        self.no_data_return = True
+                        self._byte_carry = b""  # an abandoned half-sample cannot prefix the next stream
+                        break
                 continue
             if chunk is None:  # close() sentinel
                 continue
-            epoch, chunk = chunk
+            epoch, chunk, resumed, commit = chunk
             if self._read_epoch != self._epoch:
                 self._carry = np.zeros(0, dtype=np.int16)
                 self._read_epoch = self._epoch
             if epoch == self._epoch:
                 self._carry = np.concatenate([self._carry, chunk])
+                self.resumed = self.resumed or resumed
+                self.committed = self.committed or commit
         out, self._carry = self._carry[:block], self._carry[block:]
+        if self.no_data_return:
+            out = np.pad(out, (0, block - len(out)))
         return out, False
+
+    def ready_blocks(self, block: int) -> list[Any]:
+        """Whole *block*-sample blocks already received, without waiting for more audio."""
+        if self._read_epoch != self._epoch:
+            self._carry = self._np.zeros(0, dtype=self._np.int16)
+            self._read_epoch = self._epoch
+        self._drain_pending()
+        blocks = []
+        while len(self._carry) >= block:
+            out, self._carry = self._carry[:block], self._carry[block:]
+            blocks.append(out)
+        return blocks
 
     def _drain_pending(self) -> None:
         while True:
@@ -150,9 +211,11 @@ class NetworkMicStream:
             except queue.Empty:
                 return
             if chunk is not None:
-                epoch, chunk = chunk
+                epoch, chunk, resumed, commit = chunk
                 if epoch == self._epoch:
                     self._carry = self._np.concatenate([self._carry, chunk])
+                    self.resumed = self.resumed or resumed
+                    self.committed = self.committed or commit
 
 
 class InputReady:
@@ -170,7 +233,8 @@ class ConversationOutput:
 
 class QuietTick:
     """Session-mode marker: the RECEIVED audio stream has been silent for another
-    ``quiet_interval``; ``quiet_seconds`` is the cumulative received-silence since the last speech."""
+    ``quiet_interval``; ``quiet_seconds`` is the received silence in the current listening phase:
+    since the last speech, turn change, or resumed client stream."""
 
     __slots__ = ("quiet_seconds",)
 
@@ -235,7 +299,10 @@ class ConverseSession:
         self, np: Any, *, input_rate: int = DEFAULT_INPUT_RATE, quiet_interval: float = 0.0,
         transcribe: Optional[Callable[[str], str]] = None, barge_multiplier: Optional[float] = None,
         endpoint_model: bool = False, endpoint_threshold: float = SMART_TURN_DEFAULT_THRESHOLD,
+        endpoint_silence_ms: int = DEFAULT_ENDPOINT_SILENCE_MS,
+        endpoint_max_silence_ms: int = DEFAULT_ENDPOINT_MAX_SILENCE_MS,
         vad_model: str = DEFAULT_VAD_MODEL,
+        capture_no_data_seconds: float = DEFAULT_CAPTURE_NO_DATA_SECONDS,
     ) -> None:
         self._np = np
         self._state_lock = threading.RLock()
@@ -243,6 +310,7 @@ class ConverseSession:
         self._transcribe = transcribe or _default_transcribe
         # Whisper resamples internally, so STT works at any capture rate; 30 ms blocks at that rate.
         self._input_rate = int(input_rate)
+        self._capture_no_data_seconds = capture_no_data_seconds if capture_no_data_seconds > 0 else None
         # Session mode: quiet is measured in RECEIVED-audio silence, NOT wall clock. When no audio
         # arrives the worker parks in stream.read() and this clock does not advance, so a client
         # holding the socket open (streaming only after a wake word) never accrues phantom quiet.
@@ -276,6 +344,8 @@ class ConverseSession:
         # (and queuing a CancelTurn marker) applies to the capture happening right now.
         self._capturing = False
         self._continuation_capture = False
+        # A granted wake: the next capture tolerates a pause between the wake word and the request.
+        self._wake_pending = False
         self._queued_utterance: Optional[Utterance] = None
         self._active_utterance: Optional[Utterance] = None
         self.stream = NetworkMicStream(np, stop=self._stop)
@@ -285,7 +355,9 @@ class ConverseSession:
         self._block = int(self._input_rate * vad.BLOCK_MS / 1000)
         self._detector = SpeechDetector(np, model=vad_model, input_rate=self._input_rate, mult=barge_multiplier)
         self._pre_roll: deque = deque(maxlen=max(1, vad.PRE_ROLL_MS // vad.BLOCK_MS))
-        self._endpoint_blocks = max(1, vad.ENDPOINT_SILENCE_MS // vad.BLOCK_MS)
+        self._endpoint_blocks = max(1, math.ceil(endpoint_silence_ms / vad.BLOCK_MS))
+        self._max_silence_blocks = max(self._endpoint_blocks, math.ceil(endpoint_max_silence_ms / vad.BLOCK_MS))
+        self._wake_speech_blocks = math.ceil(WAKE_SPEECH_MS / vad.BLOCK_MS)
         self._max_blocks = max(1, vad.MAX_UTTERANCE_MS // vad.BLOCK_MS)
         self._endpoint_threshold = float(endpoint_threshold)
         self._turn_detector: Any = None
@@ -339,11 +411,15 @@ class ConverseSession:
         return self._stop.is_set()
 
     def commit(self) -> None:
-        """Force the current utterance to endpoint now (client sent ``commit``): feed enough zero
-        blocks to satisfy the endpoint-silence window so capture returns promptly."""
-        silence = self._np.zeros(self._block, dtype=self._np.int16).tobytes()
-        for _ in range(self._endpoint_blocks + 1):
-            self.stream.feed(silence)
+        """End the current capture now (client sent ``commit``), bypassing Smart Turn and the wake
+        pause. The marker is one silent block queued after the audio already received, so it also
+        wakes a capture that is waiting for audio."""
+        self.stream.feed(self._np.zeros(self._block, dtype=self._np.int16).tobytes(), commit=True)
+
+    @_session_state
+    def note_wake(self) -> None:
+        """A wake was granted: the next capture waits through a pause after the wake word."""
+        self._wake_pending = True
 
     # ── worker loop ──
     def start(self) -> None:
@@ -363,6 +439,11 @@ class ConverseSession:
                 with self._state_lock:
                     if self.stream._read_epoch != self.stream._epoch:
                         continue  # samples received before the last drain/reset
+                    if self.stream.resumed:
+                        # A new listening phase: silence before the client stopped sending is not
+                        # part of this phase's quiet_interval.
+                        self.stream.resumed = False
+                        self._reset_quiet()
                     busy = self._turn_active.is_set() or self._pending_turn.is_set() or self._tail_active
                     playing = self.playing() or self._tail_active
                     phase = self._detector.feed(data, playing, interrupting=busy)
@@ -376,6 +457,7 @@ class ConverseSession:
                     # Onset filtering rejects echo/noise; accepted speech always owns a capture.
                     self._pre_roll.append(data.copy())
                     if phase is None:
+                        self.stream.committed = False  # a commit with no utterance to end
                         self._account_received_silence()
                         continue
                     self._reset_quiet()
@@ -385,6 +467,7 @@ class ConverseSession:
                         except Exception:
                             logger.debug("converse on_trip callback failed", exc_info=True)
                     self._continuation_capture = busy
+                    wake, self._wake_pending = self._wake_pending, False
                     for utterance in (self._queued_utterance, self._active_utterance):
                         if utterance is not None:
                             utterance.superseded = True
@@ -402,7 +485,7 @@ class ConverseSession:
                     recorder = PhaseRecorder(input_rate=self._input_rate, session_mode=self._quiet_interval > 0,
                                              **{"session.id": self.session_id, "input.continuation": busy})
                 try:
-                    transcript, _volume = self._capture_and_transcribe(recorder)
+                    transcript, _volume = self._capture_and_transcribe(recorder, wake=wake)
                 except BaseException:
                     with self._state_lock:
                         self._capturing = self._continuation_capture = False
@@ -592,25 +675,20 @@ class ConverseSession:
         if self._interrupt_callback is not None:
             self._interrupt_callback()
 
-    def _capture_and_transcribe(self, recorder: Optional[PhaseRecorder] = None) -> tuple[str, float]:
+    def _capture_and_transcribe(self, recorder: Optional[PhaseRecorder] = None, *,
+                                wake: bool = False) -> tuple[str, float]:
         """Endpoint the utterance from the pre-roll and return ``(transcript, volume)`` — ``volume``
-        is the captured audio's RMS loudness (:func:`vad.utterance_volume`). Wake
-        selection uses only client-reported signals and never gates this capture."""
-        np = self._np
+        is the captured audio's RMS loudness (:func:`vad.utterance_volume`). *wake* marks the first
+        capture after a granted wake. Wake selection never gates this capture."""
         generation = self._generation
         recorder = recorder or PhaseRecorder()
         with recorder.phase("voice.capture", **{
-                "endpoint.silence_ms": self._endpoint_blocks * self._block * 1000 / self._input_rate,
+                "endpoint.mode": "smart_turn" if self._turn_detector is not None else "fixed",
+                "endpoint.silence_ms": self._blocks_ms(self._endpoint_blocks),
+                "endpoint.max_silence_ms": self._blocks_ms(self._max_silence_blocks),
+                "endpoint.wake": wake,
         }) as cap:
-            if self._turn_detector is not None:
-                cap.set(**{"endpoint.mode": "smart_turn"})
-                wav_path, volume = self._capture_adaptive(phase=cap)
-            else:
-                cap.set(**{"endpoint.mode": "fixed"})
-                wav_path, volume = vad.capture_until_quiet(
-                    self.stream, np, self._block, self._pre_roll,
-                    endpoint_blocks=self._endpoint_blocks, max_blocks=self._max_blocks,
-                    sample_rate=self._input_rate, is_quiet=self._detector.is_quiet)
+            wav_path, volume = self._capture(wake=wake, phase=cap)
             cap.set(**{"vad.model": self._detector.name})
             # Audio duration differs from elapsed capture time when activation audio is buffered.
             # Read only the WAV header; no audio or transcript is exported.
@@ -618,7 +696,7 @@ class ConverseSession:
                 with wave.open(wav_path, "rb") as wav:
                     cap.set(**{"input.audio_ms": wav.getnframes() * 1000 / wav.getframerate()})
         self._pre_roll.clear()  # capture drained the pre-roll into the WAV
-        if self._capture_abandoned(generation):
+        if self.stream.no_data_return or self._capture_abandoned(generation):
             vad.unlink_quietly(wav_path)
             return "", volume
         with recorder.phase("voice.stt") as stt:
@@ -632,51 +710,92 @@ class ConverseSession:
             stt.set(**{"stt.transcript_chars": len(transcript), "stt.success": bool(transcript)})
         return transcript, volume
 
-    def _capture_adaptive(self, *, phase: Any = None) -> tuple[str, float]:
-        """Semantic endpoint: mirror the fixed-silence capture, but on reaching a candidate pause ask
-        Smart Turn whether the utterance *sounds* finished; hold (keep listening) when it doesn't,
-        bounded by ``MAX_ENDPOINT_HOLDS`` and the utterance cap. Returns ``(wav_path, volume)``."""
+    def _blocks_ms(self, blocks: int) -> float:
+        return blocks * self._block * 1000 / self._input_rate
+
+    def _capture(self, *, wake: bool = False, phase: Any = None) -> tuple[str, float]:
+        """Read from the pre-roll until the utterance ends; returns ``(wav_path, volume)``.
+
+        A pause of ``endpoint_silence_ms`` is a candidate endpoint. Without Smart Turn it ends the
+        capture. With Smart Turn, a complete-sounding turn ends it; an incomplete one keeps listening
+        and is checked again after each further window. ``endpoint_max_silence_ms`` of continuous
+        silence ends it regardless. After a wake, a pause before ``WAKE_SPEECH_MS`` of speech waits
+        for that maximum, so the user may pause after the wake word. Client ``commit`` ends it at once.
+        """
         np = self._np
         frames = list(self._pre_roll)
-        quiet = 0
-        holds = 0
-        for _ in range(self._max_blocks):
-            data, _ = self.stream.read(self._block)
-            if self._stop.is_set():
-                break
+        pre_roll = len(frames)
+        quiet = speech_blocks = longest_pause = 0
+        next_check = self._endpoint_blocks
+        reason = "max_utterance"
+
+        def take(data: Any) -> None:
+            nonlocal quiet, speech_blocks, longest_pause, next_check
             frames.append(data.copy())
             if self._detector.is_quiet(data):
                 quiet += 1
             else:
-                quiet = 0
-                holds = 0  # the user resumed talking — restore the full patience budget
-            if quiet < self._endpoint_blocks:
+                longest_pause = max(longest_pause, quiet)  # a pause the user spoke through
+                quiet, next_check = 0, self._endpoint_blocks
+                speech_blocks += 1
+
+        while len(frames) - pre_roll < self._max_blocks:
+            if self.stream.committed:
+                # Reached the commit marker (maybe while draining audio after Smart Turn): keep what
+                # has arrived and end without waiting for more audio or asking Smart Turn.
+                frames.extend(self.stream.ready_blocks(self._block))
+                reason = "client_commit"
+                break
+            data, _ = self.stream.read(self._block, no_data_seconds=self._capture_no_data_seconds)
+            if self.stream.no_data_return or self._stop.is_set():
+                reason = "no_data" if self.stream.no_data_return else "stopped"
+                break
+            if self.stream.committed:
+                frames.append(data.copy())
                 continue
+            take(data)
+            if quiet >= self._max_silence_blocks:
+                reason = "max_silence"
+                break
+            if quiet < next_check or (wake and speech_blocks < self._wake_speech_blocks):
+                continue
+            next_check += self._endpoint_blocks
+            if self._turn_detector is None:
+                reason = "silence"
+                break
             try:
                 prob = self._turn_detector.turn_complete_probability(self._frames_to_f32_16k(frames))
             except Exception:
                 logger.debug("smart-turn inference failed; committing on silence", exc_info=True)
-                if phase is not None:
-                    phase.event("endpoint.decision", **{"endpoint.decision": "commit",
-                                "endpoint.reason": "inference_error"})
+                reason = "inference_error"
                 break
-            decision = "commit" if prob >= self._endpoint_threshold or holds + 1 >= MAX_ENDPOINT_HOLDS else "hold"
+            complete = prob >= self._endpoint_threshold
+            pause_ms = self._blocks_ms(quiet)
+            if complete:
+                # Speech that arrived while the model ran belongs to this turn: keep listening.
+                spoken = speech_blocks
+                for data in self.stream.ready_blocks(self._block):
+                    take(data)
+                complete = speech_blocks == spoken
             if phase is not None:
-                phase.event("endpoint.decision", **{"endpoint.probability": prob,
-                            "endpoint.threshold": self._endpoint_threshold, "endpoint.decision": decision,
-                            "endpoint.holds": holds,
-                            "endpoint.reason": "threshold" if prob >= self._endpoint_threshold else "hold_budget"
-                            if decision == "commit" else "incomplete"})
-            if prob >= self._endpoint_threshold:
-                vad.vad_log(f"smart-turn: p={prob:.3f} >= {self._endpoint_threshold:.2f} -> commit")
+                phase.event("endpoint.decision", **{
+                    "endpoint.probability": prob, "endpoint.threshold": self._endpoint_threshold,
+                    "endpoint.decision": "commit" if complete else "hold", "endpoint.pause_ms": pause_ms,
+                    "endpoint.reason": "threshold" if complete else "resumed" if prob >= self._endpoint_threshold
+                    else "incomplete"})
+            vad.vad_log(f"smart-turn: p={prob:.3f} after {pause_ms:.0f} ms -> "
+                        f"{'commit' if complete else 'hold'}")
+            if complete:
+                reason = "threshold"
                 break
-            holds += 1
-            if holds >= MAX_ENDPOINT_HOLDS:
-                vad.vad_log(f"smart-turn: p={prob:.3f} held {holds}x -> commit (budget spent)")
-                break
-            vad.vad_log(f"smart-turn: p={prob:.3f} < {self._endpoint_threshold:.2f} -> hold "
-                        f"(keep listening, {holds}/{MAX_ENDPOINT_HOLDS})")
-            quiet = 0  # keep the mic open for another window
+        self.stream.committed = False  # a commit ends only the capture it arrived in
+        if phase is not None:
+            phase.set(**{"endpoint.reason": reason, "endpoint.pause_ms": self._blocks_ms(quiet),
+                         "endpoint.longest_pause_ms": self._blocks_ms(longest_pause)})
+        logger.info("converse endpoint: session=%s mode=%s wake=%s reason=%s pause_ms=%.0f longest_pause_ms=%.0f "
+                    "speech_ms=%.0f", self.session_id, "smart_turn" if self._turn_detector is not None else "fixed",
+                    wake, reason, self._blocks_ms(quiet), self._blocks_ms(longest_pause),
+                    self._blocks_ms(speech_blocks))
         audio = np.concatenate(frames, axis=0)
         return vad.write_wav(np, audio, sample_rate=self._input_rate), vad.utterance_volume(np, audio)
 
@@ -729,7 +848,7 @@ def parse_start_config(frame: dict[str, Any], *, default_name: str = DEFAULT_NAM
     return input_rate, output_rate, quiet_interval, name, (str(profile).strip() if profile else None)
 
 
-# Voice replies are spoken aloud — keep them short and speakable. Sent as the run's ``instructions``
+# Voice replies are spoken aloud — keep them short and speakable. Sent as the turn's channel prompt
 # (the ephemeral system prompt) so spoken replies don't balloon to full chat length.
 VOICE_PROMPT = (
     "You are in a live, low-latency voice conversation and your reply is spoken aloud. Speed "
@@ -815,8 +934,11 @@ class _Driver:
     turn_timeout: float
     tail_fallback: float
     max_tts_chars: int
-    stop_phrases: tuple[str, ...]
     end_phrases: tuple[str, ...]
+    transcripts: bool
+    tool_calls: Optional[Callable[[], int]]
+    reasoning_tokens: Optional[Callable[[], Optional[int]]]
+    last_progress: Optional[Callable[[], float]]
 
 
 class _Turn:
@@ -831,15 +953,18 @@ class _Turn:
         self.pcm_q: asyncio.Queue[Optional[bytes]] = asyncio.Queue()  # PCM out; None = done
         self.tts_stop = threading.Event()
         self.reply_parts: list[str] = []
+        self.spoken_parts: list[str] = []
         self.result: dict[str, str] = {}
         self.ns: dict[str, int] = {"turn_start": time.time_ns()}
         self.output: Optional[ConversationOutput] = None
         self.pcm_chunks = 0
         self.timed_out = False
+        self.progress_at = 0.0  # monotonic time of the last reply text
 
     def on_delta(self, delta: str) -> None:
         # Called from run_turn's execution context (loop coroutine or a worker thread); thread-safe.
         if delta:
+            self.progress_at = time.monotonic()
             self.ns.setdefault("first_delta", time.time_ns())
             self.reply_parts.append(delta)
             self.text_q.put(delta)
@@ -864,8 +989,11 @@ async def drive_converse_turns(
     turn_timeout: float = DEFAULT_TURN_TIMEOUT,
     tail_fallback: float = DEFAULT_TAIL_FALLBACK,
     max_tts_chars: int = DEFAULT_MAX_TTS_CHARS,
-    stop_phrases: tuple[str, ...] = DEFAULT_STOP_PHRASES,
     end_phrases: tuple[str, ...] = DEFAULT_END_PHRASES,
+    transcripts: bool = False,
+    tool_calls: Optional[Callable[[], int]] = None,
+    reasoning_tokens: Optional[Callable[[], Optional[int]]] = None,
+    last_progress: Optional[Callable[[], float]] = None,
 ) -> None:
     """Run the per-transcript incremental-TTS turn loop.
 
@@ -876,6 +1004,10 @@ async def drive_converse_turns(
     ``transcript`` → ``thinking`` → (``speaking`` + PCM frames) → optional ``interrupted``/``error``
     → ``turn_done``.
 
+    ``thinking`` repeats every five seconds with the observed tool-start count and reported
+    reasoning tokens until terminal frames. ``tool_calls`` and ``reasoning_tokens`` read
+    the current run; prepared replies report zero tool calls and ``None`` reasoning tokens.
+
     BARGE-IN: a VAD trip while playing stops TTS playback (``session`` sets ``tts_stop``), we emit
     ``interrupted``, and — when the host provides ``interrupt_turn`` — the in-flight agent turn is
     cancelled so it stops generating / firing tools.
@@ -885,7 +1017,8 @@ async def drive_converse_turns(
                 send_bytes=send_bytes, run_turn=run_turn, history=history,
                 quiet_interval=quiet_interval, interrupt_turn=interrupt_turn,
                 turn_timeout=turn_timeout, tail_fallback=tail_fallback, max_tts_chars=max_tts_chars,
-                stop_phrases=tuple(stop_phrases), end_phrases=tuple(end_phrases))
+                end_phrases=tuple(end_phrases), transcripts=transcripts, tool_calls=tool_calls,
+                reasoning_tokens=reasoning_tokens, last_progress=last_progress)
     session.enable_turn_control()
     async def notify_tail_barge(turn_id):
         await send_json({"type": "interrupted", "turn_id": turn_id})
@@ -960,17 +1093,10 @@ async def drive_converse_turns(
             meta["traceparent"] = tt.traceparent
         turn = _Turn(transcript, turn_id, meta)
         turn.input_text = "\n".join([*unsubmitted, str(transcript)])
-        stop_word = is_stop_phrase(transcript, d.stop_phrases)
         try:
-            if not stop_word:
-                session.reserve_turn(turn_id, turn.tts_stop, transcript)
-            await send_json({"type": "transcript", "text": transcript, **meta})
-            if stop_word:
-                unsubmitted.clear()
-                await send_json({"type": "stop_word", "text": transcript, "turn_id": turn_id})
-                tt.set(outcome="stop_word")
-                session.release_capture()
-                continue
+            session.reserve_turn(turn_id, turn.tts_stop, transcript)
+            if d.transcripts:
+                await send_json({"type": "transcript", "role": "user", "text": transcript, **meta})
             action = await _run_turn(d, turn, tt)
             if turn.agent_started:
                 unsubmitted.clear()
@@ -995,7 +1121,8 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
     """Run one agent turn and speak its reply; return the explicit client next action."""
     session = d.session
     interrupted_in = session.take_interrupted()
-    if turn.tts_stop.is_set():
+    cancelled_before_start = turn.tts_stop.is_set()
+    if cancelled_before_start:
         async def cancelled_reply():
             turn.text_q.put(None)
         turn_task = asyncio.ensure_future(cancelled_reply())
@@ -1014,10 +1141,10 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
     progress_task = None
     try:
         if not turn.tts_stop.is_set():
-            await d.send_json({"type": "thinking", **turn.meta})
+            await d.send_json(_thinking_frame(d, turn))
         # The producer carries the request's credential/profile context.
         speech.spawn_context_thread(_produce_speech, name="converse-tts", args=(d, turn)).start()
-        progress_task = asyncio.create_task(_report_working(d, turn))
+        progress_task = asyncio.create_task(_report_thinking(d, turn))
         await _stream_reply(d, turn, turn_task)
 
         # Barge-in: the VAD worker set `tts_stop` and the audio is already cut. Cancel the IN-FLIGHT
@@ -1028,12 +1155,6 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
                 d.interrupt_turn()
             except Exception:
                 logger.debug("converse: interrupt_turn failed", exc_info=True)
-
-        logger.info(
-            "converse timing: first_delta=%sms first_sentence=%sms first_pcm=%sms total=%sms "
-            "deltas=%d reply_chars=%d",
-            turn.ms("first_delta"), turn.ms("first_sentence"), turn.ms("first_pcm"),
-            turn.ms("pcm_done"), len(turn.reply_parts), sum(len(p) for p in turn.reply_parts))
 
         try:
             await turn_task
@@ -1077,9 +1198,25 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
     )
     if completed and turn.output:
         next_action = turn.output.next_action
+    if d.transcripts and turn.spoken_parts:
+        await d.send_json({"type": "transcript", "role": "assistant",
+                           "turn_id": turn.turn_id, "text": " ".join(turn.spoken_parts)})
     # Arm before turn_done so an immediate drained acknowledgement cannot be lost.
     if session.finish_turn(turn.turn_id, d.tail_fallback if turn.pcm_chunks else 0):
         next_action = "listen"
+    # One line per turn that says which turn it was and why it was (or was not) heard. Lengths
+    # only: never the transcript or reply text. reply_chars counts streamed deltas, final_chars the
+    # run's final reply, spoken_chars what reached TTS (a stripped sign-off leaves it at 0).
+    outcome = ("cancelled" if cancelled_before_start else "timed_out" if turn.timed_out
+               else "barged" if barged else "error" if turn_err else "completed")
+    logger.info(
+        "converse timing: first_delta=%sms first_sentence=%sms first_pcm=%sms total=%sms "
+        "deltas=%d reply_chars=%d session=%s turn=%s outcome=%s final_chars=%d spoken_chars=%d "
+        "pcm_chunks=%d next_action=%s",
+        turn.ms("first_delta"), turn.ms("first_sentence"), turn.ms("first_pcm"),
+        turn.ms("pcm_done"), len(turn.reply_parts), sum(len(p) for p in turn.reply_parts),
+        getattr(session, "session_id", None), turn.turn_id, outcome, len(turn.result.get("reply") or ""),
+        sum(len(p) for p in turn.spoken_parts), turn.pcm_chunks, next_action)
     turn_done: dict[str, Any] = {"type": "turn_done", "turn_id": turn.turn_id,
                                 "next_action": next_action}
     await d.send_json(turn_done)
@@ -1087,13 +1224,21 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
     return next_action
 
 
-async def _report_working(d: _Driver, turn: _Turn) -> None:
-    """Turn liveness, not proof of model/tool progress; never extends the server deadline."""
+def _thinking_frame(d: _Driver, turn: _Turn) -> dict[str, Any]:
+    """Measured progress only: a run's counters are read once its agent turn has started."""
+    run = turn.agent_started
+    count = d.tool_calls() if run and d.tool_calls is not None else 0
+    reasoning = d.reasoning_tokens() if run and d.reasoning_tokens is not None else None
+    return {"type": "thinking", "tool_calls": count, "reasoning_tokens": reasoning, **turn.meta}
+
+
+async def _report_thinking(d: _Driver, turn: _Turn) -> None:
+    """Repeat turn liveness and measured progress, including while streaming speech."""
     while True:
-        await asyncio.sleep(WORKING_FRAME_INTERVAL)
+        await asyncio.sleep(THINKING_FRAME_INTERVAL)
         if turn.tts_stop.is_set() or d.session.stopped:
             return
-        await d.send_json({"type": "working", **turn.meta})
+        await d.send_json(_thinking_frame(d, turn))
 
 
 async def _run_agent(d: _Driver, turn: _Turn, interrupted: bool) -> None:
@@ -1151,6 +1296,9 @@ def _produce_speech(d: _Driver, turn: _Turn) -> None:
                 continue
             turn.ns.setdefault("first_sentence", time.time_ns())
             for piece in split_text_for_tts_stream(cleaned, d.cap):
+                if turn.tts_stop.is_set() or d.session.stopped:
+                    return
+                turn.spoken_parts.append(piece)
                 for chunk in d.synth.synth(piece):
                     if turn.tts_stop.is_set() or d.session.stopped:
                         return
@@ -1168,23 +1316,39 @@ def _produce_speech(d: _Driver, turn: _Turn) -> None:
 
 async def _stream_reply(d: _Driver, turn: _Turn, turn_task: asyncio.Future) -> None:
     """Stream the reply's PCM out; flip `playing` on only when real audio starts. A turn deadline
-    backstops a hung run: once it trips the turn is abandoned, the task cancelled, and an error +
-    turn_done still go out, so the client is never left "thinking" forever."""
+    backstops a hung turn: after `turn_timeout` with no progress at all the turn is abandoned, the
+    task cancelled, and an error + turn_done still go out, so the client is never left "thinking"
+    forever. Progress is reply text, audio, and whatever the host reports through `last_progress`
+    (each tool call starting or finishing, each model call)."""
     speaking = False
     deadline = d.loop.time() + d.turn_timeout if d.turn_timeout > 0 else None
+
+    def expired() -> bool:
+        """Move the deadline to `turn_timeout` after the latest progress; True when that has passed."""
+        nonlocal deadline
+        latest = max(turn.progress_at, d.last_progress() if d.last_progress is not None else 0.0)
+        deadline = max(deadline, latest + d.turn_timeout)
+        return deadline <= d.loop.time()
+    # Where the client's queued audio ends on this clock. Behind `now` means it ran dry (TTS was
+    # slower than real time), so playback restarts at `now` rather than counting audio never played.
+    rate = getattr(d.synth, "sample_rate", None)
+    play_end = d.loop.time()
     while True:
         try:
             if deadline is None:
                 chunk = await turn.pcm_q.get()
             else:
-                remaining = deadline - d.loop.time()
-                if remaining <= 0:
+                if deadline <= d.loop.time() and expired():
                     turn.timed_out = True
                     break
-                chunk = await asyncio.wait_for(turn.pcm_q.get(), timeout=remaining)
+                chunk = await asyncio.wait_for(turn.pcm_q.get(), timeout=deadline - d.loop.time())
         except TimeoutError:
-            turn.timed_out = True
-            break
+            if expired():
+                turn.timed_out = True
+                break
+            continue
+        if deadline is not None:
+            deadline = d.loop.time() + d.turn_timeout  # audio arriving is progress
         if chunk is None or turn.tts_stop.is_set():
             break
         if not speaking:
@@ -1196,14 +1360,24 @@ async def _stream_reply(d: _Driver, turn: _Turn, turn_task: asyncio.Future) -> N
             speaking = True
         if turn.tts_stop.is_set():
             break
+        if rate:
+            # The first chunks go out at once; pacing starts only once the lead is reached.
+            paced = d.loop.time()
+            while play_end - d.loop.time() > MAX_AUDIO_LEAD_SECONDS and not turn.tts_stop.is_set():
+                await asyncio.sleep(min(AUDIO_PACE_STEP_SECONDS, play_end - d.loop.time() - MAX_AUDIO_LEAD_SECONDS))
+            if deadline is not None:
+                deadline += d.loop.time() - paced  # waiting on playback is not a stalled run
+            if turn.tts_stop.is_set():
+                break
+            play_end = max(play_end, d.loop.time()) + len(chunk) / 2 / rate
         turn.pcm_chunks += 1
         await d.send_bytes(chunk)
     turn.ns["pcm_done"] = time.time_ns()
     if turn.timed_out:
         turn.tts_stop.set()
         turn_task.cancel()
-        turn.result.setdefault("err", f"voice turn timed out after {d.turn_timeout:.0f}s")
-        logger.warning("converse: turn abandoned after %.0fs (no completion)", d.turn_timeout)
+        turn.result.setdefault("err", f"voice turn timed out after {d.turn_timeout:.0f}s without progress")
+        logger.warning("converse: turn abandoned after %.0fs without progress", d.turn_timeout)
     if speaking:
         d.session.set_playing(False)
 

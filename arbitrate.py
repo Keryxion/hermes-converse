@@ -102,6 +102,8 @@ class _WakeElection:
         self.created_at = created_at
         self.claims: list[WakeClaim] = []
         self.done = asyncio.Event()
+        # Set once every registered device has claimed: no later claim can change the outcome.
+        self.complete = asyncio.Event()
         self.winner: Optional[WakeClaim] = None
 
 
@@ -132,6 +134,12 @@ class Arbitrator:
             self._devices.pop(device_id, None)
             for election in self._wake_open.values():
                 election.claims = [c for c in election.claims if c.device_id != device_id]
+                self._close_if_complete(election)
+
+    def _close_if_complete(self, election: _WakeElection) -> None:
+        """Let the finalizer run now if every registered device has already claimed."""
+        if election.claims and {c.device_id for c in election.claims} >= set(self._devices):
+            election.complete.set()
 
     async def claim_wake(
         self, device_id: str, *, claim_id: str, wake_word: str,
@@ -158,6 +166,7 @@ class Arbitrator:
                 logger.info("arbitrate: wake election opened election_id=%s window_ms=%.1f",
                             election.election_id, self.wake_window * 1000)
             election.claims.append(claim)
+            self._close_if_complete(election)
             # Correlate timing without recording wake phrases, audio, or transcripts.
             logger.info(
                 "arbitrate: wake claim received election_id=%s device_id=%r claim_id=%r "
@@ -182,7 +191,14 @@ class Arbitrator:
 
     async def _finalize_wake(self, election: _WakeElection) -> None:
         try:
-            await asyncio.sleep(max(0, election.created_at + self.wake_window - time.monotonic()))
+            # Hold the full window unless every registered device has claimed; then nobody is
+            # left to outrank the best claim and waiting is pure added latency.
+            remaining = election.created_at + self.wake_window - time.monotonic()
+            if remaining > 0:
+                try:
+                    await asyncio.wait_for(election.complete.wait(), timeout=remaining)
+                except asyncio.TimeoutError:
+                    pass
             async with self._lock:
                 if election.claims:
                     election.winner = min(election.claims, key=self._rank_wake_signal)
