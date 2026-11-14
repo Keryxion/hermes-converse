@@ -141,7 +141,7 @@ A device shows these only if it has the feature.
 | Incoming call | Green | 1.3 s pulse |
 | Active call | Green | 2.4 s travelling wave |
 | Call ended | Green | 1.5 s fade, then the current state |
-| Timer ringing | Device's alert style | Persistent until stopped; distinct from listening |
+| Countdown ringing | Device's alert style | Persistent until stopped; distinct from listening |
 | Factory reset confirmation | Orange | 830 ms pulse |
 | Sign-in pending | Blue | 1.8 s breath |
 

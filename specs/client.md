@@ -18,8 +18,8 @@ deleted history is not restored.
 
 Wake selection is cooperative: it recommends an answering device without
 restricting audio processing. Section 8 defines the cooperative wake contract.
-Sections 9–10 define conversation output and timers. Section 11 defines named
-Aryas and attachment to Hermes conversations.
+Sections 9–10 define conversation output and countdowns. Section 11 defines
+changing the chat model.
 
 Server lifecycle and integration details are in [the server spec](server.md).
 
