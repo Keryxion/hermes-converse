@@ -118,9 +118,15 @@ A plain yes is never widened: `session` and `always` need the person to say so.
 |---|---|---|
 | `approval_response` from that device for this `approval_id`, with an allowed choice | Its `choice` | `approved` or `denied` |
 | Hermes's timeout passes | Hermes ends the request. | `expired` |
-| The turn is cancelled, or the device disconnects | `deny` | `cancelled` |
-| No device is attached when the prompt arrives | `deny` at once | none sent |
+| The turn is cancelled | `deny` | `cancelled` |
 | The prompt allows only `deny` | `deny` at once; do not ask. | none sent |
+
+A pending approval is held when nobody can answer it. If the device disconnects,
+or none is attached when the prompt arrives, do not answer Hermes: the request
+stays pending until Hermes's timeout. When a device attaches to the conversation
+while it is still pending, ask again in both ways: send `approval_request` and
+speak the summary. So a person who put the app away comes back to the question,
+not to a refusal.
 
 Send `approval_resolved` when the request is settled. A response for another
 request, a second response, one from another device, or one with a choice that
@@ -349,6 +355,7 @@ that is expected:
 - `speak_this`, `play_tone`, `standby`, and `countdown` return `not_attached`,
   so the agent can tell nobody is there and tell another room or chat instead.
 - Nothing is queued to be spoken later.
+- A pending approval is held, as described under Approvals.
 
 Verify: a reply that finished while the device was away is replayed as a
 transcript and never spoken; no speech is synthesized for it; connecting twice
