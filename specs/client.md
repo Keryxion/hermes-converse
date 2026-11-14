@@ -59,6 +59,7 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 | `device_name` | The configured device label, such as `Den Echo` or `Kitchen`. Each device keeps its own conversation, titled `<assistant_name>: <device_name>`. |
 | `models` | Boolean; only `true` includes the model catalog in `ready`. Defaults to `false`. See section 11. |
 | `transcripts` | Boolean; request user and assistant transcript frames when `true`. Defaults to `false`. See section 4. |
+| `after` | The `message_id` of the last transcript this client has shown, to catch up on what it missed. Only with `transcripts: true`. See "Catching up" in section 4. |
 | `assistant_name` | What you call the assistant, normally `Arya`, without “Hey”. Used in the voice system prompt; separate from the device label, such as `Den Echo`. |
 
 **Client profile selection is removed.**
@@ -369,22 +370,70 @@ the server. The server confirms support with `ready.transcripts: true` when
 enabled, or `false` otherwise. A client still receives lifecycle frames and
 audio when transcripts are off.
 
-When enabled, send at most one assistant frame per turn before `turn_done`:
+When enabled, the assistant's text arrives ahead of its audio, a sentence at a
+time, so the words are on screen as they are spoken:
 
 ```json
-{"type":"transcript","role":"assistant","turn_id":"turn-42","text":"The timer is set."}
+{"type":"transcript","role":"assistant","turn_id":"turn-42","text":"Two things tomorrow. "}
 ```
 
-The text is the complete user-facing text submitted for speech, not a delta. It
-applies to ordinary replies and outbound conversation output, and may arrive
-before or after `speaking` and PCM. Clients associate it by `turn_id`, display
-it once, and continue audio playback. Silent turns need no assistant frame.
+```json
+{"type":"transcript","message_id":"m-124","role":"assistant","turn_id":"turn-42","text":"The dentist at nine and lunch with Sam."}
+```
+
+Each frame is the next piece of the reply, sent before the PCM that speaks it.
+Append the pieces for a `turn_id` in the order they arrive. The piece that
+completes the reply carries `message_id`; the earlier ones do not. A reply of one
+sentence is a single frame with `message_id`. This applies to ordinary replies and
+outbound conversation output. Silent turns need no assistant frame.
+
+A user `transcript` is one frame and always carries `message_id`. A `message_id` is unique in
+the conversation; treat it as opaque.
 
 The text describes what was prepared for speech, not what the user heard. For
 an interrupted or failed turn, send only text already submitted to speech if
 available, and keep the interruption or error visible. Do not send reasoning,
-tool payloads, credentials, or internal errors. This does not provide reconnect
-history or replay; those require a separate contract.
+tool payloads, credentials, or internal errors.
+
+### Catching up
+
+A client that was away, for example an app returning to the foreground or
+relaunched, is caught up when it connects. Send the `message_id` of the last transcript
+it has shown as `after` in `start`:
+
+```json
+{"type":"start","key":"<API_SERVER_KEY>","input_rate":16000,"output_rate":24000,
+ "assistant_name":"Arya","device_name":"Darrell's iPhone","transcripts":true,"after":"m-122"}
+```
+
+Right after `ready`, and before anything live, the server sends the transcripts
+since then as ordinary `transcript` frames marked `replay`:
+
+```json
+{"type":"transcript","message_id":"m-123","role":"user","turn_id":"turn-41","text":"What's on my calendar tomorrow?","replay":true}
+```
+
+```json
+{"type":"transcript","message_id":"m-124","role":"assistant","turn_id":"turn-41","text":"Two things: the dentist at nine and lunch with Sam.","replay":true}
+```
+
+Omit `after` the first time; the server then sends the most recent 20. Keep the
+last `message_id` shown and send it on every connect, so nothing is shown twice.
+
+A replayed assistant transcript is the whole reply in one frame. If the client
+already shows pieces for that `turn_id`, replace them with it.
+
+A `replay` transcript is only for display. It does not start a turn: do not arm
+a timer, show thinking, play audio, resend the request, or open the microphone
+because of one. A user transcript with no assistant transcript after it, and no
+turn running, was not answered: show it that way.
+
+A turn does not end because the connection dropped. If the person asked
+something and the app went away, the assistant still finishes, and the answer is
+there to catch up on. It is not spoken later. A turn still running on reconnect
+continues live: its `thinking`, `speaking`, and `turn_done` frames arrive on the
+new connection after the replayed transcripts. `{"stop": true}` and `cancel`
+still end a turn.
 
 ## 5. Session mode (`quiet_interval > 0`)
 

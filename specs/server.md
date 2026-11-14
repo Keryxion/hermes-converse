@@ -179,7 +179,9 @@ derive tokens from elapsed time or reasoning previews, and never forward reasoni
 text. Counters reset at each turn's start.
 Send opt-in user and assistant `transcript` frames as defined in
 [the client spec](client.md), for both voice replies and outbound output. Send
-reply text before `turn_done` without delaying PCM. Distinguish generated text,
+each piece of reply text when it is submitted for speech, before the PCM that
+speaks it, and never hold PCM back for it. The last piece carries the message's
+`message_id`. Distinguish generated text,
 PCM sent, and client playback drain. `turn_done`
 means sending finished. `drained` means playback finished or was discarded; it
 cannot prove the user heard the response. An interruption records that a reply
@@ -195,9 +197,12 @@ audio resumes after a gap of at least 1 s, so silence from an earlier listening
 phase never shortens the next one. Working frames
 are sent every 15 seconds and stop with their owning turn.
 
-On disconnect, stop capture and generation, settle the attachment, and fence late
-results before replacement admission. Reconnect uses the same named conversation;
-never replay an unacknowledged request. Preserve Hermes's existing tool receipts,
+On disconnect, stop capture and settle the attachment. A turn already running
+is not stopped: it finishes in the conversation like a turn on any other gateway
+platform. Its reply cannot be spoken, since no device is attached, and is not
+queued; it is in the conversation's history. Audio captured but not yet handed
+to the agent is dropped. Reconnect uses the same named conversation; never
+replay an unacknowledged request. Preserve Hermes's existing tool receipts,
 history, and compaction behavior.
 
 ### Diagnostics and acceptance
@@ -238,8 +243,8 @@ conversation store or expose Hermes session mechanics to clients.
 
 Reject empty names and a combined title over 100 characters with
 `4400 bad_start`. A replacement connection for the same names closes the old one
-with `4409 attachment_replaced` and stops its in-flight turn before the new one
-is ready. Supply trusted source-device context to the agent/tools; transcript
+with `4409 attachment_replaced`. A turn in flight carries on, and its remaining
+frames go to the new connection. Supply trusted source-device context to the agent/tools; transcript
 text cannot impersonate it. Fencing does not prove that a disconnected speaker is
 silent.
 
@@ -276,7 +281,7 @@ and API-key authentication stay on the API server.
 | Reply text as it is generated | `on_stream_delta` plugin hook |
 | Final reply | `send` marked `notify`; speaks only what the stream did not carry |
 | Turn settled | `on_processing_complete` |
-| Barge-in, cancel, disconnect | `interrupt_session_activity`, then wait for the turn to settle |
+| Barge-in, `cancel`, `stop` | `interrupt_session_activity`, then wait for the turn to settle |
 | Tool and reasoning progress | `pre_tool_call` and `post_api_request` plugin hooks |
 | Model selection | the gateway `/model` command, sent only when the choice differs from the session's; its confirmation is not spoken |
 
@@ -312,6 +317,45 @@ earlier turn has not settled.
 
 At startup a socket waits up to 30 s for the platform to connect. When the
 platform is not hosted, the connection is refused with `conversation_unavailable`.
+
+## Catching up
+
+Give every user `transcript` frame, and the last assistant piece of each turn,
+a `message_id`: Hermes's message id for that message, as an opaque string.
+
+When a client connects with `transcripts: true`, replay what it missed from
+Hermes's own messages for the device's conversation, right after `ready` and
+before any live frame. Keep no second copy.
+
+- Replay user and assistant messages only, as `transcript` frames with
+  `replay: true`: no tool calls, tool results, reasoning, or system text.
+- An assistant message's `text` is what was submitted for speech in that turn,
+  the same text its live `transcript` frame carried. For a turn that used
+  `speak_this`, that is the text given to the tool, not the reply text. A turn
+  that said nothing is not replayed.
+- With `after`, replay every such message after it, up to the most recent 100.
+  Without `after`, or when `after` is not a message of the current
+  conversation, replay the most recent 20.
+- Include messages that compaction has folded away when Hermes still has them.
+
+### Nobody attached
+
+A turn can run with no device attached, because a turn outlives a dropped
+connection and other producers start turns too. Its output goes nowhere, and
+that is expected:
+
+- Do not synthesize speech for it. The reply is in the conversation's history
+  and is replayed as a transcript when a client catches up.
+- `speak_this`, `play_tone`, `standby`, and `countdown` return `not_attached`,
+  so the agent can tell nobody is there and tell another room or chat instead.
+- Nothing is queued to be spoken later.
+
+Verify: a reply that finished while the device was away is replayed as a
+transcript and never spoken; no speech is synthesized for it; connecting twice
+with the same `after` replays the same frames; connecting with the newest `message_id`
+replays none; a cancelled turn replays a user transcript with no reply; a
+reconnect during a turn receives the replay and then the rest of the turn live;
+a replayed frame never starts a turn on the client.
 
 ## Voice tools
 
