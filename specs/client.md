@@ -682,7 +682,9 @@ alarm goes to the destination.
 Every client bundles four alarm sounds: `alarm-1`, `alarm-2`, `alarm-3`, and
 `alarm-4`.
 
-The destination receives an alarm without a wake word or user transcript:
+The server sends `alarm` only to the device that should ring, so the frame names
+no device: a client that receives one rings itself. It arrives without a wake
+word or user transcript:
 
 ```json
 {"type":"alarm","turn_id":"alarm-9","sound":"alarm-1","label":"tea"}
