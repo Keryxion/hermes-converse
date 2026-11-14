@@ -471,23 +471,18 @@ from the new deadline.
 
 ### Stopping by voice
 
-A ringing alarm can be ended by voice without a wake word. From a countdown's
-deadline until the device sends `drained`, the server transcribes what it hears
-from that device:
+A ringing alarm is ended on the device, by its `cancel` wake word (client spec,
+section 10). The server does not listen for a stop phrase and sends nothing to
+end an alarm by voice; it learns the alarm ended from `drained`.
 
-| Heard while ringing | Outcome |
-|---|---|
-| A stop phrase, such as "stop" | The server sends `interrupted` with the `countdown_id` as its `turn_id`. No agent turn runs. |
-| The wake word and a request | An ordinary turn. The alarm keeps its place: the agent ends it with `cancel` or `snooze`, or leaves it ringing. |
-| Anything else | Ignored. The tone keeps ringing, so nearby conversation does not silence it. |
-
-Use the existing stop phrases. The tone itself must not be transcribed as
-speech. A sent frame is not proof that a speaker sounded or stopped.
+The assistant's wake word followed by a request is an ordinary turn. The alarm
+keeps its place: the agent ends it with `cancel` or `snooze`, or leaves it
+ringing.
 
 Acceptance scenarios: a countdown set in the Kitchen counts down and rings only in
 the Kitchen. Exercise a call from a chat that is not a device, a device that is
 not attached, a reconnect before the deadline, a device that is off at the
-deadline, local dismissal, a spoken stop phrase, other speech while ringing, a
+deadline, local dismissal, the `cancel` wake word, other speech while ringing, a
 reply and a wake word while ringing, snooze while pending and while ringing,
 cancel while ringing, still-ringing turns at 1, 2, 4 and 8 minutes and none
 after `drained`, and the ring timeout from the setting.

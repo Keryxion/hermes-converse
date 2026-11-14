@@ -131,8 +131,9 @@ All are JSON text frames:
 | `{"type": "approval_response", "approval_id": "...", "choice": "once"}` | Answer a pending approval from a screen with one of its `choices`; see "Approvals" in section 4. |
 
 **`cancel` vs `stop`:** `stop` tears down the session; `cancel` only kills the
-current turn. Use `cancel` when the user hits the action button or says the
-wake word again mid-turn and you want to keep the conversation going.
+current turn. Use `cancel` when the user hits the action button, says the
+wake word again mid-turn, or says the `cancel` wake word, and you want to keep
+the conversation going.
 
 ## 4. Server frames
 
@@ -678,9 +679,8 @@ device was off is not rung late.
 
 The alarm keeps ringing until the first of:
 
-- a local dismissal, such as a button or tap;
-- `interrupted` with the `countdown_id` as its `turn_id`, which the server
-  sends when it hears "stop";
+- a local dismissal: a button, a tap, or the `cancel` wake word heard on the
+  device;
 - `countdown_cancel` for it;
 - a new `countdown` for it, which starts it counting again;
 - `ring_seconds` of ringing.
@@ -692,6 +692,20 @@ When the alarm has ended, send `drained` with the `countdown_id` as its
 {"type":"drained","turn_id":"countdown-9"}
 ```
 
+### The `cancel` wake word
+
+A device that can detect wake words listens for a second one, `cancel`, next to
+the assistant's. It is detected on the device and needs no election:
+
+| Heard | The device |
+|---|---|
+| `cancel` while an alarm rings | Ends the alarm, as a local dismissal. |
+| `cancel` while the assistant is thinking or speaking | Sends `cancel` for the turn and stops playback. |
+| `cancel` at any other time | Does nothing. |
+
+A device without the `cancel` wake word ends an alarm with its button or tap,
+or by asking the assistant.
+
 ### Talking during an alarm
 
 The assistant can speak while an alarm rings. When a reply plays, or the wake
@@ -702,8 +716,7 @@ over. A reply or a wake word does not end the alarm and does not restart
 ordinary requests; the server answers them with a new `countdown` or a
 `countdown_cancel`.
 
-Send microphone audio while ringing, unless muted, so the alarm can be ended by
-saying "stop" without the wake word. After the alarm ends, return to the state
+After the alarm ends, return to the state
 the device was in before; ringing does not open a user activation.
 
 
