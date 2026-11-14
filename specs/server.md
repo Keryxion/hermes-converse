@@ -337,9 +337,11 @@ reply in a `command` frame without speaking it. There is no list of allowed
 commands: a device holding the API key can run what a chat user can, including
 commands that change approvals.
 
-After `/new` the device stays attached to its conversation, which keeps the
-title `<assistant_name>: <device_name>`. Later turns and catch-up use the new
-conversation.
+After a command that starts a new conversation (`/new`), send the answer and
+then close the socket with `4410 conversation_changed`. Do not move the live
+socket to the new conversation: the device reconnects and attaches to it in the
+ordinary way. The conversation keeps the title
+`<assistant_name>: <device_name>`.
 
 ## Catching up
 
@@ -362,6 +364,10 @@ before any live frame. Keep no second copy.
 - With `after`, replay every such message after it, up to the most recent 100.
   Without `after`, or when `after` is not a message of the current
   conversation, replay the most recent 20.
+- When `start` carried `after`, say in `ready` whether it was found:
+  `after_found` true or false. False is how a client learns its conversation
+  was replaced, whatever replaced it: a `command` frame, the Hermes web UI, or a
+  deleted conversation.
 - Include messages that compaction has folded away when Hermes still has them.
 
 ### Nobody attached

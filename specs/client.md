@@ -114,6 +114,7 @@ may already have happened.
 |---|---|
 | `4409 attachment_replaced` | Another connection with the same names replaced this one. Stop sending on it. |
 | `4404 conversation_unavailable` | The conversation could not be opened. Show the failure rather than claiming restored context. |
+| `4410 conversation_changed` | The device's conversation is a different one now, for example after `/new`. Reconnect at once; `ready` then says whether the cursor still applies ("Catching up", section 4). |
 | `conversation_busy` error before `ready` | Earlier work is still stopping. Retry later. |
 
 ## 3. Client control frames (send anytime)
@@ -153,12 +154,15 @@ conversation, and answers with the same frame plus the command's own reply:
 ```
 
 `reply` is text to show, not to speak. Any slash command the server's Hermes
-knows can be sent. Two matter to every app:
+knows can be sent.
 
-| `text` | Effect | What the app does on the answer |
-|---|---|---|
-| `/new` | Starts a fresh conversation for the device. The earlier one is not deleted; it stays in Hermes's history. | Clears the conversation view and forgets the catch-up cursor, so the next `start` sends no `after`. |
-| `/compress` | Shortens what the assistant carries of this conversation. | Nothing; the view stays. |
+A command that starts a new conversation, `/new`, needs nothing special from the
+app. After answering, the server closes the connection with
+`4410 conversation_changed`. The app reconnects as it would after any drop, and
+`ready` comes back with `after_found: false`, which is where it clears its view
+("Catching up", section 4). The earlier conversation is not deleted; it stays
+in Hermes's history. Other commands, such as `/compress`, leave the connection
+open.
 
 A command that did not run is answered with `error` in place of `reply`, and
 nothing changes:
@@ -175,7 +179,7 @@ nothing changes:
 An unknown command is not an error here: Hermes answers it, and its answer
 comes back in `reply`.
 
-Countdowns and the connection are unaffected by a command.
+Countdowns are unaffected by a command.
 
 ## 4. Server frames
 
@@ -480,6 +484,20 @@ since then as ordinary `transcript` frames marked `replay`:
 
 Omit `after` the first time; the server then sends the most recent 20. Keep the
 last `message_id` shown and send it on every connect, so nothing is shown twice.
+
+When `start` carries `after`, `ready` carries `after_found`:
+
+```json
+{"type":"ready","session_id":"socket-10","recipient_id":"device-7","transcripts":true,"after_found":false}
+```
+
+| `after_found` | Meaning | What to do |
+|---|---|---|
+| `true` | The cursor is a message of the device's conversation. | Append the replayed transcripts. |
+| `false` | The conversation is a different one now: a new one was started, from this app or anywhere else, or the old one is gone. | Clear the conversation view and forget the cursor, then show what is replayed. A brand-new conversation replays nothing. |
+
+This is the one place a client learns the conversation was cleared, however it
+happened.
 
 A replayed assistant transcript is the whole reply in one frame. If the client
 already shows pieces for that `turn_id`, replace them with it.
