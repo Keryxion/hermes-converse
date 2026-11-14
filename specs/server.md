@@ -260,7 +260,10 @@ spoken, and the reply text is ignored.
 | `speak_this` with text | That text, exactly. The reply text is not spoken. |
 | `speak_this` with `""` | Nothing. This is how a turn stays silent. |
 | Several `speak_this` calls | Each text in order. An empty one adds nothing. |
-| Reply text produced before the first call | Dropped if not yet spoken; speech already under way is cut off. |
+| Reply text produced before the first call | Nothing is cut off. The sentence being spoken finishes, text not yet spoken is dropped, and then the tool's text is said. |
+
+The voice prompt tells the agent to call `speak_this` before writing any reply
+text, so there is normally nothing to finish or drop.
 
 `speak_this` works in any turn, including one nobody spoke to start. A turn
 that only calls `play_tone` still speaks its reply text; call `speak_this` with
