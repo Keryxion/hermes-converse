@@ -12,8 +12,10 @@ import logging
 import math
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Optional
+
+from .tracing import emit_span
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +46,20 @@ class WakeClaim:
     heard_at: Optional[float]
     volume: Optional[float]
     claimed_at: float
+    # Trace only: when it arrived, its place among the election's claims, and who sent it.
+    received_ns: int = 0
+    arrival: int = 0
+    device_name: Optional[str] = None
+    session_id: Optional[str] = None
+
+
+@dataclass
+class _ClaimRecord:
+    """What the election's trace keeps of one claim after it is decided or withdrawn."""
+    claim: WakeClaim
+    outcome: Optional[str] = None  # granted | denied | withdrawn | error
+    sent: Optional[bool] = None
+    settled: bool = False
 
 
 class Bus:
@@ -105,6 +121,12 @@ class _WakeElection:
         # Set once every registered device has claimed: no later claim can change the outcome.
         self.complete = asyncio.Event()
         self.winner: Optional[WakeClaim] = None
+        self.immediate = False
+        self.records: list[_ClaimRecord] = []
+        self.created_ns = time.time_ns()
+        self.decided_ns = self.created_ns
+        self.decided_by: Optional[str] = None
+        self.emitted = False
 
 
 class Arbitrator:
@@ -122,9 +144,13 @@ class Arbitrator:
         self._lock = asyncio.Lock()
         self._devices: dict[str, Device] = {}
         self._wake_open: dict[str, _WakeElection] = {}
+        self._labels: dict[str, tuple[Optional[str], Optional[str]]] = {}  # device_id -> trace names
+        self._awaiting_sent: dict[tuple[str, str], tuple[_WakeElection, _ClaimRecord]] = {}
 
-    async def register(self, device_id: str) -> Device:
+    async def register(self, device_id: str, *, device_name: Optional[str] = None,
+                       session_id: Optional[str] = None) -> Device:
         async with self._lock:
+            self._labels[device_id] = (device_name, session_id)
             device = self._devices.setdefault(device_id, Device(device_id, time.monotonic()))
         await self.bus.publish(DeviceAnnounce(device_id, device.registered_at))
         return device
@@ -132,8 +158,13 @@ class Arbitrator:
     async def unregister(self, device_id: str) -> None:
         async with self._lock:
             self._devices.pop(device_id, None)
+            self._labels.pop(device_id, None)
             for election in self._wake_open.values():
                 election.claims = [c for c in election.claims if c.device_id != device_id]
+                for record in election.records:
+                    if record.claim.device_id == device_id and record.outcome is None:
+                        record.outcome = "withdrawn"
+                        record.settled = True
                 self._close_if_complete(election)
 
     def _close_if_complete(self, election: _WakeElection) -> None:
@@ -144,50 +175,124 @@ class Arbitrator:
     async def claim_wake(
         self, device_id: str, *, claim_id: str, wake_word: str,
         confidence: Optional[float] = None, heard_at: Optional[float] = None,
-        volume: Optional[float] = None,
+        volume: Optional[float] = None, track_sent: bool = False,
     ) -> tuple[bool, Optional[str], str]:
         """Return (recommended, winning device id, echoed client claim id).
 
         Legacy first_to_endpoint grants immediately, with no later transcript
         election. Ranking only consumes the wake request's optional signals.
+
+        With *track_sent* the caller reports, through :meth:`note_decision_sent`, whether it sent
+        the decision; the election's trace waits for that report.
         """
         async with self._lock:
             if device_id not in self._devices:
                 return False, None, claim_id
             claim = WakeClaim(claim_id, device_id, wake_word, confidence, heard_at, volume,
-                              time.monotonic())
+                              time.monotonic(), time.time_ns(), 0, *self._labels.get(device_id, (None, None)))
             if self.policy == POLICY_FIRST_TO_ENDPOINT:
-                return True, device_id, claim_id
-            election = self._wake_open.get(wake_word)
-            if election is None or claim.claimed_at - election.created_at >= self.wake_window:
                 election = _WakeElection(wake_word, claim.claimed_at)
-                self._wake_open[wake_word] = election
-                asyncio.create_task(self._finalize_wake(election))
-                logger.info("arbitrate: wake election opened election_id=%s window_ms=%.1f",
-                            election.election_id, self.wake_window * 1000)
-            election.claims.append(claim)
-            self._close_if_complete(election)
-            # Correlate timing without recording wake phrases, audio, or transcripts.
-            logger.info(
-                "arbitrate: wake claim received election_id=%s device_id=%r claim_id=%r "
-                "received_unix_ms=%d received_monotonic=%.6f election_age_ms=%.1f",
-                election.election_id, device_id, claim_id, int(time.time() * 1000),
-                claim.claimed_at, (claim.claimed_at - election.created_at) * 1000)
+                election.immediate = True
+                claim = replace(claim, arrival=1)
+                election.winner = claim
+                election.done.set()
+                record = self._enter(election, claim)
+            else:
+                election = self._wake_open.get(wake_word)
+                if election is None or claim.claimed_at - election.created_at >= self.wake_window:
+                    election = _WakeElection(wake_word, claim.claimed_at)
+                    self._wake_open[wake_word] = election
+                    asyncio.create_task(self._finalize_wake(election))
+                    logger.info("arbitrate: wake election opened election_id=%s window_ms=%.1f",
+                                election.election_id, self.wake_window * 1000)
+                claim = replace(claim, arrival=len(election.records) + 1)
+                record = self._enter(election, claim)
+                election.claims.append(claim)
+                self._close_if_complete(election)
+                # Correlate timing without recording wake phrases, audio, or transcripts.
+                logger.info(
+                    "arbitrate: wake claim received election_id=%s device_id=%r claim_id=%r "
+                    "received_unix_ms=%d received_monotonic=%.6f election_age_ms=%.1f",
+                    election.election_id, device_id, claim_id, int(time.time() * 1000),
+                    claim.claimed_at, (claim.claimed_at - election.created_at) * 1000)
         try:
-            await self.bus.publish(claim)
-            await election.done.wait()
-            winner = election.winner
-            logger.info(
-                "arbitrate: wake decision election_id=%s device_id=%r claim_id=%r "
-                "decision=%s winner_device_id=%r wait_ms=%.1f",
-                election.election_id, device_id, claim_id,
-                "wake_grant" if winner is claim else "wake_deny",
-                winner.device_id if winner else None, (time.monotonic() - claim.claimed_at) * 1000)
+            if election.immediate:
+                winner = claim
+            else:
+                await self.bus.publish(claim)
+                await election.done.wait()
+                winner = election.winner
+                logger.info(
+                    "arbitrate: wake decision election_id=%s device_id=%r claim_id=%r "
+                    "decision=%s winner_device_id=%r wait_ms=%.1f",
+                    election.election_id, device_id, claim_id,
+                    "wake_grant" if winner is claim else "wake_deny",
+                    winner.device_id if winner else None, (time.monotonic() - claim.claimed_at) * 1000)
+            record.outcome = "granted" if winner is claim else "denied"
+            if track_sent:
+                self._awaiting_sent[(device_id, claim_id)] = (election, record)
             return winner is claim, winner.device_id if winner else None, claim_id
+        except asyncio.CancelledError:
+            record.outcome = record.outcome or "withdrawn"
+            raise
+        except Exception:
+            record.outcome = record.outcome or "error"
+            raise
         finally:
             # A disconnected/cancelled requester must not beat live claimants.
             async with self._lock:
                 election.claims = [c for c in election.claims if c is not claim]
+            if not (track_sent and record.outcome in ("granted", "denied")):
+                self._settle(election, record)
+
+    def note_decision_sent(self, device_id: str, claim_id: str, sent: bool) -> None:
+        """The caller reports whether it delivered the decision for a claim made with *track_sent*."""
+        entry = self._awaiting_sent.pop((device_id, claim_id), None)
+        if entry is not None:
+            entry[1].sent = sent
+            self._settle(*entry)
+
+    def _enter(self, election: _WakeElection, claim: WakeClaim) -> _ClaimRecord:
+        record = _ClaimRecord(claim)
+        election.records.append(record)
+        return record
+
+    def _settle(self, election: _WakeElection, record: _ClaimRecord) -> None:
+        record.settled = True
+        self._emit_election(election)
+
+    def _emit_election(self, election: _WakeElection) -> None:
+        """Write the election's span once it is decided and every claim has an outcome. Reads what
+        the election used; never ranks again, never changes it."""
+        if election.emitted or not election.done.is_set() or not all(r.settled for r in election.records):
+            return
+        election.emitted = True
+        try:
+            attrs = {
+                "election_id": election.election_id,
+                "election.policy": self.policy,
+                "election.window_ms": 0 if election.immediate else round(self.wake_window * 1000, 1),
+                "election.claims": len(election.records),
+                "election.immediate": election.immediate,
+            }
+            if election.decided_by:
+                attrs["election.decided_by"] = election.decided_by
+            if election.winner is not None:
+                attrs["election.winner_claim_id"] = election.winner.claim_id
+            events = []
+            for record in election.records:
+                claim = record.claim
+                event = {"device_name": claim.device_name, "session.id": claim.session_id,
+                         "claim_id": claim.claim_id, "wake_word": claim.wake_word,
+                         "wake.confidence": claim.confidence, "wake.volume": claim.volume,
+                         "wake.heard_at": claim.heard_at, "claim.arrival": claim.arrival,
+                         "claim.outcome": record.outcome or "error"}
+                if record.sent is not None:
+                    event["decision.sent"] = record.sent
+                events.append(("wake.claim", claim.received_ns, event))
+            emit_span("voice.wake.election", election.created_ns, election.decided_ns, attrs, events=events)
+        except Exception:
+            logger.debug("wake election trace failed", exc_info=True)
 
     async def _finalize_wake(self, election: _WakeElection) -> None:
         try:
@@ -202,6 +307,8 @@ class Arbitrator:
             async with self._lock:
                 if election.claims:
                     election.winner = min(election.claims, key=self._rank_wake_signal)
+                    election.decided_by = self._deciding_input(election)
+                election.decided_ns = time.time_ns()
                 logger.info(
                     "arbitrate: wake election closed election_id=%s claimants=%d "
                     "winner_device_id=%r winner_claim_id=%r elapsed_ms=%.1f",
@@ -213,6 +320,20 @@ class Arbitrator:
             if self._wake_open.get(election.wake_word) is election:
                 self._wake_open.pop(election.wake_word, None)
             election.done.set()
+            self._emit_election(election)
+
+    def _deciding_input(self, election: _WakeElection) -> Optional[str]:
+        """The first ranking input on which the winner beat the best other claim (trace only)."""
+        others = [c for c in election.claims if c is not election.winner]
+        if not others:
+            return None
+        runner_up = min(others, key=self._rank_wake_signal)
+        for name, won, lost in zip(("confidence", "volume", "detection_time", "arrival_order"),
+                                   self._rank_wake_signal(election.winner),
+                                   self._rank_wake_signal(runner_up)):
+            if won != lost:
+                return name
+        return None
 
     @staticmethod
     def _rank_wake_signal(claim: WakeClaim) -> tuple[float, float, float, float]:

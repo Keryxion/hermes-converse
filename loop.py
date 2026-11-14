@@ -38,6 +38,7 @@ from .settings import (
     DEFAULT_TURN_TIMEOUT)
 from .synth import split_text_for_tts_stream
 from .tracing import PhaseRecorder, emit_turn_trace, start_turn
+from .voice_trace import BargeStats, begin_speech_interrupt
 
 logger = logging.getLogger(__name__)
 
@@ -270,6 +271,7 @@ class Utterance(str):
         self = super().__new__(cls, text)
         self.recorder = recorder
         self.superseded = False
+        self.turn_id: Optional[str] = None  # set when an interrupt already named the turn this becomes
         return self
 
 
@@ -306,6 +308,16 @@ class ConverseSession:
         self._np = np
         self._state_lock = threading.RLock()
         self.session_id = uuid.uuid4().hex  # echoed in `ready`, joinable across client/server traces
+        self.device_name: Optional[str] = None  # trace only; set by the route
+        # Trace bookkeeping: the wake claim the current exchange belongs to, the live turn trace,
+        # the barge-in counters of the reply being played, and how its playback tail ended.
+        self._claim_id: Optional[str] = None
+        self._claim_granted = False
+        self._claim_used = False
+        self._turn_trace: Optional[tuple[str, Any]] = None
+        self._barge: Optional[BargeStats] = None
+        self._barge_done: Optional[BargeStats] = None
+        self._tail_result: Optional[tuple[str, str, int]] = None  # turn id, drain.end, end ns
         self._transcribe = transcribe or _default_transcribe
         # Whisper resamples internally, so STT works at any capture rate; 30 ms blocks at that rate.
         self._input_rate = int(input_rate)
@@ -383,6 +395,9 @@ class ConverseSession:
         elif not self._turn_active.is_set():
             self._tts_stop = None
         if value:
+            if self._barge is None or self._barge.turn_id != self._active_turn_id:
+                self._close_barge()
+                self._barge = BargeStats(self._active_turn_id)
             self._interrupted.clear()
             self._playing.set()
         else:
@@ -397,6 +412,61 @@ class ConverseSession:
             self._interrupted.clear()
             return True
         return False
+
+    # ── trace bookkeeping (never consulted by a decision) ──
+    def _close_barge(self) -> None:
+        if self._barge is not None:
+            self._barge_done, self._barge = self._barge, None
+
+    @_session_state
+    def bind_trace(self, turn_id: Optional[str], turn_trace: Any) -> None:
+        self._turn_trace = (turn_id, turn_trace) if turn_id and turn_trace is not None else None
+
+    def _trace_of_active_turn(self) -> Any:
+        current = self._tail_turn_id if self._tail_active else self._active_turn_id
+        bound = self._turn_trace
+        return bound[1] if bound is not None and current is not None and bound[0] == current else None
+
+    @_session_state
+    def note_claim(self, claim_id: str) -> None:
+        """A wake claim arrived; the exchange it starts carries its id."""
+        self._claim_id, self._claim_granted, self._claim_used = claim_id, False, False
+
+    @_session_state
+    def take_origin(self) -> tuple[Optional[str], str]:
+        """``(claim_id, turn.source)`` for a turn that starts from speech: ``wake`` for the first
+        turn after a granted claim, ``speech`` otherwise (a follow-up keeps the claim id)."""
+        if self._claim_id is None:
+            return None, "speech"
+        source = "wake" if self._claim_granted and not self._claim_used else "speech"
+        self._claim_used = self._claim_used or self._claim_granted
+        return self._claim_id, source
+
+    @_session_state
+    def end_exchange(self) -> None:
+        self._claim_id, self._claim_granted, self._claim_used = None, False, False
+
+    @_session_state
+    def take_barge_summary(self, turn_id: str) -> dict[str, Any]:
+        done = self._barge_done
+        if self._barge is not None and self._barge.turn_id == turn_id and not self._tail_active:
+            self._close_barge()
+            done = self._barge_done
+        if done is None or done.turn_id != turn_id:
+            return {}
+        self._barge_done = None
+        return done.summary()
+
+    @_session_state
+    def take_tail_result(self, turn_id: str) -> Optional[tuple[str, int]]:
+        """``(drain.end, end ns)`` of the playback tail that followed *turn_id*, once it has ended."""
+        if self._tail_active and self._tail_turn_id == turn_id and self._stop.is_set():
+            self.end_playback_tail("disconnected")
+        result = self._tail_result
+        if result is None or result[0] != turn_id:
+            return None
+        self._tail_result = None
+        return result[1], result[2]
 
     def stop(self) -> None:
         """End the loop and unblock the reader and any transcript waiter."""
@@ -416,9 +486,11 @@ class ConverseSession:
         self.stream.feed(self._np.zeros(self._block, dtype=self._np.int16).tobytes(), commit=True)
 
     @_session_state
-    def note_wake(self) -> None:
+    def note_wake(self, claim_id: Optional[str] = None) -> None:
         """A wake was granted: the next capture waits through a pause after the wake word."""
         self._wake_pending = True
+        if claim_id is not None and claim_id == self._claim_id:
+            self._claim_granted = True
 
     # ── worker loop ──
     def start(self) -> None:
@@ -430,8 +502,9 @@ class ConverseSession:
     def _run(self) -> None:
         try:
             while not self._stop.is_set():
+                interrupt = None
                 if self._tail_active and time.monotonic() >= self._tail_deadline:
-                    self.end_playback_tail()  # client never sent `drained`: don't stay suppressed forever
+                    self.end_playback_tail("timeout")  # client never sent `drained`: don't stay suppressed forever
                 data, _ = self.stream.read(self._block)
                 if self._stop.is_set():
                     break
@@ -446,6 +519,11 @@ class ConverseSession:
                     busy = self._turn_active.is_set() or self._pending_turn.is_set() or self._tail_active
                     playing = self.playing() or self._tail_active
                     phase = self._detector.feed(data, playing, interrupting=busy)
+                    if self._barge is not None:
+                        self._barge.add(self._block * 1000 / self._input_rate,
+                                        getattr(self._detector, "level", None),
+                                        getattr(self._detector, "probability", None),
+                                        getattr(self._detector, "threshold", None))
                     if phase is not None:
                         reply_phase = ("drain" if self._tail_active else "speaking" if playing
                                        else "thinking" if self._turn_active.is_set()
@@ -453,6 +531,9 @@ class ConverseSession:
                         logger.info("converse onset: session=%s turn=%s detector=%s reply_phase=%s probability=%s",
                                     self.session_id, self._active_turn_id, self._detector.name, reply_phase,
                                     getattr(self._detector, 'probability', None))
+                        if reply_phase in ("thinking", "speaking", "drain"):
+                            interrupt = begin_speech_interrupt(self._trace_of_active_turn(), reply_phase,
+                                                               self._detector)
                     # Onset filtering rejects echo/noise; accepted speech always owns a capture.
                     self._pre_roll.append(data.copy())
                     if phase is None:
@@ -477,7 +558,7 @@ class ConverseSession:
                     # Latch capture ownership BEFORE cancellation can finalize the old turn.
                     if self._tail_active:
                         self._interrupt_tail()
-                        self.end_playback_tail()
+                        self.end_playback_tail("interrupted")
                     elif self._turn_active.is_set():
                         self._trigger_barge_in()
                     capture_generation = self._generation
@@ -489,6 +570,8 @@ class ConverseSession:
                     with self._state_lock:
                         self._capturing = self._continuation_capture = False
                         self.release_capture()
+                    if interrupt is not None:
+                        interrupt.resolve(None)
                     raise
                 with self._state_lock:
                     abandoned = self._capture_abandoned(capture_generation)
@@ -498,19 +581,28 @@ class ConverseSession:
                         recorder.set(outcome="cancelled")
                         emit_turn_trace(recorder)
                         self.release_capture()
+                        if interrupt is not None:
+                            interrupt.resolve(None)
                     elif transcript:
                         if self._managed:
                             self._pending_turn.set()
                         utterance = Utterance(transcript, recorder)
+                        if interrupt is not None:
+                            utterance.turn_id = interrupt.next_turn_id
+                            interrupt.resolve("request")
                         self._queued_utterance = utterance
                         self.transcripts.put(utterance)
                     else:
                         recorder.set(outcome="empty")
                         emit_turn_trace(recorder)
                         self.release_capture()
+                        if interrupt is not None:
+                            interrupt.resolve("empty")
         except Exception:
             logger.warning("converse VAD loop failed", exc_info=True)
         finally:
+            if interrupt is not None:
+                interrupt.resolve(None)
             self.transcripts.put(None)
 
     @_session_state
@@ -526,6 +618,7 @@ class ConverseSession:
             return
         self._quiet_seconds += self._block / self._input_rate  # == 0.03 s per block
         if self._quiet_seconds + 1e-6 >= self._next_quiet_at:
+            self._claim_id = None  # the exchange a wake started has gone quiet
             self.transcripts.put(QuietTick(round(self._quiet_seconds, 1)))
             self._next_quiet_at += self._quiet_interval
 
@@ -573,6 +666,7 @@ class ConverseSession:
     @_session_state
     def end_turn(self) -> None:
         if not self._tail_active:
+            self._close_barge()
             self._active_turn_id = None
         self._turn_active.clear()
         self._active_utterance = None
@@ -602,7 +696,11 @@ class ConverseSession:
         self._tail_deadline = time.monotonic() + fallback_seconds
 
     @_session_state
-    def end_playback_tail(self) -> None:
+    def end_playback_tail(self, reason: str = "drained") -> None:
+        if self._tail_active and self._tail_turn_id is not None:
+            self._tail_result = (self._tail_turn_id,
+                                 "interrupted" if self._tail_interrupted else reason, time.time_ns())
+        self._close_barge()
         self._tail_active = False
         self._tail_turn_id = None
         if not self.capture_pending():
@@ -625,7 +723,7 @@ class ConverseSession:
             remaining = max(0, self._tail_deadline - time.monotonic())
             await asyncio.get_running_loop().run_in_executor(None, self._tail_drained.wait, remaining)
             if self._tail_active:
-                self.end_playback_tail()
+                self.end_playback_tail("disconnected" if self._stop.is_set() else "timeout")
 
     @_session_state
     def _interrupt_tail(self) -> None:
@@ -647,9 +745,11 @@ class ConverseSession:
             self._cancelled.set()
             self.commit()
         if self._tail_active:
+            self._trace_cancel("drain")
             self._interrupt_tail()
             return True
         if self._turn_active.is_set() or self._tts_stop is not None:
+            self._trace_cancel("speaking" if self.playing() else "thinking")
             self._trigger_barge_in()
             return True
         self._cancelled.set()
@@ -657,6 +757,11 @@ class ConverseSession:
             self.commit()
             self.transcripts.put(CancelTurn(turn_id))
         return True
+
+    def _trace_cancel(self, phase: str) -> None:
+        turn_trace = self._trace_of_active_turn()
+        if turn_trace is not None:
+            turn_trace.event("interrupt", **{"interrupt.cause": "cancel", "interrupt.phase": phase})
 
     @_session_state
     def _trigger_barge_in(self) -> None:
@@ -1061,24 +1166,28 @@ async def drive_converse_turns(
             turn.output = item
             if tt.traceparent:
                 turn.meta["traceparent"] = tt.traceparent
+            _open_trace(session, tt, turn_id, "server")
             try:
                 await _run_turn(d, turn, tt)
                 await session.wait_for_playback_tail()
             except asyncio.CancelledError:
-                tt.set(outcome="interrupted", interrupted=True)
+                tt.set_missing(outcome="interrupted", interrupted=True)
                 raise
             except Exception:
-                tt.set(outcome="error")
+                tt.set_missing(outcome="error")
                 raise
             finally:
-                tt.end()
+                _close_trace(session, tt, turn)
             continue
         transcript = item
         if not transcript:
             continue
-        turn_id = uuid.uuid4().hex
+        turn_id = getattr(item, "turn_id", None) or uuid.uuid4().hex
         tt = start_turn(recorder=getattr(item, "recorder", None), turn_id=turn_id,
                         **{"session.id": getattr(session, "session_id", None)})
+        take_origin = getattr(session, "take_origin", None)
+        claim_id, source = take_origin() if take_origin is not None else (None, "speech")
+        _open_trace(session, tt, turn_id, source, claim_id)
         meta: dict[str, Any] = {"turn_id": turn_id}
         if tt.traceparent:
             meta["traceparent"] = tt.traceparent
@@ -1097,15 +1206,16 @@ async def drive_converse_turns(
                 unsubmitted.clear()  # explicit cancellation does not carry a request forward
             if action == "standby":
                 _discard_after_signoff(session, deferred_outputs)
+                getattr(session, "end_exchange", lambda: None)()
             await session.wait_for_playback_tail()
         except asyncio.CancelledError:
-            tt.set(outcome="interrupted", interrupted=True)
+            tt.set_missing(outcome="interrupted", interrupted=True)
             raise
         except Exception:
-            tt.set(outcome="error")
+            tt.set_missing(outcome="error")
             raise
         finally:
-            tt.end()
+            _close_trace(session, tt, turn)
 
 
 async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
@@ -1192,6 +1302,7 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
     if d.transcripts and turn.spoken_parts:
         await d.send_json({"type": "transcript", "role": "assistant",
                            "turn_id": turn.turn_id, "text": " ".join(turn.spoken_parts)})
+    tt.set(**{"turn.attached": not session.stopped})  # a device was there when the reply was ready
     # Arm before turn_done so an immediate drained acknowledgement cannot be lost.
     if session.finish_turn(turn.turn_id, d.tail_fallback if turn.pcm_chunks else 0):
         next_action = "listen"
@@ -1394,7 +1505,38 @@ def _finish_trace(tt: Any, turn: _Turn, reply: str, *, err: bool, barged: bool,
                     "tts.first_pcm_ms": turn.ms("first_pcm", since="first_sentence")})
     outcome = ("timeout" if turn.timed_out else "interrupted" if barged else "error" if err else "ok")
     tt.set(outcome=outcome, interrupted=barged, next_action=next_action)
-    tt.end()
+
+
+def _open_trace(session: Any, tt: Any, turn_id: str, source: str, claim_id: Optional[str] = None) -> None:
+    """Name the turn's device, source and wake claim, and let the session find the live span."""
+    tt.set(device_name=getattr(session, "device_name", None), claim_id=claim_id, **{"turn.source": source})
+    bind = getattr(session, "bind_trace", None)
+    if bind is not None:
+        bind(turn_id, tt)
+
+
+def _close_trace(session: Any, tt: Any, turn: _Turn) -> None:
+    """Add what the session measured after the reply was sent (the drain and the barge-in totals),
+    then end the turn. A turn whose device had already gone has neither."""
+    try:
+        tt.set_missing(**{"turn.attached": not session.stopped})
+        take_tail = getattr(session, "take_tail_result", None)
+        tail = take_tail(turn.turn_id) if take_tail is not None and turn.pcm_chunks else None
+        sent_ns = turn.ns.get("pcm_done")
+        if tail is not None and sent_ns is not None:
+            reason, end_ns = tail
+            tt.add_phase("voice.drain", sent_ns, end_ns, **{
+                "drain.end": reason, "drain.wait_ms": round(max(0, end_ns - sent_ns) / 1e6)})
+        take_barge = getattr(session, "take_barge_summary", None)
+        if take_barge is not None:
+            tt.set(**take_barge(turn.turn_id))
+        bind = getattr(session, "bind_trace", None)
+        if bind is not None:
+            bind(None, None)
+    except Exception:
+        logger.debug("voice turn trace finish failed", exc_info=True)
+    finally:
+        tt.end()
 
 
 def drain_pending(session: Any, outputs: deque[ConversationOutput]) -> list[str]:

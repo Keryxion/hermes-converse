@@ -54,7 +54,7 @@ from .model_selection import parse_model_selection, public_model_catalog
 from .loop import (ConversationOutput, ConverseSession, drive_converse_turns, parse_start_config,
                    voice_system_prompt)
 from .settings import Settings, load_settings
-from .tracing import force_flush
+from .tracing import ConnectionTrace, emit_span, force_flush
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +66,7 @@ DEFAULT_LOOPBACK = "http://127.0.0.1:8642"
 # Loopback HTTP to the API server: key verification, the model catalog and session lookups.
 HTTP_TIMEOUT = ClientTimeout(total=30, connect=5)
 REPLACEMENT_TIMEOUT = 12.0
+_CONNECTION_TRACE = web.ResponseKey("voice.connection", ConnectionTrace)  # the socket's connection span
 GATEWAY_WAIT = 30.0
 
 
@@ -162,6 +163,20 @@ class ConverseRoute:
         return profile is None or profile in ("default", self._profile_name)
 
     async def handle(self, request: web.Request) -> web.StreamResponse:
+        """One ``voice.connection`` span per socket, from accepting it to closing it."""
+        conn = ConnectionTrace()
+        try:
+            return await self._handle(request, conn)
+        except web.HTTPException as exc:
+            conn.mark("server", exc.status)  # refused before the upgrade
+            raise
+        except BaseException:
+            conn.mark("lost")
+            raise
+        finally:
+            conn.end()
+
+    async def _handle(self, request: web.Request, conn: ConnectionTrace) -> web.StreamResponse:
         base_url = self._base_url()
         async with ClientSession(timeout=HTTP_TIMEOUT) as http:
             # (A) Subprotocol key: verified pre-prepare so a bad key rejects the upgrade.
@@ -171,11 +186,13 @@ class ConverseRoute:
                     raise web.HTTPUnauthorized()
                 ws = web.WebSocketResponse(heartbeat=30.0, protocols=(VOICE_WS_PROTOCOL,))
                 await ws.prepare(request)
+                _attach_trace(ws, conn)
                 api_key = offered
             else:
                 # (B) No subprotocol: accept, then require a start frame whose start.key verifies.
                 ws = web.WebSocketResponse(heartbeat=30.0)
                 await ws.prepare(request)
+                _attach_trace(ws, conn)
                 api_key = None
 
             async def _verify(candidate: str) -> bool:
@@ -194,10 +211,12 @@ class ConverseRoute:
                 await _fail(ws, exc.error, exc.code)
                 return ws
             if names is not None:
+                conn.set(device_name=names[1])
                 return await self._named_handle(ws, frame, names, api_key, http, base_url,
                                                 settings, server_recv_unix_ms)
             input_rate, output_rate, quiet_interval, name, profile = parse_start_config(
                 frame, default_name=settings.name)
+            conn.set(device_name=name)
             if not self._profile_allowed(profile):
                 await _fail(ws, "profile_unsupported", 4400)
                 return ws
@@ -329,11 +348,16 @@ class ConverseRoute:
                          device_name=device.device_name)
         ready["server_send_unix_ms"] = int(time.time() * 1000)
         await ws.send_json(ready)
+        device_name = named[0].device_name if named is not None else name
+        session.device_name = device_name
+        connection_trace = _connection_trace(ws)
+        if connection_trace is not None:
+            connection_trace.set(**{"session.id": session.session_id, "device_name": device_name})
         arbitrator = await self._arbitrator_for_settings(settings)
         # A configured label is a prefix: each socket needs its own candidate identity.
         device_id = f"{settings.arbitrate_device_id or 'device'}_{uuid.uuid4().hex}"
         if arbitrator is not None:
-            await arbitrator.register(device_id)
+            await arbitrator.register(device_id, device_name=device_name, session_id=session.session_id)
         # The only place a socket's device identity meets its session id; turn and onset lines
         # carry the session id, so this is what attributes them to a device.
         logger.info("converse session: session=%s device_id=%s name=%r arbitrated=%s",
@@ -403,7 +427,8 @@ def _wake_number(raw: Any, *, maximum: Optional[float] = None) -> Optional[float
     return number
 
 
-async def _wake_response(frame: dict, *, arbitrator: Optional[Arbitrator], device_id: str) -> dict:
+async def _wake_response(frame: dict, *, arbitrator: Optional[Arbitrator], device_id: str,
+                         track_sent: bool = False) -> dict:
     """Answer a cooperative claim without changing any audio/turn state."""
     claim_id, wake_word = frame.get("claim_id"), frame.get("wake_word")
     if (not isinstance(claim_id, str) or not claim_id.strip()
@@ -415,7 +440,7 @@ async def _wake_response(frame: dict, *, arbitrator: Optional[Arbitrator], devic
             device_id, claim_id=claim_id, wake_word=wake_word,
             confidence=_wake_number(frame.get("confidence"), maximum=1),
             heard_at=_wake_number(frame.get("heard_at")),
-            volume=_wake_number(frame.get("volume"), maximum=1))
+            volume=_wake_number(frame.get("volume"), maximum=1), track_sent=track_sent)
     reply = {"type": "wake_grant" if granted else "wake_deny",
              "claim_id": claim_id, "wake_word": wake_word}
     if not granted and winner is not None:
@@ -423,7 +448,41 @@ async def _wake_response(frame: dict, *, arbitrator: Optional[Arbitrator], devic
     return reply
 
 
+def _attach_trace(ws: web.WebSocketResponse, conn: ConnectionTrace) -> None:
+    conn.ws = ws
+    ws[_CONNECTION_TRACE] = conn
+
+
+def _connection_trace(ws: Any) -> Optional[ConnectionTrace]:
+    try:
+        return ws.get(_CONNECTION_TRACE)
+    except Exception:
+        return None
+
+
+def _mark_closed(ws: Any, by: str, code: Optional[int] = None) -> None:
+    conn = _connection_trace(ws)
+    if conn is not None:
+        conn.mark(by, code)
+
+
+def _trace_immediate_wake(frame: dict, *, session: Any, sent: bool) -> None:
+    """With arbitration off a claim is granted at once: an election of one claim, marked immediate."""
+    now = time.time_ns()
+    claim = {"device_name": getattr(session, "device_name", None),
+             "session.id": getattr(session, "session_id", None), "claim_id": frame.get("claim_id"),
+             "wake_word": frame.get("wake_word"), "wake.confidence": _wake_number(frame.get("confidence"), maximum=1),
+             "wake.volume": _wake_number(frame.get("volume"), maximum=1),
+             "wake.heard_at": _wake_number(frame.get("heard_at")), "claim.arrival": 1,
+             "claim.outcome": "granted", "decision.sent": sent}
+    emit_span("voice.wake.election", now, now, {
+        "election_id": uuid.uuid4().hex, "election.policy": "off", "election.window_ms": 0,
+        "election.claims": 1, "election.immediate": True, "election.winner_claim_id": frame.get("claim_id"),
+    }, events=[("wake.claim", now, claim)])
+
+
 async def _fail(ws: web.WebSocketResponse, error: str, code: int) -> None:
+    _mark_closed(ws, "server", code)
     with contextlib.suppress(Exception):
         await ws.send_json({"type": "error", "error": error})
         await ws.close(code=code)
@@ -439,6 +498,10 @@ async def _await_start_frame(ws: web.WebSocketResponse, *,
     except TimeoutError:
         await _fail(ws, "bad_start", 4400)
         return None
+    if msg.type in (web.WSMsgType.CLOSE, web.WSMsgType.CLOSING, web.WSMsgType.CLOSED):
+        _mark_closed(ws, "lost", 1006) if ws.close_code in (None, 1006) else _mark_closed(ws, "client", ws.close_code)
+    elif msg.type == web.WSMsgType.ERROR:
+        _mark_closed(ws, "lost", 1006)
     if msg.type != web.WSMsgType.TEXT:
         await _fail(ws, "bad_start", 4400)
         return None
@@ -473,13 +536,21 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
     selected_model = default_model
     wake_tasks: set[asyncio.Task] = set()
     async def _reply_wake(frame: dict) -> None:
+        reply, sent = None, False
         try:
-            reply = await _wake_response(frame, arbitrator=arbitrator, device_id=device_id)
+            reply = await _wake_response(frame, arbitrator=arbitrator, device_id=device_id, track_sent=True)
             if reply["type"] == "wake_grant":
-                session.note_wake()
+                session.note_wake(reply["claim_id"])
             await ws.send_json(reply)
+            sent = True
         except Exception:
             logger.debug("converse wake reply failed", exc_info=True)
+        finally:
+            claim_id = frame.get("claim_id")
+            if arbitrator is not None and isinstance(claim_id, str):
+                arbitrator.note_decision_sent(device_id, claim_id, sent)
+            elif arbitrator is None and reply is not None and reply["type"] == "wake_grant":
+                _trace_immediate_wake(frame, session=session, sent=sent)
 
     async def _pump_client() -> None:
         nonlocal selected_model
@@ -495,6 +566,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                     if not isinstance(frame, dict):
                         continue
                     if frame.get("stop"):
+                        _mark_closed(ws, "client")
                         break
                     if frame.get("commit"):
                         session.commit()
@@ -525,13 +597,21 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                                             "model": selected_model[0], "provider": selected_model[1],
                                             "uses_default": choice == (None, None), "applies_to": "next_turn"})
                     if frame.get("type") == "wake":
+                        if isinstance(frame.get("claim_id"), str) and frame["claim_id"].strip():
+                            session.note_claim(frame["claim_id"])
                         # Do not block PCM, cancel, stop, or a new claim while an election runs.
                         task = asyncio.create_task(_reply_wake(frame))
                         wake_tasks.add(task)
                         task.add_done_callback(wake_tasks.discard)
                 elif msg.type in (web.WSMsgType.CLOSE, web.WSMsgType.ERROR):
+                    _mark_closed(ws, "lost", 1006)
                     break
+            else:
+                # The stream ended: the peer sent a close, or the connection dropped without one.
+                code = ws.close_code
+                _mark_closed(ws, *(("lost", 1006) if code in (None, 1006) else ("client", code)))
         except Exception:
+            _mark_closed(ws, "lost", 1006)
             logger.debug("converse client pump ended", exc_info=True)
         session.stop()
 
@@ -597,6 +677,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
             await client.stop()  # a socket that drops mid-turn must not leave the turn running
         with contextlib.suppress(Exception):
             if named_connection is not None and named_connection.replaced.is_set():
+                _mark_closed(ws, "server", 4409)
                 # Send the close frame, but a peer that is not reading cannot hold up admission.
                 await asyncio.wait_for(ws.close(code=4409, message=b'attachment_replaced'), timeout=1.0)
             else:
