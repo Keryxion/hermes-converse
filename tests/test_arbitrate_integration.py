@@ -15,6 +15,11 @@ from tests.test_route import (
     Harness, _FakeStreamer, _patch_speech, _collect_turn, _speech_then_silence_pcm, _start_msg,
 )
 
+# After a granted wake the capture holds for WAKE_SPEECH_MS of speech before it accepts a pause,
+# so a turn that follows a wake needs at least that much speech (blocks are 30 ms).
+_WAKE_SPEECH_BLOCKS = 40
+
+
 @pytest.fixture(autouse=True)
 def _speech_seams(monkeypatch):
     """Replace the Hermes speech seams the driver uses with in-process equivalents."""
@@ -64,8 +69,8 @@ def _patch(monkeypatch):
     return FakeHermes('-'.join(('fixture', 'converse', 'api', 'key', '0123456789')), deltas=('Hello.',))
 
 
-async def _audio_turn(ws):
-    for chunk in _speech_then_silence_pcm():
+async def _audio_turn(ws, *, speech_blocks=_WAKE_SPEECH_BLOCKS):
+    for chunk in _speech_then_silence_pcm(speech_blocks=speech_blocks):
         await ws.send_bytes(chunk)
     frames, pcm = await _collect_turn(ws)
     assert any(f['type'] == 'thinking' and f['turn_id'] for f in frames)
