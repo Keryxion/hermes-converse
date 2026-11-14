@@ -1,99 +1,67 @@
 # Arya client tracing
 
-Tracing lets you see one wake phrase, heard by several Aryas, as one election:
-every device's claim, the one grant, the denials, and only the winner sending
-audio into a voice turn.
-
-This is what a client records. What the server records is in
-[server tracing](server_tracing.md); the two join on the IDs below.
+The server's record of a wake election already shows every device that
+claimed, which one won, and whose audio followed
+([server tracing](server_tracing.md)). A client's tracing adds the one thing
+the server cannot know: what happened on the device. Did the decision arrive in
+time, and what did the device do about it?
 
 Tracing is optional and off unless enabled. A client that does not trace still
-follows [the client spec](client.md) in full.
+follows [the client spec](client.md) in full, and the server's records are
+complete without it.
 
 ## What to record
 
-| Observation | Meaning |
+One record for each wake claim the client sends, and one for each turn. A
+record is a span or an event; either is fine if it carries the attributes
+below.
+
+| Record | Attributes |
 |---|---|
-| Wake detected | The device heard a wake phrase. |
-| Claim sent | The `wake` frame left the device. |
-| Decision received | A matching `wake_grant` or `wake_deny` arrived in time. |
-| Claim timed out | No decision in 1000 ms; the buffered audio was dropped. |
-| First audio sent | The first PCM of the activation left the device. |
-| Turn, playback, drain | The request became a reply and finished playing. |
+| Wake claim | `device_name`, `session.id`, `claim_id`, `wake_word`, `wake.outcome` |
+| Turn | `device_name`, `session.id`, `turn_id`, and the `claim_id` of the wake that started it, if one did |
 
-Record what the device saw, not what it assumes the server did. A frame that
-was sent is not a frame that arrived.
+Attributes are named after the fields in the client spec. `session.id` is the
+`session_id` from `ready`, under the name the server's spans already use. Set
+`client.kind` to `macos`, `ios`, `echo`, or `esp32` once, on the resource.
 
-An observation may be a span, an event on an existing span, or a log record.
-No particular span tree or tracing SDK is required.
+`session.id` and `claim_id` together identify a claim, and they are how a
+client's record is matched to the server's record of the same election.
+`turn_id` matches a client's turn to the server's. When a turn's frames carry
+`traceparent`, attach the client's turn record to it as well.
 
-## Joining the records
+## The outcome of a claim
 
-Every wake and first-audio record carries these attributes when it has them:
+Record exactly one `wake.outcome` for every claim sent. The record runs from
+sending the claim to its outcome, so its duration is how long the decision took.
 
-| Attribute | Value |
+| `wake.outcome` | Meaning |
 |---|---|
-| `arya.client.kind` | `macos`, `ios`, `echo`, or `esp32`. |
-| `arya.session_id` | `session_id` from `ready`. |
-| `arya.wake.claim_id` | The `claim_id` the client sent. |
-| `arya.wake.election_id` | `election_id` from the decision. |
-| `arya.wake.word` | The wake phrase. |
+| `granted` | A matching `wake_grant` arrived before the deadline. |
+| `denied` | A matching `wake_deny` arrived before the deadline. |
+| `timeout` | No decision within 1000 ms. The buffered audio was dropped. |
+| `abandoned` | The client gave up first. `wake.reason` says why: `disconnected`, `cancelled`, `buffer_overflow`, or `bad_wake`. |
 
-A claim is identified by `session_id` and `claim_id` together; a `claim_id`
-such as `wake-1` repeats on other sockets. The server gives each election an
-`election_id` and sends it on both decisions (client spec, section 8). Records
-from every device in the same election share it.
-
-Keep each platform's existing `service.name`. Device and assistant names are
-labels for reading a trace, not keys.
-
-## Client: one outcome for each claim
-
-Record exactly one `arya.wake.outcome` for every claim sent:
-
-| Outcome | Meaning |
-|---|---|
-| `granted` | A matching grant arrived before the deadline. |
-| `denied` | A matching denial arrived before the deadline. |
-| `timeout` | No decision within 1000 ms. |
-| `disconnected` | The socket was lost while waiting. |
-| `cancelled` | Stop, mute, a settings change, or Talk abandoned the claim. |
-| `buffer_overflow` | The client could not keep the buffered audio. |
-| `bad_wake` | The server rejected the claim. |
-
-Record `arya.wake.decision_ms`, the time from sending the claim to its outcome,
-measured with a monotonic clock. A decision that arrives late or for another
-claim does not change the outcome; record it as ignored with the reason.
-
-## From grant to audio
-
-Record the first PCM sent for an activation, with its claim and election. Keep
-the claim and election on turn records through follow-ups and barge-ins until
-standby. When a turn's frames carry `traceparent`, attach the client's turn
-records to it.
-
-Mark where an activation came from with `activation.source`: `wake`, `manual`,
-`continuous`, or `outbound`. Only a `wake` activation carries a claim.
-
-A denied or timed-out claim sends no audio.
+A decision that arrives late, or for another claim, does not change the
+outcome.
 
 ## Export
 
 - Off unless enabled. Use each platform's existing OTLP setting and collector
   destination.
 - Asynchronous and bounded. When a queue is full, drop telemetry.
-- Tracing never delays audio, changes an election, or extends the 1000 ms
-  deadline, whether the collector is up or down.
+- Tracing never delays audio or extends the 1000 ms deadline, whether the
+  collector is up or down.
 - Never export audio, transcripts, reply text, credentials, or hardware
   identifiers.
 
 ## Checks
 
-1. Four devices hear one phrase: each records one claim and one outcome, one
-   `granted` and three `denied`, all with the same `election_id`, and only the
-   granted device records first audio sent.
-2. The winner's claim and election stay on its turns through a follow-up and a
-   barge-in.
-3. A grant that arrives after 1000 ms: the client records `timeout` and sends no
-   audio.
-4. With export off or the collector down, the client behaves the same.
+1. A device that wins records one claim with `granted`, and its turns carry
+   that `claim_id` through a follow-up and a barge-in.
+2. A device that loses records one claim with `denied` and no turn.
+3. A grant that arrives after 1000 ms: the device records `timeout`, sends no
+   audio, and the late grant changes nothing.
+4. Each claim record matches one claim in the server's election record by
+   `session.id` and `claim_id`.
+5. With export off or the collector down, the client behaves the same.
