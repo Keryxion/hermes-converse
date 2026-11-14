@@ -385,12 +385,9 @@ def test_parse_start_config_defaults_and_clamps():
     assert parse_start_config({"quiet_interval": -3})[2] == 0.0
 
 
-def test_voice_system_prompt_signoff_instruction():
-    with_signoff = voice_system_prompt("Arya", allow_signoff=True)
-    assert "Over and out" in with_signoff and "server interprets" in with_signoff
-    assert "Over and out" not in voice_system_prompt("Arya", allow_signoff=False)
-    assert "Over and out" not in voice_system_prompt("Arya", allow_signoff=True, end_phrases=())
-    assert "Your name is Arya" in with_signoff and "Your name" not in voice_system_prompt(None)
+def test_voice_system_prompt_names_the_assistant():
+    assert "Your name is Arya" in voice_system_prompt("Arya")
+    assert "Your name" not in voice_system_prompt(None)
 
 
 # ── converse synthesizer ──
@@ -735,7 +732,7 @@ def test_stt_and_tts_threads_run_in_the_spawners_context(monkeypatch):
 
 def test_drive_converse_turns_flushes_queue_on_signoff():
     session = _FakeConverseSession(["are we done?", "a queued leftover"])
-    sent = _run_driver(session, [], ["All set. Over and out."], quiet_interval=1.0)
+    sent = _run_driver(session, [], ["All set."], quiet_interval=1.0, standby=lambda: True)
     transcripts = [f["text"] for f in sent if isinstance(f, dict) and f.get("type") == "transcript"]
     assert transcripts == ["are we done?"]
     turn_dones = [f for f in sent if isinstance(f, dict) and f.get("type") == "turn_done"]
@@ -772,7 +769,7 @@ def test_driver_hands_each_turn_its_own_recorder(monkeypatch):
     monkeypatch.setattr(cl, "emit_turn_trace", emitted.append)
     r1, r2, r3 = _Rec("r1"), _Rec("r2"), _Rec("r3")
     session = _FakeConverseSession([Utterance("first", r1), Utterance("are we done?", r2), Utterance("leftover", r3)])
-    _run_driver(session, [], ["ok.", "All set. Over and out."], quiet_interval=1.0)
+    _run_driver(session, [], ["ok.", "All set."], quiet_interval=1.0, standby=lambda: len(opened) > 1)
     assert opened == ["r1", "r2"]
     assert emitted == [r3] and r3.attrs == {"outcome": "discarded_after_signoff"}
 
@@ -788,21 +785,9 @@ def test_driver_tail_barge_emits_interrupted_not_a_turn():
     assert session.turns_begun == 0
 
 
-def test_drive_converse_turns_signoff_requests_standby():
-    sent = _run_driver(_FakeConverseSession(["are we done?"]), [], ["All set. Over and out."], quiet_interval=1.0)
+def test_drive_converse_turns_standby_tool_requests_standby():
+    sent = _run_driver(_FakeConverseSession(["are we done?"]), [], ["All set."], quiet_interval=1.0, standby=lambda: True)
     assert _turn_done_frame(sent)["next_action"] == "standby"
-
-
-def test_drive_converse_turns_signoff_is_not_spoken_but_still_flags():
-    sent = _run_driver(_FakeConverseSession(["bye"]), [], ["See you later. Over and out."], quiet_interval=1.0)
-    spoken = _spoken_bytes(sent).lower()
-    assert b"see you later" in spoken and b"over and out" not in spoken
-    assert _turn_done_frame(sent)["next_action"] == "standby"
-
-
-def test_drive_converse_turns_signoff_spoken_in_continuous_mode():
-    sent = _run_driver(_FakeConverseSession(["bye"]), [], ["See you later. Over and out."], quiet_interval=0.0)
-    assert b"over and out" in _spoken_bytes(sent).lower()
 
 
 def test_drive_converse_turns_question_requests_listen():
@@ -813,12 +798,6 @@ def test_drive_converse_turns_question_requests_listen():
 def test_drive_converse_turns_plain_reply_requests_listen():
     sent = _run_driver(_FakeConverseSession(["what's the weather?"]), [], ["It's sunny and 72."], quiet_interval=1.0)
     assert _turn_done_frame(sent)["next_action"] == "listen"
-
-
-def test_drive_converse_turns_continuous_mode_requests_listen():
-    for reply in ("All set. Over and out.", "For how long?"):
-        sent = _run_driver(_FakeConverseSession(["hi"]), [], [reply], quiet_interval=0.0)
-        assert _turn_done_frame(sent)["next_action"] == "listen"
 
 
 def test_drive_converse_turns_caps_tts_output():
@@ -949,7 +928,8 @@ def test_incomplete_signoff_keeps_listening_and_does_not_drop_queued_input(inter
     async def main():
         await drive_converse_turns(
             session=session, synth=_EchoSynth(), cap=4000, loop=asyncio.get_running_loop(),
-            send_json=send, send_bytes=send, run_turn=run, history=[], quiet_interval=1.0)
+            send_json=send, send_bytes=send, run_turn=run, history=[], quiet_interval=1.0,
+            standby=lambda: "Ready." not in str(sent))
 
     asyncio.run(main())
     completions = [frame for frame in sent if isinstance(frame, dict) and frame.get("type") == "turn_done"]
@@ -975,7 +955,7 @@ def test_standby_preserves_playback_tail_until_matching_drain():
             return "Goodbye. Over and out.", None
         await drive_converse_turns(session=session, synth=_EchoSynth(), cap=4000,
             loop=asyncio.get_running_loop(), send_json=send, send_bytes=send,
-            run_turn=run, history=[], quiet_interval=1.0)
+            run_turn=run, history=[], quiet_interval=1.0, standby=lambda: True)
         return sent
     done = _turn_done_frame(asyncio.run(scenario()))
     assert done["next_action"] == "standby" and not session._tail_active
@@ -1105,7 +1085,7 @@ def test_managed_input_reserves_transcript_before_driver_can_begin_thinking():
 def test_signoff_preserves_queued_conversation_output_in_arrival_order():
     session = _FakeConverseSession(['bye', cl.ConversationOutput('First.', 'first'),
                                   cl.ConversationOutput('Second.', 'second')])
-    sent = _run_driver(session, [], ['Goodbye. Over and out.'], quiet_interval=1)
+    sent = _run_driver(session, [], ['Goodbye.'], quiet_interval=1, standby=lambda: True)
     ids = [frame['event_id'] for frame in sent if isinstance(frame, dict)
            and frame.get('type') == 'thinking' and 'event_id' in frame]
     assert ids == ['first', 'second']
@@ -1155,16 +1135,6 @@ def test_timing_line_identifies_the_turn_and_its_outcome(caplog):
     assert "reply_chars=9" in line and "final_chars=9" in line and "spoken_chars=9" in line
     assert "next_action=listen" in line and "pcm_chunks=0" not in line
     assert "Hi there" not in caplog.text and "hello" not in caplog.text
-
-
-def test_timing_line_shows_a_bare_signoff_as_completed_but_unspoken(caplog):
-    """The 13-character sign-off is a control marker: no audio, standby requested."""
-    with caplog.at_level("INFO", logger="hermes_converse.loop"):
-        _run_driver(_FakeConverseSession(["bye"]), [], ["Over and out."], quiet_interval=1.0)
-    (line,) = _timing_lines(caplog)
-    assert "first_pcm=Nonems" in line and "reply_chars=13" in line
-    assert "outcome=completed" in line and "spoken_chars=0" in line and "pcm_chunks=0" in line
-    assert "next_action=standby" in line
 
 
 @pytest.mark.parametrize("failure", ["cancel", "error"])

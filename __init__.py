@@ -15,10 +15,12 @@ def register(ctx) -> None:
     from .cli import run_cli, setup_cli
     from .conversation import ConversationHub
     from .platform_adapter import register_platform
+    from .voice_tools import register_tools
     from .route import make_platform_factory
 
     hub = ConversationHub()
     register_platform(ctx, hub)
+    register_tools(ctx, hub)
     ctx.register_platform_handler("api_server", make_platform_factory(ctx, hub=hub))
     ctx.register_cli_command(
         name="converse",
