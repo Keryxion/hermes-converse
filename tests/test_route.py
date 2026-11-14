@@ -67,6 +67,7 @@ class Harness:
         self.route = ConverseRoute(settings_getter=getter, base_url_resolver=lambda: self.base["url"],
                                    profile_name="default", device_store=device_store)
         self.route.wire(app)
+        app['hub'] = self.route.hub
         self.app = app
         self.adapter = ConverseAdapter(PlatformConfig(enabled=True), self.route.hub,
                                        approval_choice=lambda: load_settings(getter).approval_choice)
