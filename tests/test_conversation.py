@@ -1,4 +1,4 @@
-"""Conversation attachment and output delivery over the real authenticated socket/HTTP routes."""
+"""Conversation attachment and output delivery over the real authenticated socket route."""
 import asyncio
 import time
 
@@ -8,8 +8,6 @@ from tests.support.fake_hermes import FakeHermes
 from tests.test_route import (API_KEY, Harness, _FakeStreamer, _patch_speech, _start_msg,
                               _collect_turn, _speech_then_silence_pcm)
 
-HEADERS = {"Authorization": f"Bearer {API_KEY}"}
-
 
 async def connect(client, **fields):
     ws = await client.ws_connect('/v1/audio/converse')
@@ -17,11 +15,22 @@ async def connect(client, **fields):
     return ws, await ws.receive_json(timeout=2)
 
 
+class _Published:
+    def __init__(self, result):
+        self.result = result
+        self.status = {"accepted": 202, "duplicate": 200, "expired": 410,
+                       "not_attached": 409, "busy": 429}[result]
+
+    async def json(self):
+        return {"status": self.result}
+
+
 async def publish(client, conversation_id, **fields):
-    body = {"text": "Your task finished.", "event_id": "event-1",
-            "expires_at_unix_ms": (time.time() + 60) * 1000, **fields}
-    return await client.post(f'/v1/audio/conversations/{conversation_id}/output',
-                             json=body, headers=HEADERS)
+    """Queue server-started speech the way the platform adapter's send() does."""
+    expires = fields.pop("expires_at_unix_ms", (time.time() + 60) * 1000)
+    return _Published(client.app["hub"].publish(
+        conversation_id, fields.pop("text", "Your task finished."),
+        fields.pop("event_id", "event-1"), expires_at=expires / 1000, **fields))
 
 
 @pytest.mark.asyncio
@@ -68,13 +77,8 @@ async def test_authorization_attachment_conflicts_and_validation(monkeypatch):
         bad, error = await connect(client, conversation_id='../secret')
         assert error['error'] == 'bad_conversation_id'
         await bad.close()
-        denied = await client.post(f'/v1/audio/conversations/{cid}/output', json={})
-        assert denied.status == 401
         assert (await publish(client, 'unattached')).status == 409
         assert (await publish(client, cid, expires_at_unix_ms=0)).status == 410
-        assert (await publish(client, cid, text='')).status == 400
-        assert (await publish(client, cid, next_action='broadcast')).status == 400
-        assert (await publish(client, cid, expires_at_unix_ms=10**400)).status == 400
         await ws.close()
 
 

@@ -143,7 +143,6 @@ class ConverseRoute:
         async def close_devices(app):
             await asyncio.to_thread(self._devices.close)
         app.on_cleanup.append(close_devices)
-        app.router.add_post("/v1/audio/conversations/{conversation_id}/output", self.output)
         return True
 
     async def _gateway(self) -> Any:
@@ -344,33 +343,6 @@ class ConverseRoute:
                      device_id=device_id, hub=self.hub, attachment=attachment,
                      named_device=named[0] if named else None,
                      named_connection=named[1] if named else None, transcripts=transcripts)
-
-    async def output(self, request: web.Request) -> web.Response:
-        header = request.headers.get("Authorization", "")
-        key = header[7:] if header.startswith("Bearer ") else ""
-        async with ClientSession(timeout=HTTP_TIMEOUT) as http:
-            if not await verify_api_key(self._base_url(), key, http=http):
-                raise web.HTTPUnauthorized()
-        try:
-            body = await request.json()
-        except (ValueError, TypeError):
-            raise web.HTTPBadRequest(reason="bad_output")
-        if not isinstance(body, dict):
-            raise web.HTTPBadRequest(reason="bad_output")
-        text, event_id = body.get("text"), body.get("event_id")
-        expires = body.get("expires_at_unix_ms")
-        action = body.get("next_action", "standby")
-        if (not isinstance(text, str) or not text.strip() or len(text) > 20000
-                or not isinstance(event_id, str) or not 1 <= len(event_id) <= 128
-                or isinstance(expires, bool) or not isinstance(expires, (int, float))
-                or not 0 <= expires <= 253402300799999
-                or not math.isfinite(expires) or action not in ("listen", "standby")):
-            raise web.HTTPBadRequest(reason="bad_output")
-        result = self.hub.publish(request.match_info["conversation_id"], text, event_id,
-                                  expires_at=expires / 1000, next_action=action)
-        status = {"accepted": 202, "duplicate": 200, "expired": 410,
-                  "not_attached": 409, "busy": 429}[result]
-        return web.json_response({"status": result, "event_id": event_id}, status=status)
 
 
 async def _model_options(base_url: str, api_key: str, http: ClientSession) -> dict[str, Any]:
