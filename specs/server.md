@@ -44,6 +44,8 @@ completed tool actions; cancelling generation cannot undo their side effects.
 
 Use Silero speech probability with the existing sustained active-turn energy
 check. While output or its playback tail is active, also apply the playback echo
+baseline. During an active turn, count speech within a short window so pauses
+between words do not restart it, and keep the user's own speech out of the echo
 baseline. A brief click, room noise, or soft incidental speech must not repeatedly
 cancel a reply. Model failure falls back to the energy detector without ending the
 socket. Onset acceptance is separate from the decision to capture its words.
