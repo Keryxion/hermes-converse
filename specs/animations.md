@@ -166,19 +166,4 @@ or a shape, and a non-animated level where practical.
 Animations run from a monotonic clock so their periods do not depend on frame
 rate. Rendering never blocks audio capture, network audio, or playback.
 
-## Sounds
-
-Sounds let a listener follow the state without seeing the device. They are
-quiet, and their volume is configurable.
-
-- **Wake granted:** a brief confirmation played locally as soon as the matching
-  `wake_grant` arrives. A denied or timed-out claim makes no sound.
-- **Listening:** a rising tone when listening starts from manual Talk or a
-  follow-up.
-- **Speech ended:** a falling pair, 784 Hz then 523 Hz.
-- **Thinking:** a quiet sound that repeats while thinking and stops as soon as
-  thinking ends, including on speaking, interruption, cancellation, or error.
-  It never overlaps the reply.
-
-A sound never delays audio processing, triggers a wake, or causes an
-interruption.
+The tones that accompany these states are in [tones.md](tones.md).
