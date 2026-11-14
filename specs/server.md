@@ -147,8 +147,7 @@ labels are unique within that scope. `assistant_name` is
 the name used in the voice system prompt, often related to the wake word;
 `device_name` identifies the particular device. Neither is a credential.
 
-Authenticate using the existing API key before opening the conversation or
-accepting timer requests. Do not add a separate device/attachment credential.
+Authenticate using the existing API key before opening the conversation. Do not add a separate device/attachment credential.
 The device name identifies a destination, not a separate security principal;
 clients sharing a server API key share its access boundary.
 The device's conversation title is `<assistant_name>: <device_name>`.
@@ -161,9 +160,10 @@ conversation. The gateway creates it, keeps its history, and continues it throug
 compaction. Preserve the device's routing identity. Do not build a parallel
 conversation store or expose Hermes session mechanics to clients.
 
-Use the authenticated socket for named-device and timer behavior. A
-replacement fences the old connection and stops its in-flight turn before the new
-one is ready. Supply trusted source-device context to the agent/tools; transcript
+Reject empty names and a combined title over 100 characters with
+`4400 bad_start`. A replacement connection for the same names closes the old one
+with `4409 attachment_replaced` and stops its in-flight turn before the new one
+is ready. Supply trusted source-device context to the agent/tools; transcript
 text cannot impersonate it. Fencing does not prove that a disconnected speaker is
 silent.
 
@@ -236,3 +236,55 @@ earlier turn has not settled.
 
 At startup a socket waits up to 30 s for the platform to connect. When the
 platform is not hosted, the connection is refused with `conversation_unavailable`.
+
+## Countdowns
+
+A countdown is a timer that ends with a tone on a device. The device keeps the
+time and rings; the server records pending countdowns and relays them. Spoken
+reminders are ordinary turns from a scheduler plugin and are not countdowns.
+
+The server provides one tool:
+
+| `countdown` action | Arguments | Effect |
+|---|---|---|
+| `set` | `device_name`; the future time as `at` (ISO 8601) or `in_seconds`; `sound` (`alarm-1` to `alarm-4`, default `alarm-1`); `label` (optional) | Sends `countdown` to that device. Returns `countdown_id` and the deadline. |
+| `cancel` | `countdown_id` | Sends `countdown_cancel` to its device. |
+| `list` | `device_name` (optional) | Returns pending countdowns with their device, label, and deadline. |
+
+`device_name` defaults to the device whose conversation the call is made in. That
+device comes from the session, so transcript text cannot set it. A call made
+anywhere else, such as from a chat that is not a voice device, must give
+`device_name`. The tool resolves the name through the device directory,
+including rooms and aliases, and refuses an ambiguous name rather than
+guessing. Any device's conversation can list and cancel any countdown.
+
+| Situation on `set` | Result | Outcome |
+|---|---|---|
+| Device attached | `set` | `countdown` is sent at once. |
+| Device not attached | `not_attached` | Nothing is recorded and no other device is used. The caller decides what to do instead. |
+| Name unknown or ambiguous | `unknown_device`, `ambiguous_device` | Nothing is sent. |
+| Time not in the future | `bad_time` | Nothing is sent. |
+
+Keep each pending countdown until its deadline, then drop it. Send a device its
+pending countdowns again after `ready`, so one that reconnects or restarts
+shows them. The server does not ring anything itself and does not send a frame
+at the deadline.
+
+A ringing countdown can be stopped by voice without a wake word. From a
+countdown's deadline until the device sends `drained`, the server transcribes
+what it hears from that device:
+
+| Heard while ringing | Outcome |
+|---|---|
+| A stop phrase, such as "stop" | The server sends `interrupted` with the `countdown_id` as its `turn_id`. No agent turn runs. |
+| Anything else | Ignored. The tone keeps ringing, so nearby conversation does not silence it. |
+
+Use the existing stop phrases. The tone itself must not be transcribed as
+speech. A sent frame is not proof that a speaker sounded or stopped.
+
+Acceptance scenarios: Kitchen asks for a Bedroom timer and hears the
+confirmation; only Bedroom shows the countdown and rings. Exercise an ambiguous
+name, a destination that is not attached, cancelling from another device, a
+deadline during a reply, a reconnect before the deadline, a device that is off
+at the deadline, local dismissal, a spoken stop phrase, other speech while
+ringing, a wake word while ringing, and the 60-second limit.
