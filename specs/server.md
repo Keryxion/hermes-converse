@@ -285,8 +285,8 @@ which countdown is ringing and for how long, so the agent can do more each time:
 say something in the room, tell another room, or tell the owner elsewhere.
 
 The turn is an ordinary message submitted to the gateway session. Its reply is
-spoken on the device like any other, or not at all when the agent answers
-`[SILENT]`. No turn starts after `drained`. A snooze starts the sequence again
+spoken on the device like any other, or not at all when the agent chooses to
+say nothing. No turn starts after `drained`. A snooze starts the sequence again
 from the new deadline.
 
 ### Stopping by voice
