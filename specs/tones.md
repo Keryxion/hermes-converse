@@ -8,7 +8,7 @@ in [animations.md](animations.md).
 |---|---|---|
 | Listening | Listening starts: a matching `wake_grant`, manual Talk, or a follow-up | Rising pair: 523 Hz then 784 Hz, 70 ms each |
 | Speech ended | Speech capture ends and transcription begins | Falling pair: 784 Hz then 523 Hz, 70 ms each |
-| Thinking | While the state is thinking | Soft 280 ms pulse at 330 Hz, repeated at a steady interval |
+| Thinking | Each `thinking` frame | One soft 280 ms pulse at 330 Hz |
 
 ## Rules
 
@@ -19,8 +19,8 @@ in [animations.md](animations.md).
 - After a wake word, the listening tone plays locally as soon as the matching
   `wake_grant` arrives. It does not wait for the server. A denied or timed-out
   claim makes no sound.
-- The thinking tone stops as soon as thinking ends, including on speaking,
-  interruption, cancellation, or error. It never overlaps the reply.
+- A thinking tone still sounding when the reply starts, or on interruption,
+  cancellation, or error, is cut off. It never overlaps the reply.
 - While muted, the listening and speech-ended tones do not play.
 - A tone never delays audio processing, triggers a wake, or causes an
   interruption. If a tone cannot play, the device carries on silently.
