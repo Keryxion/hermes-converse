@@ -28,6 +28,7 @@ class ConversationHub:
         # The connected ``converse`` gateway adapter, when this Hermes hosts the platform.
         self.gateway: Any = None
         self.gateway_expected = False  # the platform is registered and will connect
+        self.detached: dict[str, Any] = {}  # conversation id -> turn running after its socket left
         self.countdowns: Any = None  # set by countdowns.register_tool
 
     def attach(self, conversation_id: str, session: Any) -> Attachment:

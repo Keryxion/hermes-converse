@@ -610,10 +610,11 @@ def test_drive_converse_turns_control_frame_ordering():
     session = _FakeConverseSession(["hello there."])
     history: list = []
     sent = _run_driver(session, history, ["Hi back."], transcripts=True)
-    assert _types(sent) == ["transcript", "thinking", "speaking", "bytes", "transcript", "turn_done"]
+    # The assistant's text goes out ahead of the audio that speaks it.
+    assert _types(sent) == ["transcript", "thinking", "transcript", "speaking", "bytes", "turn_done"]
     assert sent[0]["role"] == "user" and sent[0]["text"] == "hello there."
-    assert sent[3] == ("bytes", b"Hi back.")
-    assert sent[4]["role"] == "assistant" and sent[4]["text"] == "Hi back."
+    assert sent[4] == ("bytes", b"Hi back.")
+    assert sent[2]["role"] == "assistant" and sent[2]["text"] == "Hi back."
     turn_ids = {f["turn_id"] for f in sent if isinstance(f, dict) and "turn_id" in f}
     assert len(turn_ids) == 1 and sent[0]["turn_id"] == sent[-1]["turn_id"]
     thinking = next(f for f in sent if isinstance(f, dict) and f.get("type") == "thinking")

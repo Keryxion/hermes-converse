@@ -5,7 +5,7 @@ import asyncio
 import pytest
 
 from hermes_converse.named import DeviceStore, NamedError, parse_names
-from tests.test_arbitrate_integration import _audio_turn, _patch
+from tests.test_arbitrate_integration import _audio_turn, _collect_turn, _patch
 from tests.test_route import API_KEY, Harness, _start_msg, _speech_then_silence_pcm
 
 
@@ -113,7 +113,7 @@ async def test_replacement_closes_old_socket_before_admitting_new_audio(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_replacement_stops_the_turn_in_flight(tmp_path, monkeypatch):
+async def test_replacement_keeps_the_turn_in_flight(tmp_path, monkeypatch):
     fake = _patch(monkeypatch)
     fake.hang = True
     async with Harness(fake, device_store=DeviceStore(tmp_path/'devices.db')) as client:
@@ -128,9 +128,10 @@ async def test_replacement_stops_the_turn_in_flight(tmp_path, monkeypatch):
             await asyncio.sleep(.01)
         second, ready = await connect(client)
         assert ready['type'] == 'ready'
-        assert [turn['status'] for turn in fake.turns] == ['interrupted']
+        assert [turn['status'] for turn in fake.turns] == ['running']  # the turn carries on
         fake.hang = False
-        await _audio_turn(second)
+        frames, pcm = await _collect_turn(second)  # the rest of the turn arrives here
+        assert [f['type'] for f in frames if f['type'] != 'transcript'][-1] == 'turn_done' and pcm
         await second.close()
 
 
