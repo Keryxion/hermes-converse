@@ -10,12 +10,10 @@ import math
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
-from .phrases import normalize_phrases
 from .arbitrate import DEFAULT_WAKE_WINDOW, POLICY_FIRST_TO_ENDPOINT, POLICY_WAKE_SIGNAL
 from .speech_detector import DEFAULT_VAD_MODEL
 
 DEFAULT_NAME = "Arya"
-DEFAULT_END_PHRASES = ("over and out",)
 # ── cross-device voice arbitration ────────────────────────────────────────────────────────
 DEFAULT_ARBITRATE_POLICY = POLICY_WAKE_SIGNAL
 DEFAULT_ARBITRATE_DEVICE_ID = None  # ''/None = auto-generate from socket
@@ -57,7 +55,6 @@ class Settings:
     turn_timeout: float = DEFAULT_TURN_TIMEOUT
     tail_fallback: float = DEFAULT_TAIL_FALLBACK
     max_tts_chars: int = DEFAULT_MAX_TTS_CHARS
-    end_phrases: tuple[str, ...] = DEFAULT_END_PHRASES
     endpoint_model: bool = False
     endpoint_threshold: float = DEFAULT_ENDPOINT_THRESHOLD
     endpoint_silence_ms: int = DEFAULT_ENDPOINT_SILENCE_MS
@@ -124,7 +121,6 @@ def load_settings(get: Getter) -> Settings:
         turn_timeout=_number(get("turn_timeout_seconds", DEFAULT_TURN_TIMEOUT), DEFAULT_TURN_TIMEOUT),
         tail_fallback=_number(get("playback_tail_timeout_seconds", DEFAULT_TAIL_FALLBACK), DEFAULT_TAIL_FALLBACK),
         max_tts_chars=int(_number(get("max_tts_chars_per_turn", DEFAULT_MAX_TTS_CHARS), DEFAULT_MAX_TTS_CHARS)),
-        end_phrases=normalize_phrases(get("end_phrases", DEFAULT_END_PHRASES), DEFAULT_END_PHRASES),
         endpoint_model=_model_enabled(get("endpoint_model", "")),
         vad_model="energy" if str(get("vad_model", DEFAULT_VAD_MODEL)).strip().lower() == "energy" else "silero",
         endpoint_threshold=min(1.0, max(0.0, _number(get("endpoint_threshold", DEFAULT_ENDPOINT_THRESHOLD),

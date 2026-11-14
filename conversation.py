@@ -5,7 +5,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 import threading
 import time
-from typing import Any
+from typing import Any, Callable, Optional
 
 from .loop import ConversationOutput
 
@@ -16,6 +16,7 @@ class Attachment:
     conversation_id: str = ""
     seen: OrderedDict = field(default_factory=OrderedDict)
     pending: int = 0
+    send: Optional[Callable[[dict], Any]] = None  # sends a JSON frame to the device
 
 
 class ConversationHub:
@@ -35,6 +36,11 @@ class ConversationHub:
             item = Attachment(session, conversation_id)
             self._attachments[conversation_id] = item
             return item
+
+    def attachment(self, conversation_id: str) -> Optional[Attachment]:
+        with self._lock:
+            item = self._attachments.get(conversation_id)
+            return item if item is not None and not item.session.stopped else None
 
     def detach(self, conversation_id: str, attachment: Attachment) -> None:
         with self._lock:

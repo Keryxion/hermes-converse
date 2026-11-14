@@ -98,9 +98,8 @@ playback-tail tracking; keep sending microphone audio throughout playback,
 Every `turn_done` includes `next_action: "listen"` or `"standby"`. After speaker drain and
 `drained`, `listen` keeps the microphone stream open for a fresh user utterance; `standby` stops
 upstream audio and returns to local wake detection while keeping the socket open. The server
-chooses the action; clients never interpret sign-off phrases. Normal completions, cancellations,
-interruptions, and errors return `listen`; only a successful sign-off in session mode requests
-`standby`.
+chooses the action. Normal completions, cancellations, interruptions, and errors return
+`listen`; only a turn in which the agent called the `standby` tool requests `standby`.
 
 **Session mode** (`quiet_interval` > 0) is for wake-word devices: the server reports quiet in
 *received* audio, recognizes stop phrases, and decides when to return the client to standby.
@@ -136,7 +135,6 @@ plugin settings form):
 | `turn_timeout_seconds` | `120` | a turn that makes no progress for this long is stopped and reported; each tool call and model call counts as progress |
 | `playback_tail_timeout_seconds` | `45` | how long to wait for the client's `drained` frame |
 | `max_tts_chars_per_turn` | `1500` | safety cap on how much of one reply is spoken |
-| `end_phrases` | `[over and out]` | session mode: a reply ending with one of these signs off |
 | `vad_model` | `silero` | speech detection with automatic energy fallback; set `energy` to use RMS detection only |
 | `endpoint_model`, `endpoint_threshold` | off, `0.5` | Smart Turn v3 semantic endpointer (see below) |
 | `endpoint_silence_ms` | `700` | silence that ends an utterance; with Smart Turn, the first completion check |
@@ -295,7 +293,8 @@ API-server client.
 | `vad.py`, `speech_detector.py`, `silero_vad.py` | energy/Silero speech detection, verified model cache, endpointing and WAV capture |
 | `synth.py` | one `text → int16 PCM` seam over streaming or one-shot TTS, plus resampling |
 | `speech.py` | the only module that imports Hermes core speech helpers |
-| `phrases.py`, `settings.py` | stop/end phrase policy and the settings schema |
+| `settings.py` | the settings schema |
+| `voice_tools.py` | the `speak_this`, `play_tone` and `standby` agent tools |
 | `named.py` | named-device routing records and public Hermes conversation lookup/continuation |
 | `turn_detector.py`, `tracing.py` | the optional Smart Turn endpointer and host-configured OTEL tracing backend |
 

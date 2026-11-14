@@ -32,9 +32,8 @@ from typing import Any, Awaitable, Callable, Iterator, Optional
 
 from . import speech, vad
 from .speech_detector import DEFAULT_VAD_MODEL, SpeechDetector
-from .phrases import is_end_phrase, strip_end_phrase
 from .settings import (
-    DEFAULT_CAPTURE_NO_DATA_SECONDS, DEFAULT_END_PHRASES, DEFAULT_ENDPOINT_MAX_SILENCE_MS,
+    DEFAULT_CAPTURE_NO_DATA_SECONDS, DEFAULT_ENDPOINT_MAX_SILENCE_MS,
     DEFAULT_ENDPOINT_SILENCE_MS, DEFAULT_MAX_TTS_CHARS, DEFAULT_NAME, DEFAULT_TAIL_FALLBACK,
     DEFAULT_TURN_TIMEOUT)
 from .synth import split_text_for_tts_stream
@@ -876,12 +875,10 @@ VOICE_PROMPT = (
 )
 
 
-def voice_system_prompt(name: Optional[str] = None, *, allow_signoff: bool = False,
-                        end_phrases: tuple[str, ...] = DEFAULT_END_PHRASES,
+def voice_system_prompt(name: Optional[str] = None, *,
                         device_name: Optional[str] = None, recipient_id: Optional[str] = None) -> str:
     """Ephemeral system prompt for one converse turn: an identity + wake-word preamble when *name*
-    is given, the spoken-brevity rules, and — in session mode — the sign-off instruction (ending a
-    reply with the first end phrase tells the server to end the current activation)."""
+    is given and the spoken-brevity rules."""
     name = (str(name).strip() if name is not None else "")
     prompt = VOICE_PROMPT
     if name:
@@ -906,12 +903,6 @@ def voice_system_prompt(name: Optional[str] = None, *, allow_signoff: bool = Fal
             "destination, use a routing-capable tool and clarify ambiguous labels; do not invent "
             "cross-device delivery or claim that it is supported when the tool cannot do it."
         )
-    if allow_signoff and end_phrases and end_phrases[0]:
-        who = name or "the assistant"
-        prompt += (
-            f" When the exchange is complete and you don't expect the user to follow up, end "
-            f"your reply with '{end_phrases[0].capitalize()}.' — the server interprets that as "
-            f"{who} signing off from the current exchange. Use it only when truly done, never mid-task.")
     return prompt
 
 
@@ -934,7 +925,7 @@ class _Driver:
     turn_timeout: float
     tail_fallback: float
     max_tts_chars: int
-    end_phrases: tuple[str, ...]
+    standby: Optional[Callable[[], bool]]
     transcripts: bool
     tool_calls: Optional[Callable[[], int]]
     reasoning_tokens: Optional[Callable[[], Optional[int]]]
@@ -989,7 +980,7 @@ async def drive_converse_turns(
     turn_timeout: float = DEFAULT_TURN_TIMEOUT,
     tail_fallback: float = DEFAULT_TAIL_FALLBACK,
     max_tts_chars: int = DEFAULT_MAX_TTS_CHARS,
-    end_phrases: tuple[str, ...] = DEFAULT_END_PHRASES,
+    standby: Optional[Callable[[], bool]] = None,
     transcripts: bool = False,
     tool_calls: Optional[Callable[[], int]] = None,
     reasoning_tokens: Optional[Callable[[], Optional[int]]] = None,
@@ -1017,7 +1008,7 @@ async def drive_converse_turns(
                 send_bytes=send_bytes, run_turn=run_turn, history=history,
                 quiet_interval=quiet_interval, interrupt_turn=interrupt_turn,
                 turn_timeout=turn_timeout, tail_fallback=tail_fallback, max_tts_chars=max_tts_chars,
-                end_phrases=tuple(end_phrases), transcripts=transcripts, tool_calls=tool_calls,
+                standby=standby, transcripts=transcripts, tool_calls=tool_calls,
                 reasoning_tokens=reasoning_tokens, last_progress=last_progress)
     session.enable_turn_control()
     async def notify_tail_barge(turn_id):
@@ -1189,11 +1180,11 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
         await d.send_json({"type": "interrupted", "turn_id": turn.turn_id})
     elif turn_err:
         await d.send_json({"type": "error", "error": turn.result["err"], "turn_id": turn.turn_id})
-    # Only a completed reply may sign off. Partial output from a failed or interrupted
+    # Only a completed turn may go to standby. Partial output from a failed or interrupted
     # run is not a decision to put the client in standby.
     completed = not (barged or turn_err or turn.timed_out)
     next_action = (
-        "standby" if completed and d.quiet_interval > 0 and is_end_phrase(reply, d.end_phrases)
+        "standby" if completed and d.standby is not None and d.standby()
         else "listen"
     )
     if completed and turn.output:
@@ -1206,7 +1197,7 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
         next_action = "listen"
     # One line per turn that says which turn it was and why it was (or was not) heard. Lengths
     # only: never the transcript or reply text. reply_chars counts streamed deltas, final_chars the
-    # run's final reply, spoken_chars what reached TTS (a stripped sign-off leaves it at 0).
+    # run's final reply, spoken_chars what reached TTS.
     outcome = ("cancelled" if cancelled_before_start else "timed_out" if turn.timed_out
                else "barged" if barged else "error" if turn_err else "completed")
     logger.info(
@@ -1289,9 +1280,6 @@ def _produce_speech(d: _Driver, turn: _Turn) -> None:
     try:
         for sentence in _reply_sentences(d, turn):
             cleaned = speech.strip_markdown(sentence)
-            # The sign-off phrase is a control marker, not something to say aloud.
-            if d.quiet_interval > 0:
-                cleaned = strip_end_phrase(cleaned, d.end_phrases)
             if not cleaned:
                 continue
             turn.ns.setdefault("first_sentence", time.time_ns())

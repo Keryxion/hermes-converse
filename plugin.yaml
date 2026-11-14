@@ -58,10 +58,6 @@ config_schema:
     type: int
     default: 1500
     description: "Safety cap on how much of one reply is spoken aloud."
-  end_phrases:
-    type: list
-    default: ["over and out"]
-    description: "Session mode: a reply ending with one of these signs off (turn_done.next_action=standby)."
   endpoint_model:
     type: str
     default: ""

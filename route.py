@@ -494,7 +494,9 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
     session.enable_turn_control()
     session.start()
     history: list[dict[str, str]] = []
-    allow_signoff = quiet_interval > 0
+    if attachment is not None:
+        # Tools run on worker threads; frames go out through the socket's own loop.
+        attachment.send = lambda frame: asyncio.run_coroutine_threadsafe(ws.send_json(frame), loop)
     default_model = (settings.model, settings.provider)
     selected_model = default_model
     wake_tasks: set[asyncio.Task] = set()
@@ -566,7 +568,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
         result = await client.run_turn(
             text=transcript, on_delta=on_delta,
             instructions=voice_system_prompt(
-                name, allow_signoff=allow_signoff, end_phrases=settings.end_phrases,
+                name,
                 device_name=named_device.device_name if named_device else None,
                 recipient_id=named_device.recipient_id if named_device else None),
             model=model, provider=provider)
@@ -586,7 +588,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
             last_progress=lambda: client.last_progress,
             turn_timeout=settings.turn_timeout, tail_fallback=settings.tail_fallback,
             max_tts_chars=settings.max_tts_chars,
-            end_phrases=settings.end_phrases,
+            standby=lambda: client.standby,
         )
 
     pump = asyncio.ensure_future(_pump_client())

@@ -65,6 +65,8 @@ class _VoiceTurn:
     final: Optional[str] = None
     streamed: str = ""  # the current model response's text already handed to TTS
     earlier: str = ""  # the last model response that carried text, once another has started
+    exclusive: bool = False  # speak_this was called: only its text is spoken
+    standby: bool = False  # the agent called standby
     tool_calls: int = 0
     reasoning_tokens: Optional[int] = None
     progress_at: float = 0.0  # monotonic time the agent last did anything
@@ -245,6 +247,8 @@ class ConverseAdapter(BasePlatformAdapter):
         """Speak what the stream did not carry. After this the turn's speech is complete."""
         text = final.strip()
         turn.final = final
+        if turn.exclusive:
+            return
         if not text or text.upper() == SILENT:
             return
         # Another model call can start between the reply's last delta and this send (Hermes's
@@ -315,7 +319,7 @@ class ConverseAdapter(BasePlatformAdapter):
         turn.progress_at = time.monotonic()  # reasoning counts as progress too
         if kind != "text" or not isinstance(delta, str) or not delta:
             return
-        if turn.stopped or turn.final is not None:
+        if turn.stopped or turn.final is not None or turn.exclusive:
             return
         turn.streamed += delta
         turn.on_delta(delta)
@@ -368,6 +372,10 @@ class GatewayTurns:
     @property
     def tool_calls(self) -> int:
         return self._turn.tool_calls if self._turn is not None else 0
+
+    @property
+    def standby(self) -> bool:
+        return self._turn is not None and self._turn.standby
 
     @property
     def reasoning_tokens(self) -> Optional[int]:

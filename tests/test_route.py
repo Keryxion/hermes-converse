@@ -219,7 +219,7 @@ async def test_settings_drive_the_model_and_the_prompt(monkeypatch):
     fake = FakeHermes(API_KEY)
     streamer = _FakeStreamer([b"\x01\x02"])
     _patch_speech(monkeypatch, streamer, transcript="what time is it")
-    settings = {"name": "Hal", "voice_model": "fast-model", "voice_provider": "local-llm", "end_phrases": ["that is all"]}
+    settings = {"name": "Hal", "voice_model": "fast-model", "voice_provider": "local-llm"}
     async with Harness(fake, settings) as client:
         ws = await client.ws_connect("/v1/audio/converse", protocols=(VOICE_PROTOCOL, _key_protocol()))
         try:
@@ -233,8 +233,7 @@ async def test_settings_drive_the_model_and_the_prompt(monkeypatch):
     (turn,) = fake.turns
     assert turn["model"] == "fast-model" and turn["provider"] == "local-llm"
     assert fake.commands == ["/model fast-model --provider local-llm"]
-    assert turn["instructions"] == voice_system_prompt("Hal", allow_signoff=True, end_phrases=("that is all",))
-    assert "That is all" in turn["instructions"]
+    assert turn["instructions"] == voice_system_prompt("Hal")
 
 
 @pytest.mark.asyncio
