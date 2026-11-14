@@ -49,7 +49,7 @@ cancel a reply. Model failure falls back to the energy detector without ending t
 socket. Onset acceptance is separate from the decision to capture its words.
 
 Once capture owns input, old completion, cancellation, `drained`, and tail timeout
-must not clear its audio, pre-roll, or pending transcript. An old `stop_listening` must not
+must not clear its audio, pre-roll, or pending transcript. An old `standby` call must not
 put a client into standby over an accepted continuation. Fence discarded or
 superseded output: it must not send more PCM or create another agent run. Settle
 old work before admitting the next run; never execute both concurrently.
@@ -174,7 +174,7 @@ by token count. Configure these server-side; do not add client fields or another
 compactor. A compaction trigger is not a hard limit on retained context.
 Hermes owns compression and retention. Verify
 required Hermes API support, preserve history through continuation, and recover
-local `stop_listening` bookkeeping where needed. Never replay an unacknowledged request.
+local `standby` bookkeeping where needed. Never replay an unacknowledged request.
 
 Verify first setup, concurrent creation, reconnect/restart, failed
 lookup, unauthorized access, compression continuation, and replacement
@@ -246,7 +246,7 @@ They act only on the device whose conversation calls them.
 |---|---|---|
 | `speak_this` | `text` | The device says exactly `text`, and nothing else the turn produces is spoken. |
 | `play_tone` | `tone`: `confirm` or `error` | The device plays that tone (`tones.md`). |
-| `stop_listening` | None | The device stops listening when this turn's playback has drained: `turn_done` carries `next_action: "standby"`. |
+| `standby` | None | The device goes to standby when this turn's playback has drained: `turn_done` carries `next_action: "standby"`. It stops sending audio and waits for the wake word or Talk. |
 
 ### `speak_this`
 
@@ -274,11 +274,13 @@ Send `{"type":"tone","tone":"confirm"}` to the device. A tone plays before any
 speech from the same turn. It is not a reply: it has no `turn_id`, and the
 device sends no `drained` for it.
 
-### `stop_listening`
+### `standby`
 
-The agent calls `stop_listening` when the exchange is over, for example after
-"thanks, that's all". The server does not look for a sign-off phrase in the
-reply. A turn that does not call it ends with `next_action: "listen"`.
+The agent calls `standby` when the exchange is over, for example after
+"thanks, that's all". The tool, the `next_action` value, and the device state
+share the one name. Standby is not mute: the device still hears its wake word.
+The server does not look for a sign-off phrase in the reply. A turn that does
+not call `standby` ends with `next_action: "listen"`.
 
 | Tool result | Meaning |
 |---|---|
