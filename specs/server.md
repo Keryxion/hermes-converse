@@ -140,7 +140,8 @@ run, the agent's reply says so.
 Verify each allowed choice by voice and by screen; a plain yes answering `once`;
 a choice that was not offered; an unclear reply once and
 twice, a failed summary call, Hermes's timeout, a stale or repeated response,
-cancellation, disconnect, a deny-only prompt, and the summary's own echo. Verify
+cancellation, a disconnect and reconnect while pending, a prompt that arrives with
+no device attached, a deny-only prompt, and the summary's own echo. Verify
 the action runs once after approval and never otherwise, and that neither model
 call appears in the conversation's history.
 
