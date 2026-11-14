@@ -293,7 +293,7 @@ and API-key authentication stay on the API server.
 | Turn settled | `on_processing_complete` |
 | Barge-in, `cancel`, `stop` | `interrupt_session_activity`, then wait for the turn to settle |
 | Tool and reasoning progress | `pre_tool_call` and `post_api_request` plugin hooks |
-| `new_conversation` from the client | the gateway `/new` command, after stopping any turn in flight; its confirmation is not spoken, and the client is sent `new_conversation` when it is done |
+| `command` from the client | the gateway command named in `text`, after stopping any turn in flight; its reply is not spoken and goes back to the client in a `command` frame |
 | Model selection | the gateway `/model` command, sent only when the choice differs from the session's; its confirmation is not spoken |
 
 For a named device the chat is the device's conversation: chat name
@@ -328,6 +328,18 @@ earlier turn has not settled.
 
 At startup a socket waits up to 30 s for the platform to connect. When the
 platform is not hosted, the connection is refused with `conversation_unavailable`.
+
+## Commands from a device
+
+`voice_commands` lists the gateway commands a device may send in a `command`
+frame, by name. The default is `new` and `compress`. A command that is not
+listed is refused with `not_allowed`. Commands that answer or bypass approvals,
+such as `/approve`, `/deny`, and `/yolo`, are refused whatever the setting
+says.
+
+After `/new` the device stays attached to its conversation, which keeps the
+title `<assistant_name>: <device_name>`. Later turns and catch-up use the new
+conversation.
 
 ## Catching up
 
