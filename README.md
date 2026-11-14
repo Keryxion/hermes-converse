@@ -116,19 +116,13 @@ settles its run before accepting new work. Uncertain admission or unfinished can
 The server keeps device identities/session references in profile-local
 `plugin-data/hermes-converse/devices.db`. Messages, compression, and retention stay in Hermes.
 
-Completed responses for the underlying conversation can play without microphone input or a wake word. The public
-final-response hook suppresses voice-owned duplicates and `[SILENT]` output; producers outside
-the process can use authenticated `POST /v1/audio/conversations/<id>/output` with `event_id`,
-`text`, and `expires_at_unix_ms`. Delivery is connected-only and waits for prior speaker drain.
+Completed responses for the underlying conversation can play without microphone input or a wake word.
+Delivery is connected-only and waits for prior speaker drain.
 See [client spec section 9](specs/client.md#9-conversation-output-without-user-input).
 
-Announcement/alarm capabilities and playback acknowledgements, server-owned timers, and
-synchronized group announcements remain in [issue #34](https://github.com/Keryxion/hermes-converse/issues/34).
-Heartbeat 2 scheduling still needs integration with API conversations; installing it alone does
-not enable later voice delivery. Its installed `pulse` tool may refuse API-server sessions;
-the prompt requires the assistant to report that refusal and to confirm only successful scheduling
-receipts. It explains that cancelling speech does not cancel a scheduled timer. Clients do not
-schedule offline alarms.
+A countdown is a timer that ends with a tone on a device; see
+[client spec section 10](specs/client.md#10-countdowns). Spoken reminders come from a scheduler
+plugin such as Cadence and play as ordinary server-started turns.
 
 ## Settings
 

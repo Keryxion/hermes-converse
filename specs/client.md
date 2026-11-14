@@ -145,7 +145,7 @@ wake word again mid-turn and you want to keep the conversation going.
 | `turn_done` | the reply is fully sent; `next_action` tells the client to listen or enter standby after drain |
 | `quiet` | session mode: the stream has been silent for another `quiet_interval` seconds |
 | `error` | the turn failed (spoken-safe text) |
-| `alarm` | Ring a bundled alarm sound (section 10). |
+| `countdown`, `countdown_cancel` | Start or cancel a countdown that ends with a tone (section 10). |
 
 These are the only server frames, apart from `model_changed` and `model_error`
 (section 11). Turn liveness is the repeated `thinking` frame; there is no
@@ -303,7 +303,7 @@ finished or been discarded. Send `drained` for that turn, then apply its
 pending action. Do not apply a late completion/action from an abandoned
 turn to a newer activation. Cancellation, interruption, errors, and timeouts
 return `listen` for ordinary activation turns; a partial or failed reply cannot
-put the client in standby. Timer alarms restore the prior idle/listening state
+put the client in standby. Countdown tones restore the prior idle/listening state
 after drain (section 10).
 A normal reply also returns `listen`, even when it does not ask a question.
 The current server requests `standby` only for a successful server-side
@@ -546,90 +546,61 @@ drain; stale output is discarded instead of played late. Ordinary barge-in,
 device attached to that conversation. It is never broadcast and never runs a
 wake election.
 
-### Publishing completed output
 
-An authenticated producer can send a completed conversation response. It is
-spoken as a turn with a fresh `turn_id`, and its `event_id` is carried on the
-initial `thinking` / `speaking` frames:
+## 10. Countdowns
 
-```http
-POST /v1/audio/conversations/<conversation_id>/output
-Authorization: Bearer <API_SERVER_KEY>
-Content-Type: application/json
-```
+A countdown is a timer that ends with a tone. It is set by asking the
+assistant; the client sends no frames to create one. A countdown defaults to
+the requesting device and may target another named device, as in "set a timer
+on Bedroom". The requesting device speaks the confirmation; the countdown goes
+to the destination. A spoken reminder is not a countdown: it arrives as an
+ordinary server-started turn (section 9).
 
-```json
-{"event_id":"followup-42","text":"Your task is finished.","expires_at_unix_ms":1794142860000,"next_action":"standby"}
-```
-
-`event_id` is a nonempty string of at most 128 characters; `text` is nonempty
-and at most 20,000 characters. `expires_at_unix_ms` is required. Optional
-`next_action` defaults to `standby`; choose `listen` to request a follow-up.
-The key must pass the same profile API authentication as a voice socket.
-
-| HTTP result | meaning |
-|---|---|
-| 202 `accepted` | Queued for the attached client; not an acknowledgement of audible playback. |
-| 200 `duplicate` | This attachment has already accepted this event ID; no second playback is queued. |
-| 400 | Invalid payload. |
-| 401 | Authentication failed. |
-| 409 `not_attached` | No live recipient; output is not retained for reconnect. |
-| 410 `expired` | Already expired; not queued. |
-| 429 `busy` | The bounded pending-output queue is full; producer must decide whether to retry before expiry. |
-
-An in-progress user capture takes priority over unsolicited output, even
-when its STT result is empty. Expired queued output is skipped before playback. Deduplication retains the
-last 1024 accepted IDs per attachment; it is not a durable delivery ledger.
-Hook output uses `turn:<turn_id>` IDs and a 60-second delivery lifetime.
-Detaching removes the subscription and pending output; reattachment does
-not replay old conversation responses. The scheduler/producer owns delivery
-policy and must not equate an HTTP acceptance with the user hearing it.
-This endpoint delivers supplied text; it does not append a user/model turn
-to persisted history. Producers that require conversation memory must
-record their completed response through the conversation owner.
-
-
-## 10. Alarms
-
-Timers are set by asking the assistant; the client sends no timer frames. A
-timer defaults to the requesting device and may target another named device, as
-in "set a timer on Bedroom". The requesting device speaks the confirmation; the
-alarm goes to the destination.
-
-Every client bundles four alarm sounds: `alarm-1`, `alarm-2`, `alarm-3`, and
-`alarm-4`.
-
-The server sends `alarm` only to the device that should ring, so the frame names
-no device: a client that receives one rings itself. It arrives without a wake
-word or user transcript:
+The server sends `countdown` only to the device it is for, so the frame names
+no device. It arrives when the countdown is set, not when it ends:
 
 ```json
-{"type":"alarm","turn_id":"alarm-9","sound":"alarm-1","label":"tea"}
+{"type":"countdown","countdown_id":"countdown-9","deadline_unix_ms":1794143100000,"sound":"alarm-1","label":"tea"}
 ```
 
-Play the bundled sound named in `sound`, repeating it, and show `label` where
-the device has a screen. `label` may be absent. Do not overlap the alarm with a
-reply.
+`deadline_unix_ms` is server time; convert it with the clock offset from `ready`
+(section 2). `label` may be absent. A device with a screen shows the time
+remaining and the label. A repeated `countdown` with the same `countdown_id`
+replaces the earlier one; the server sends pending countdowns again after
+`ready`.
+
+A countdown can be cancelled before it ends:
+
+```json
+{"type":"countdown_cancel","countdown_id":"countdown-9"}
+```
+
+### Ringing
+
+At the deadline the device rings, whether or not it is connected. Every client
+bundles four sounds: `alarm-1`, `alarm-2`, `alarm-3`, and `alarm-4`. Play the
+one named in `sound`, repeating it. If a reply is playing, ring when it has
+drained. A countdown whose deadline passed while the device was off is not rung
+late.
 
 Stop ringing on the first of:
 
 - a local dismissal, such as a button or tap;
-- `interrupted` for the alarm's `turn_id`, which the server sends when it hears
-  "stop";
+- `interrupted` with the `countdown_id` as its `turn_id`, which the server
+  sends when it hears "stop";
 - the wake word, which then proceeds as an ordinary wake;
 - 60 seconds.
 
-When the sound has actually stopped, send `drained` for the alarm's `turn_id`:
+When the sound has actually stopped, send `drained` with the `countdown_id` as
+its `turn_id`:
 
 ```json
-{"type":"drained","turn_id":"alarm-9"}
+{"type":"drained","turn_id":"countdown-9"}
 ```
 
-Keep sending microphone audio while ringing, unless muted, so the alarm can be
-stopped by saying "stop" without the wake word. Alarm audio must not become a new request. After the alarm
-stops, return to the state the device was in before it; an alarm does not open
-a user activation. A device that was not connected when its alarm fired does
-not ring it after reconnecting.
+Send microphone audio while ringing, unless muted, so the countdown can be
+stopped by saying "stop" without the wake word. After it stops, return to the
+state the device was in before; ringing does not open a user activation.
 
 
 ## 11. Changing the chat model on an attached voice connection
