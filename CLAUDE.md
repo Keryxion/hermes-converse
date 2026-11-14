@@ -19,27 +19,7 @@
   `specs/server.md`, not the client contract.
 - State intended behavior directly. Do not qualify it with "currently" or recount
   old implementations and abandoned designs.
+- A merged spec is simple, accurate, and not proposed. A proposal lives in a pull
+  request until it is decided; do not write "proposed" sections into a spec.
 - A spec-only request authorizes documentation changes, not implementation or deployment.
 - Keep related PRs consistent, but do not add unrelated features while editing them.
-
-## Names and conversations
-
-- `assistant_name` is what the assistant answers to, such as `Alexa` or `Arya`.
-- `device_name` labels the physical device, such as `Den Echo` or `Kitchen`.
-- The conversation title is `<assistant_name>: <device_name>`.
-- Use Hermes's existing conversations, titles, history, and compaction settings.
-- Do not add a conversation override, switch/reset protocol, or inactivity reset.
-- Use the existing API key. Do not introduce attachment tokens or device credentials.
-- Names identify the device in this contract. Do not promise identity/history
-  preservation through renames or invent a rename mechanism.
-- Do not add Unicode normalization requirements or other unrequested name machinery.
-- Use the colon in conversation titles; do not substitute an em dash.
-
-## Countdowns
-
-- The specs call it a countdown. "Timer" is only what a person says, as in "set a timer".
-- A countdown belongs to the device whose conversation set it. It counts down and rings there.
-- A countdown for another room is arranged by asking that room's conversation; the
-  server has no device argument for countdowns.
-- Confirmation is spoken where the person asked; the alarm rings where the countdown lives.
-- Keep client messages simple; server scheduling details belong in the server spec.
