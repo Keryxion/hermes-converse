@@ -147,8 +147,7 @@ labels are unique within that scope. `assistant_name` is
 the name used in the voice system prompt, often related to the wake word;
 `device_name` identifies the particular device. Neither is a credential.
 
-Authenticate using the existing API key before opening the conversation or
-accepting timer requests. Do not add a separate device/attachment credential.
+Authenticate using the existing API key before opening the conversation. Do not add a separate device/attachment credential.
 The device name identifies a destination, not a separate security principal;
 clients sharing a server API key share its access boundary.
 The device's conversation title is `<assistant_name>: <device_name>`.
@@ -161,9 +160,10 @@ conversation. The gateway creates it, keeps its history, and continues it throug
 compaction. Preserve the device's routing identity. Do not build a parallel
 conversation store or expose Hermes session mechanics to clients.
 
-Use the authenticated socket for named-device and timer behavior. A
-replacement fences the old connection and stops its in-flight turn before the new
-one is ready. Supply trusted source-device context to the agent/tools; transcript
+Reject empty names and a combined title over 100 characters with
+`4400 bad_start`. A replacement connection for the same names closes the old one
+with `4409 attachment_replaced` and stops its in-flight turn before the new one
+is ready. Supply trusted source-device context to the agent/tools; transcript
 text cannot impersonate it. Fencing does not prove that a disconnected speaker is
 silent.
 
@@ -237,37 +237,31 @@ earlier turn has not settled.
 At startup a socket waits up to 30 s for the platform to connect. When the
 platform is not hosted, the connection is refused with `conversation_unavailable`.
 
-## Timer service
+## Alarms
 
-Agent tools and client requests use the same server timer service. Persist each
-timer's identity, owner, source Arya, originating Hermes session reference,
-destination recipient, label, deadline, and state. Resolve the spoken target
-through the device directory and keep the original destination.
+The server does not schedule timers. Scheduling, persistence, and everything
+else about a timer belong to an external plugin. The server provides one tool:
 
-Default to the trusted requesting Arya. Authenticated clients may target or
-manage another Arya on the same server. Reject ambiguous names before mutation.
-Check destination availability before confirming creation; never substitute
-another speaker. Source devices cannot claim playback on behalf
-of the destination.
+| Tool | Arguments | Effect |
+|---|---|---|
+| `ring_alarm` | `device_name` (defaults to the requesting device), `sound` (`alarm-1` to `alarm-4`, default `alarm-1`), `label` (optional) | Sends `alarm` to that device. |
 
-Commit mutations and same-request retry results together. Recover a committed
-creation after a lost reply without creating another timer; retries must keep
-the original destination. Cancellation and expiry must have
-one authoritative winner, with an explicit already-expired outcome.
+The tool resolves `device_name` through the device directory, including rooms
+and aliases, and refuses an ambiguous name rather than guessing. The requesting
+device is supplied as trusted context, so the default cannot be set from
+transcript text.
 
-Reuse installed Hermes scheduling facilities where suitable. An alarm must not
-wait for an LLM run or depend on a sleeping agent. Persist expiry/delivery state
-so a restart cannot lose a deadline or create duplicate alarm occurrences. Use
-one serialized audio path per destination; bound ringing and stop on dismissal.
-Do not mistake a sent frame for proof that a speaker sounded or stopped.
+| Situation | Outcome |
+|---|---|
+| Device attached and idle | The alarm is sent at once. |
+| Device capturing or replying | The alarm is sent after the current exchange. |
+| Device not attached | The tool reports failure. Nothing is queued for a later connection and no other device rings. |
 
-Synchronize active and missed/unconfirmed timers on reconnect. Never replay
-stale alarms. Destination deduplication must survive reconnects/restarts; when
-playback cannot be established, report uncertainty rather than ring again.
-Define server retention/retry bounds before implementation. Those details and
-the backing store are server responsibilities, not additional client modes.
+The alarm ends when the device sends `drained`. A voice interruption during
+ringing sends `interrupted` for the alarm's `turn_id` and is not transcribed as
+a request. A sent frame is not proof that a speaker sounded or stopped.
 
-Acceptance scenarios: Kitchen requests a Bedroom timer and keeps its own
-conversation; only Bedroom rings. Exercise ambiguous and
-offline destinations, lost create replies, expiry/cancel races, restart,
-duplicate alarms, local/remote dismissal, and reconnect without stale playback.
+Acceptance scenarios: Kitchen asks for a Bedroom timer and hears the
+confirmation; only Bedroom rings. Exercise an ambiguous name, a destination that
+is not attached, an alarm arriving during a reply, local and voice dismissal,
+the 60-second limit, and reconnect without a stale alarm.

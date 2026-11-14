@@ -56,8 +56,8 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 | `input_rate` | sample rate of the PCM you'll send (8000–48000, default 16000) |
 | `output_rate` | sample rate of PCM the server sends back (default 24000) |
 | `quiet_interval` | session mode: seconds of silence between turns (0 = off) |
-| `device_name` | The configured device label, such as `Den Echo`; required for named-device connections (section 11). |
-| `models` | Boolean; only `true` includes the model catalog in `ready`. Defaults to `false`. See section 12. |
+| `device_name` | The configured device label, such as `Den Echo` or `Kitchen`. Each device keeps its own conversation, titled `<assistant_name>: <device_name>`. |
+| `models` | Boolean; only `true` includes the model catalog in `ready`. Defaults to `false`. See section 11. |
 | `transcripts` | Boolean; request user and assistant transcript frames when `true`. Defaults to `false`. See section 4. |
 | `assistant_name` | What you call the assistant, normally `Arya`, without “Hey”. Used in the voice system prompt; separate from the device label, such as `Den Echo`. |
 
@@ -101,7 +101,18 @@ The server replies with `ready`:
 
 `input.sample_rate` and `output.sample_rate` are the rates in use; play reply
 PCM at `output.sample_rate`. The two timestamps are for clock-skew estimation.
-Named-device attachment IDs and reconnect behavior are defined in section 11.
+`session_id` identifies the socket for diagnostics and `recipient_id` identifies
+the device. Treat both as opaque.
+
+Reconnect with the same API key and names to continue the device's conversation.
+Do not automatically resend an utterance whose outcome is unknown: its actions
+may already have happened.
+
+| close or error | what to do |
+|---|---|
+| `4409 attachment_replaced` | Another connection with the same names replaced this one. Stop sending on it. |
+| `4404 conversation_unavailable` | The conversation could not be opened. Show the failure rather than claiming restored context. |
+| `conversation_busy` error before `ready` | Earlier work is still stopping. Retry later. |
 
 ## 3. Client control frames (send anytime)
 
@@ -109,13 +120,12 @@ All are JSON text frames:
 
 | frame | meaning |
 |---|---|
-| `{"stop": true}` | Stops live work and closes the socket. Preserves the device's Hermes conversation and its history for reconnection (section 11). |
+| `{"stop": true}` | Stops live work and closes the socket. The device's conversation and its history are kept for reconnection. |
 | `{"commit": true}` | Ends the current utterance now, with the audio already sent (runs a turn on it). |
 | `{"type": "cancel", "turn_id": "..."}` | Cancels the **current** turn — stops TTS and the agent — but keeps the socket, session, and history alive. |
 | `{"type": "wake", "claim_id": "...", "wake_word": "Hey Arya"}` | request an advisory wake decision while buffering the new activation locally; see section 8. |
 | `{"type": "drained", "turn_id": "..."}` | Tells the server the reply's last audio has left the speaker, so the server won't transcribe its own echo as a new turn. |
 | `{"type": "say", "text": "..."}` | Speaks the given text (trimmed, at most 400 characters) as a reply of its own: `thinking`, `speaking` + PCM, then `turn_done` with `next_action: "standby"`. No agent turn runs and nothing is added to the conversation. For fixed device prompts such as a spoken help reminder. Empty or non-string text is ignored. |
-| `timer_request` | Set, update, cancel, dismiss, or synchronize timers (section 10). |
 
 **`cancel` vs `stop`:** `stop` tears down the session; `cancel` only kills the
 current turn. Use `cancel` when the user hits the action button or says the
@@ -135,10 +145,10 @@ wake word again mid-turn and you want to keep the conversation going.
 | `turn_done` | the reply is fully sent; `next_action` tells the client to listen or enter standby after drain |
 | `quiet` | session mode: the stream has been silent for another `quiet_interval` seconds |
 | `error` | the turn failed (spoken-safe text) |
-| `timer_result`, `timer_snapshot`, `alarm` | Timer results, state, and playback (section 10). |
+| `alarm` | Ring a bundled alarm sound (section 10). |
 
 These are the only server frames, apart from `model_changed` and `model_error`
-(section 12). Turn liveness is the repeated `thinking` frame; there is no
+(section 11). Turn liveness is the repeated `thinking` frame; there is no
 separate keep-alive frame. Ignore a frame type you do not recognize.
 
 Reply PCM arrives at about playback speed: the first audio is sent immediately,
@@ -662,161 +672,46 @@ is available for that delivery. Timer/scheduler integration and its policy
 remain in [issue #34](https://github.com/Keryxion/hermes-converse/issues/34).
 The voice system prompt does not claim unsupported scheduling abilities.
 
-## 10. Timers on named Aryas
+## 10. Alarms
 
-Timers belong to the server and survive disconnects. Clients display countdowns
-and play alarms; they do not schedule independent offline alarms. Each timer
-has one destination Arya.
-
-### Alarm sounds
+Timers are set by asking the assistant; the client sends no timer frames. A
+timer defaults to the requesting device and may target another named device, as
+in "set a timer on Bedroom". The requesting device speaks the confirmation; the
+alarm goes to the destination.
 
 Every client bundles four alarm sounds: `alarm-1`, `alarm-2`, `alarm-3`, and
 `alarm-4`.
 
-### Set and manage timers
-
-A timer defaults to this Arya. Supply `target` to set it on another named Arya:
-
-```json
-{"type":"timer_request","request_id":"create-1","operation":"create","duration_seconds":300,"label":"tea","target":"Bedroom"}
-```
-
-```json
-{"type":"timer_result","request_id":"create-1","status":"created","timer":{"timer_id":"timer-7","label":"tea","target":"Bedroom","deadline_unix_ms":1794143100000,"state":"active"}}
-```
-
-Kitchen receives that result and says "Five-minute timer set on Bedroom."
-Only Bedroom rings. Choosing Bedroom does not change Kitchen's conversation.
-Room names and aliases may resolve to an Arya; ask which one if ambiguous.
-An unavailable target returns an error before creation; do not
-silently ring another device or claim an offline speaker will sound.
-
-Use the returned `timer_id` for subsequent operations:
-
-```json
-{"type":"timer_request","request_id":"update-1","operation":"update","timer_id":"timer-7","duration_seconds":120,"label":"tea"}
-```
-
-```json
-{"type":"timer_request","request_id":"cancel-1","operation":"cancel","timer_id":"timer-7"}
-```
-
-```json
-{"type":"timer_request","request_id":"dismiss-1","operation":"dismiss","timer_id":"timer-7"}
-```
-
-`update` takes `timer_id`, a new `duration_seconds` starting from confirmation,
-and optionally `label`. `cancel` stops a pending timer. `dismiss` stops its
-ringing occurrence. A client can manage a timer on another Arya by its ID;
-the destination is fixed when created. Show success only after `timer_result`.
-If expiry beats cancellation, the result is `already_expired`; use `dismiss`.
-Errors return `status: "error"` and an explanatory `error` field. Ambiguous
-names return `target_ambiguous`; unknown or offline targets return
-`target_unavailable`.
-
-Use a new `request_id` per action. Retry the same request with the same ID after
-a lost reply; it must not create a second timer. Never change a retry's payload.
-
-### Alarm playback
-
 The destination receives an alarm without a wake word or user transcript:
 
 ```json
-{"type":"alarm","timer_id":"timer-7","turn_id":"alarm-9","sound":"alarm-1"}
+{"type":"alarm","turn_id":"alarm-9","sound":"alarm-1","label":"tea"}
 ```
 
-Play the bundled sound named in `alarm.sound`. Use the ordinary `turn_done`,
-interruption, and `drained` lifecycle. Do not overlap it with another reply.
-`turn_done` finishes transport, not local ringing: send `drained` only after actual playback stops. Ring for at
-most 60 seconds; stop immediately on local dismissal or server interruption.
-A local dismissal stops sound immediately and sends `dismiss` when connected.
-Remote dismissal is confirmed as physically stopped only after destination drain.
+Play the bundled sound named in `sound`, repeating it, and show `label` where
+the device has a screen. `label` may be absent. Do not overlap the alarm with a
+reply.
 
-Keep microphone upload available for interruption/control during playback unless
-muted. Alarm audio must not become a new request. After drain, restore the prior
-idle/listening state; an alarm does not by itself open a user activation.
-Recognize duplicate `timer_id` alarms across reconnects and never ring them twice.
+Stop ringing on the first of:
 
-### Reconnect
+- a local dismissal, such as a button or tap;
+- `interrupted` for the alarm's `turn_id`;
+- 60 seconds.
 
-After `ready`, request `operation: "sync"` with a new `request_id`. The server
-returns `timer_snapshot` with `timers` (active timers) and `missed` (timer IDs and
-labels for missed or unconfirmed alarms). Replace the displayed timer state;
-a snapshot never instructs playback. Do this before new timer operations.
+When the sound has actually stopped, send `drained` for the alarm's `turn_id`:
 
 ```json
-{"type":"timer_request","request_id":"sync-1","operation":"sync"}
+{"type":"drained","turn_id":"alarm-9"}
 ```
 
-```json
-{"type":"timer_snapshot","request_id":"sync-1","timers":[],"missed":[{"timer_id":"timer-6","label":"pasta"}]}
-```
-
-Do not ring expired timers on reconnect or fire an alarm when a local countdown
-reaches zero. Mark disconnected countdowns unconfirmed. There is no promise of
-an audible alarm while the destination is offline. A disconnected client can
-silence its speaker, but must not claim a server mutation succeeded.
-Reconnecting does not move a timer to a different Arya.
+Keep sending microphone audio while ringing, unless muted, so the alarm can be
+stopped by voice. Alarm audio must not become a new request. After the alarm
+stops, return to the state the device was in before it; an alarm does not open
+a user activation. A device that was not connected when its alarm fired does
+not ring it after reconnecting.
 
 
-## 11. Named Aryas
-
-Use `assistant_name` for what you call the assistant, normally `Arya`.
-Use `device_name` for the device label, such as `Den Echo` or `Kitchen`.
-Device labels must be unique on the server; configure the label in the client.
-Many devices may share the same assistant name. The detected wake phrase is
-sent separately in `wake.wake_word` (section 8).
-
-Names are case-sensitive labels. The server normalizes Unicode to NFC, trims and collapses
-whitespace, and rejects control/format characters, empty names, or a combined title over 100
-characters. Use the same configured names on reconnect. The names are not additional credentials.
-
-Each device uses a persistent conversation titled
-**`<assistant_name>: <device_name>`**, for example `Arya: Den Echo`.
-Clients cannot choose or override the conversation.
-
-### Start and ready
-
-Authenticate with the existing API key as in section 1. Send both names directly in `start`:
-
-```json
-{"type":"start","key":"<API_SERVER_KEY>","input_rate":16000,"output_rate":24000,
- "assistant_name":"Arya","device_name":"Den Echo"}
-```
-
-Wait for `ready` before streaming audio:
-
-```json
-{"type":"ready","session_id":"socket-9","recipient_id":"device-7",
- "assistant_name":"Arya","device_name":"Den Echo"}
-```
-
-`session_id` identifies the socket for diagnostics. `recipient_id` identifies
-the device for timer routing. Treat these IDs as opaque. The returned names identify
-the assistant and physical device for this conversation.
-
-### Reconnect
-
-Reconnect with the same API key and names to continue its history.
-Inactivity, standby, sign-off, cancellation, and socket closure do not reset it.
-Do not automatically resend an utterance whose outcome is unknown: its actions
-may already have happened.
-
-A replacement connection closes the old one with `4409 attachment_replaced`.
-Stop sending on the old connection. Invalid start fields return `4400 bad_start`.
-If the conversation cannot be opened, show
-`4404 conversation_unavailable` rather than claiming restored context.
-A `conversation_busy` error before ready means retry later while earlier work
-stops. Normal authentication and first-frame errors remain as in section 1.
-
-### Timers on named Aryas
-
-"Set a timer" targets the requesting device. "Set a timer on Bedroom" targets
-Bedroom even when requested from Kitchen. Clarify ambiguous names, and report
-an unavailable destination before confirming audible delivery there (section 10).
-The requesting device receives confirmation; only the destination rings.
-
-## 12. Changing the chat model on an attached voice connection
+## 11. Changing the chat model on an attached voice connection
 
 Model discovery and selection both use the existing authenticated voice
 WebSocket. No additional client HTTP request or authentication flow is needed.
