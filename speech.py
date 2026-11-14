@@ -10,6 +10,7 @@ time, so a test that patches the core module — or patches this one — is hono
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Callable, Iterable, Iterator, Optional
 
 
@@ -101,7 +102,15 @@ def strip_markdown(text: str) -> str:
     """The shared TTS cleaner: markdown, emoji, think blocks, units, newlines."""
     from tools.tts_text_normalize import _strip_markdown_for_tts
 
-    return _strip_markdown_for_tts(text)
+    return _drop_empty_brackets(_strip_markdown_for_tts(text))
+
+
+_EMPTY_BRACKETS_RE = re.compile(r"\s*[(\[{]\s*[)\]}]")
+
+
+def _drop_empty_brackets(text: str) -> str:
+    """Brackets left empty once a link or URL inside them was removed: "merged ( )." -> "merged."."""
+    return _EMPTY_BRACKETS_RE.sub("", text)
 
 
 def mark_speech_interrupted() -> None:
