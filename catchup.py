@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 REPLAY_AFTER_LIMIT = 100
 REPLAY_FRESH_LIMIT = 20
 SILENT = "[SILENT]"
+# What Hermes stores as the reply of a turn it interrupted ("Operation interrupted: waiting for
+# model response (10.6s elapsed)."). It was never said, so it is not replayed.
+INTERRUPT_NOTICE = "Operation interrupted"
 
 
 class History:
@@ -102,7 +105,8 @@ def _spoken_text(rows: list[dict[str, Any]]) -> str:
                 continue
             if isinstance(text, str):
                 tool_texts.append(text)
-    texts = tool_texts if used else [r["content"] for r in rows if isinstance(r.get("content"), str)]
+    texts = tool_texts if used else [r["content"] for r in rows if isinstance(r.get("content"), str)
+                                     and not r["content"].lstrip().startswith(INTERRUPT_NOTICE)]
     cleaned = [speech.strip_markdown(text).strip() for text in texts]
     spoken = " ".join(text for text in cleaned if text)
     return "" if spoken.upper() == SILENT else spoken
