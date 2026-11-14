@@ -7,8 +7,8 @@ in [animations.md](animations.md).
 | Tone | When | Sound |
 |---|---|---|
 | Listening | Listening starts: a matching `wake_grant`, manual Talk, or a follow-up | Rising pair: 523 Hz then 784 Hz, 70 ms each |
-| Speech ended | Speech capture ends and transcription begins | Falling pair: 784 Hz then 523 Hz, 70 ms each |
 | Thinking | Each `thinking` frame | One soft 280 ms pulse at 330 Hz |
+| Listening ended | Listening ends in silence with no request, and the device returns to standby | Falling pair: 784 Hz then 523 Hz, 70 ms each |
 
 ## Rules
 
@@ -21,7 +21,7 @@ in [animations.md](animations.md).
   claim makes no sound.
 - A thinking tone still sounding when the reply starts, or on interruption,
   cancellation, or error, is cut off. It never overlaps the reply.
-- While muted, the listening and speech-ended tones do not play.
+- While muted, the listening and listening-ended tones do not play.
 - A tone never delays audio processing, triggers a wake, or causes an
   interruption. If a tone cannot play, the device carries on silently.
 
