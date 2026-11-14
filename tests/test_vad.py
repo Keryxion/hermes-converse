@@ -92,6 +92,23 @@ class TestBargeDetectorOnset:
         tripped, _ = self._run(150, 4000, playing=True, pre_playback_blocks=25, pre_playback_rms=1200)
         assert tripped is not None
 
+    def test_speech_over_playback_does_not_raise_the_bleed_gate(self):
+        """The user talking over the reply must not become the bleed reference: the gate would then
+        climb above their voice and a second interruption could never clear it (the on-device
+        report on #92: the trigger jumped 1500 -> 4000 mid-reply and stayed there)."""
+        d = vad.BargeDetector(np, **self.PARAMS)
+        for _ in range(15):
+            d.feed(150, False)
+        for _ in range(25):
+            d.feed(1200, True)  # steady bleed
+        for _ in range(120):
+            d.feed(2500, True)  # the user keeps talking over the reply for ~3.6 s
+        for _ in range(25):
+            d.feed(1200, True)  # playback continues after they stop
+        bleed_ref = np.percentile(list(d._bleed_ambient), vad.BLEED_REF_PERCENTILE)
+        assert bleed_ref <= 1300, f"speech ratcheted the bleed reference to {bleed_ref:.0f}"
+        assert any(d.feed(2500, True) for _ in range(20)), "a later interruption must still be heard"
+
 
 def test_converse_detector_uses_the_noisy_room_profile():
     det = vad.converse_detector(np)
