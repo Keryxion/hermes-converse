@@ -331,11 +331,11 @@ platform is not hosted, the connection is refused with `conversation_unavailable
 
 ## Commands from a device
 
-`voice_commands` lists the gateway commands a device may send in a `command`
-frame, by name. The default is `new` and `compress`. A command that is not
-listed is refused with `not_allowed`. Commands that answer or bypass approvals,
-such as `/approve`, `/deny`, and `/yolo`, are refused whatever the setting
-says.
+A `command` frame carries any gateway slash command. Pass it to the gateway for
+the device's conversation as a chat user's command would be, and return its
+reply in a `command` frame without speaking it. There is no list of allowed
+commands: a device holding the API key can run what a chat user can, including
+commands that change approvals.
 
 After `/new` the device stays attached to its conversation, which keeps the
 title `<assistant_name>: <device_name>`. Later turns and catch-up use the new

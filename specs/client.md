@@ -152,8 +152,8 @@ conversation, and answers with the same frame plus the command's own reply:
 {"type":"command","text":"/new","reply":"Started a new conversation."}
 ```
 
-`reply` is text to show, not to speak. The server accepts these commands by
-default:
+`reply` is text to show, not to speak. Any slash command the server's Hermes
+knows can be sent. Two matter to every app:
 
 | `text` | Effect | What the app does on the answer |
 |---|---|---|
@@ -164,14 +164,16 @@ A command that did not run is answered with `error` in place of `reply`, and
 nothing changes:
 
 ```json
-{"type":"command","text":"/yolo","error":"not_allowed"}
+{"type":"command","text":"new","error":"bad_command"}
 ```
 
 | `error` | Meaning |
 |---|---|
-| `not_allowed` | The server does not accept that command from a device. |
 | `bad_command` | `text` is missing or does not start with `/`. |
-| `failed` | The command was accepted and did not finish. |
+| `failed` | The server did not accept the command, or it did not finish. |
+
+An unknown command is not an error here: Hermes answers it, and its answer
+comes back in `reply`.
 
 Countdowns and the connection are unaffected by a command.
 
