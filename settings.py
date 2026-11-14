@@ -18,6 +18,8 @@ DEFAULT_NAME = "Arya"
 DEFAULT_ARBITRATE_POLICY = POLICY_WAKE_SIGNAL
 DEFAULT_ARBITRATE_DEVICE_ID = None  # ''/None = auto-generate from socket
 DEFAULT_ARBITRATE_ENABLED = False
+# How long a countdown alarm rings if nobody ends it; sent to the device as ring_seconds.
+DEFAULT_COUNTDOWN_RING_TIMEOUT_SECONDS = 900
 # How long the arbitrator collects concurrent wake claims for the same wake word before electing
 # the primary device. Long enough to cover detector jitter across devices, short enough that a
 # client is not left waiting before it starts streaming.
@@ -68,6 +70,7 @@ class Settings:
     arbitrate_policy: str = DEFAULT_ARBITRATE_POLICY
     arbitrate_device_id: Optional[str] = DEFAULT_ARBITRATE_DEVICE_ID
     arbitrate_wake_window_seconds: float = DEFAULT_ARBITRATE_WAKE_WINDOW_SECONDS
+    countdown_ring_timeout_seconds: int = DEFAULT_COUNTDOWN_RING_TIMEOUT_SECONDS
 
 
 def _number(raw: Any, default: float) -> float:
@@ -137,4 +140,7 @@ def load_settings(get: Getter) -> Settings:
         arbitrate_device_id=_text(get("arbitrate_device_id", DEFAULT_ARBITRATE_DEVICE_ID)),
         arbitrate_wake_window_seconds=_wake_window(
             get("arbitrate_wake_window_seconds", DEFAULT_ARBITRATE_WAKE_WINDOW_SECONDS)),
+        countdown_ring_timeout_seconds=_milliseconds(
+            get("countdown_ring_timeout_seconds", DEFAULT_COUNTDOWN_RING_TIMEOUT_SECONDS),
+            DEFAULT_COUNTDOWN_RING_TIMEOUT_SECONDS),
     )
