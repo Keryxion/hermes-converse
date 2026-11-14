@@ -320,3 +320,31 @@ def test_real_quiet_speech_is_valid_input_but_not_an_interruption(real_model, pl
     # The same human voice at ordinary volume must still interrupt.
     assert any(active.feed(block, playing, interrupting=True) is not None
                for block in blocks(original.astype(np.int16)))
+
+
+def _over_playback(detector, pattern):
+    """Feed steady playback bleed, then *pattern*: True = a loud spoken block, False = bleed."""
+    for _ in range(40):
+        assert detector.feed(np.full(480, 1200, np.int16), True) is None
+    return [detector.feed(np.full(480, 4000 if loud else 1200, np.int16), True) for loud in pattern]
+
+
+def test_words_with_gaps_interrupt_playback(monkeypatch):
+    # Three-block words with a one-block gap: never 250 ms unbroken, but 250 ms within the window.
+    pattern = ([True]*3 + [False])*5
+    probabilities = [0.99]*40 + [0.99 if loud else 0.1 for loud in pattern]
+    assert 'playback' in _over_playback(scripted(monkeypatch, probabilities), pattern)
+
+
+def test_earlier_speech_does_not_raise_the_echo_gate(monkeypatch):
+    # A first try too short to interrupt, then the same level again within the 3 s reference.
+    pattern = [True]*5 + [False]*30 + [True]*12
+    detector = scripted(monkeypatch, [0.99]*(40 + len(pattern)))
+    events = _over_playback(detector, pattern)
+    assert events[:35] == [None]*35 and 'playback' in events[35:]
+
+
+def test_a_lone_loud_block_does_not_interrupt_playback(monkeypatch):
+    pattern = ([True] + [False]*9)*4
+    probabilities = [0.99]*40 + [0.99 if loud else 0.1 for loud in pattern]
+    assert _over_playback(scripted(monkeypatch, probabilities), pattern) == [None]*len(pattern)
