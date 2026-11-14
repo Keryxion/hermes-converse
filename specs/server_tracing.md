@@ -29,10 +29,24 @@ child span for each phase:
 | `voice.stt` | Transcription. |
 | `voice.agent` | From the request reaching the agent to the reply's end. |
 | `voice.tts` | From the first sentence submitted for speech to the last PCM sent. |
+| `voice.drain` | From the last PCM sent until the device has finished playing it. |
 
 Phases keep the times they were measured at, even when the span is written
 later. While a trace is active, the turn's `traceparent` goes out on its frames
 (client spec, section 4), so a client can attach its own records to the turn.
+
+`voice.drain` is how the server knows the reply was heard to the end. It
+carries:
+
+| Attribute | Value |
+|---|---|
+| `drain.end` | How it ended: `drained` (the device reported it), `timeout` (no report within `playback_tail_timeout_seconds`), `interrupted`, or `disconnected`. |
+| `drain.audio_ms` | How much reply audio was sent. |
+| `drain.wait_ms` | How long the device took to report, from the last PCM sent. |
+
+A `timeout` means the device never said it finished. A `drain.wait_ms` far from
+the audio still unplayed when sending ended means the device is playing late or
+reporting early.
 
 Every `voice.turn` carries `device_name`, `session.id`, and `turn_id`, and the
 `claim_id` of the wake that started it, if one did. A follow-up keeps the claim
@@ -135,21 +149,23 @@ audio.
 
 1. With no collector, and with a failing one, a turn and an election behave the
    same as with tracing on.
-2. A turn produces `voice.turn` with its four phases at their measured times,
+2. A turn produces `voice.turn` with its five phases at their measured times,
    carrying its device, session, and turn.
-3. Four devices claim one phrase, none of them exporting: one election span with
+3. A reply played to the end records `voice.drain` ending `drained`; a device
+   that never reports records `timeout`.
+4. Four devices claim one phrase, none of them exporting: one election span with
    four claim events naming the four devices, one `granted`, three `denied`, and
    the input that decided it.
-4. The winner's `claim_id` is on its `voice.turn` spans through a follow-up.
-5. A denied device that sends audio anyway produces a `voice.turn` with its
+5. The winner's `claim_id` is on its `voice.turn` spans through a follow-up.
+6. A denied device that sends audio anyway produces a `voice.turn` with its
    denied `claim_id`.
-6. Speaking over a reply stops it: the turn has one interrupt event with cause
+7. Speaking over a reply stops it: the turn has one interrupt event with cause
    `speech`, its phase, the detector's reading, and the turn the speech became.
-7. A noise that stops a reply and transcribes to nothing is recorded with result
+8. A noise that stops a reply and transcribes to nothing is recorded with result
    `empty`.
-8. Speaking too quietly to interrupt leaves no event, and the turn's summary
+9. Speaking too quietly to interrupt leaves no event, and the turn's summary
    shows `barge.rejected_quiet_ms` above zero with the peak level under the
    threshold.
-9. A device that sends no microphone audio during a reply shows `barge.mic_ms`
+10. A device that sends no microphone audio during a reply shows `barge.mic_ms`
    of zero.
-10. No span carries audio, a transcript, or reply text.
+11. No span carries audio, a transcript, or reply text.
