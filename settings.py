@@ -44,7 +44,7 @@ DEFAULT_ENDPOINT_SILENCE_MS = 700
 DEFAULT_ENDPOINT_MAX_SILENCE_MS = 3000
 # Capture-only wall-clock timeout; idle quiet still counts received audio.
 DEFAULT_CAPTURE_NO_DATA_SECONDS = 5.0
-APPROVAL_CHOICES = ("deny", "once")
+APPROVAL_CHOICES = ("deny", "once", "ask")
 
 Getter = Callable[..., Any]
 

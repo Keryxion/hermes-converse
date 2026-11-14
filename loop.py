@@ -382,6 +382,9 @@ class ConverseSession:
                 self._turn_detector = None
         self._worker: Optional[threading.Thread] = None
         self.on_trip: Optional[Callable[[str], None]] = None  # called with the phase name on every trip
+        # While an approval is pending: takes captured speech (returns True when it is the answer),
+        # and speech does not interrupt the waiting turn.
+        self.answer_hook: Optional[Callable[[str], bool]] = None
 
     # ── playback / barge-in coordination ──
     def playing(self) -> bool:
@@ -559,7 +562,7 @@ class ConverseSession:
                     if self._tail_active:
                         self._interrupt_tail()
                         self.end_playback_tail("interrupted")
-                    elif self._turn_active.is_set():
+                    elif self._turn_active.is_set() and self.answer_hook is None:
                         self._trigger_barge_in()
                     capture_generation = self._generation
                     recorder = PhaseRecorder(input_rate=self._input_rate, session_mode=self._quiet_interval > 0,
@@ -583,6 +586,12 @@ class ConverseSession:
                         self.release_capture()
                         if interrupt is not None:
                             interrupt.resolve(None)
+                    elif transcript and self._answers_approval(transcript):
+                        recorder.set(outcome="answer")
+                        emit_turn_trace(recorder)
+                        self.release_capture()
+                        if interrupt is not None:
+                            interrupt.resolve("empty")
                     elif transcript:
                         if self._managed:
                             self._pending_turn.set()
@@ -604,6 +613,16 @@ class ConverseSession:
             if interrupt is not None:
                 interrupt.resolve(None)
             self.transcripts.put(None)
+
+    def _answers_approval(self, transcript: str) -> bool:
+        hook = self.answer_hook
+        if hook is None:
+            return False
+        try:
+            return bool(hook(transcript))
+        except Exception:
+            logger.debug("converse approval answer hook failed", exc_info=True)
+            return False
 
     @_session_state
     def _capture_abandoned(self, generation: int) -> bool:
