@@ -244,18 +244,24 @@ else about a timer belong to an external plugin. The server provides one tool:
 
 | Tool | Arguments | Effect |
 |---|---|---|
-| `ring_alarm` | `device_name` (defaults to the requesting device), `sound` (`alarm-1` to `alarm-4`, default `alarm-1`), `label` (optional) | Sends `alarm` to that device. |
+| `ring_alarm` | `device_name`, `sound` (`alarm-1` to `alarm-4`, default `alarm-1`), `label` (optional) | Sends `alarm` to that device. |
 
-The tool resolves `device_name` through the device directory, including rooms
-and aliases, and refuses an ambiguous name rather than guessing. The requesting
-device is supplied as trusted context, so the default cannot be set from
-transcript text.
+`device_name` defaults to the device whose conversation the call is made in. That
+device comes from the session, so transcript text cannot set it. A call made
+anywhere else, such as from a plugin outside a turn or from a chat that is not a
+voice device, must give `device_name`. The tool resolves the name through the
+device directory, including rooms and aliases, and refuses an ambiguous name
+rather than guessing.
 
-| Situation | Outcome |
-|---|---|
-| Device attached and idle | The alarm is sent at once. |
-| Device capturing or replying | The alarm is sent after the current exchange. |
-| Device not attached | The tool reports failure. Nothing is queued for a later connection and no other device rings. |
+The tool returns at once with one of these results. It does not wait for the
+alarm to ring or stop, so a turn can call it for its own device.
+
+| Situation | Result | Outcome |
+|---|---|---|
+| Device attached and idle | `sent` | The alarm is sent at once. |
+| Device capturing or replying, including the turn that made the call | `queued` | The alarm is sent after the current exchange. |
+| Device not attached | `not_attached` | Nothing is queued for a later connection and no other device rings. The caller decides what to do instead. |
+| Name unknown or ambiguous | `unknown_device`, `ambiguous_device` | Nothing is sent. |
 
 The alarm ends when the device sends `drained`. A voice interruption during
 ringing sends `interrupted` for the alarm's `turn_id` and is not transcribed as
