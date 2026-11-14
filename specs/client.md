@@ -59,7 +59,7 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 | `device_name` | The configured device label, such as `Den Echo` or `Kitchen`. Each device keeps its own conversation, titled `<assistant_name>: <device_name>`. |
 | `models` | Boolean; only `true` includes the model catalog in `ready`. Defaults to `false`. See section 11. |
 | `transcripts` | Boolean; request user and assistant transcript frames when `true`. Defaults to `false`. See section 4. |
-| `after` | The `id` of the last transcript this client has shown, to catch up on what it missed. Only with `transcripts: true`. See "Catching up" in section 4. |
+| `after` | The `message_id` of the last transcript this client has shown, to catch up on what it missed. Only with `transcripts: true`. See "Catching up" in section 4. |
 | `assistant_name` | What you call the assistant, normally `Arya`, without “Hey”. Used in the voice system prompt; separate from the device label, such as `Den Echo`. |
 
 **Client profile selection is removed.**
@@ -378,16 +378,16 @@ time, so the words are on screen as they are spoken:
 ```
 
 ```json
-{"type":"transcript","id":"m-124","role":"assistant","turn_id":"turn-42","text":"The dentist at nine and lunch with Sam."}
+{"type":"transcript","message_id":"m-124","role":"assistant","turn_id":"turn-42","text":"The dentist at nine and lunch with Sam."}
 ```
 
 Each frame is the next piece of the reply, sent before the PCM that speaks it.
 Append the pieces for a `turn_id` in the order they arrive. The piece that
-completes the reply carries `id`; the earlier ones do not. A reply of one
-sentence is a single frame with `id`. This applies to ordinary replies and
+completes the reply carries `message_id`; the earlier ones do not. A reply of one
+sentence is a single frame with `message_id`. This applies to ordinary replies and
 outbound conversation output. Silent turns need no assistant frame.
 
-A user `transcript` is one frame and always carries `id`. An `id` is unique in
+A user `transcript` is one frame and always carries `message_id`. A `message_id` is unique in
 the conversation; treat it as opaque.
 
 The text describes what was prepared for speech, not what the user heard. For
@@ -398,7 +398,7 @@ tool payloads, credentials, or internal errors.
 ### Catching up
 
 A client that was away, for example an app returning to the foreground or
-relaunched, is caught up when it connects. Send the `id` of the last transcript
+relaunched, is caught up when it connects. Send the `message_id` of the last transcript
 it has shown as `after` in `start`:
 
 ```json
@@ -410,15 +410,15 @@ Right after `ready`, and before anything live, the server sends the transcripts
 since then as ordinary `transcript` frames marked `replay`:
 
 ```json
-{"type":"transcript","id":"m-123","role":"user","turn_id":"turn-41","text":"What's on my calendar tomorrow?","replay":true}
+{"type":"transcript","message_id":"m-123","role":"user","turn_id":"turn-41","text":"What's on my calendar tomorrow?","replay":true}
 ```
 
 ```json
-{"type":"transcript","id":"m-124","role":"assistant","turn_id":"turn-41","text":"Two things: the dentist at nine and lunch with Sam.","replay":true}
+{"type":"transcript","message_id":"m-124","role":"assistant","turn_id":"turn-41","text":"Two things: the dentist at nine and lunch with Sam.","replay":true}
 ```
 
 Omit `after` the first time; the server then sends the most recent 20. Keep the
-last `id` shown and send it on every connect, so nothing is shown twice.
+last `message_id` shown and send it on every connect, so nothing is shown twice.
 
 A replayed assistant transcript is the whole reply in one frame. If the client
 already shows pieces for that `turn_id`, replace them with it.

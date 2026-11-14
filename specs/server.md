@@ -181,7 +181,7 @@ Send opt-in user and assistant `transcript` frames as defined in
 [the client spec](client.md), for both voice replies and outbound output. Send
 each piece of reply text when it is submitted for speech, before the PCM that
 speaks it, and never hold PCM back for it. The last piece carries the message's
-`id`. Distinguish generated text,
+`message_id`. Distinguish generated text,
 PCM sent, and client playback drain. `turn_done`
 means sending finished. `drained` means playback finished or was discarded; it
 cannot prove the user heard the response. An interruption records that a reply
@@ -321,7 +321,7 @@ platform is not hosted, the connection is refused with `conversation_unavailable
 ## Catching up
 
 Give every user `transcript` frame, and the last assistant piece of each turn,
-an `id`: Hermes's message id for that message, as an opaque string.
+a `message_id`: Hermes's message id for that message, as an opaque string.
 
 When a client connects with `transcripts: true`, replay what it missed from
 Hermes's own messages for the device's conversation, right after `ready` and
@@ -352,7 +352,7 @@ that is expected:
 
 Verify: a reply that finished while the device was away is replayed as a
 transcript and never spoken; no speech is synthesized for it; connecting twice
-with the same `after` replays the same frames; connecting with the newest id
+with the same `after` replays the same frames; connecting with the newest `message_id`
 replays none; a cancelled turn replays a user transcript with no reply; a
 reconnect during a turn receives the replay and then the rest of the turn live;
 a replayed frame never starts a turn on the client.
