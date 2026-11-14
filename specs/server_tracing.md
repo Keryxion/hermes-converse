@@ -74,6 +74,55 @@ its denial.
 The server knows what it decided and what it received. It does not know whether
 a device received a grant in time; that is the client's to record.
 
+## Barge-in
+
+Two questions must always have an answer: why did it stop talking, and why
+didn't it stop.
+
+### Why it stopped
+
+Record an event on the `voice.turn` that was interrupted, at the moment it
+happened:
+
+| Attribute | Value |
+|---|---|
+| `interrupt.cause` | `speech` when the server heard the person, `cancel` when the client sent `cancel`. |
+| `interrupt.phase` | Where the reply was: `thinking`, `speaking`, or `drain` (sent, still playing on the device). |
+| `interrupt.reply_ms` | How much reply audio had been sent. |
+| `interrupt.result` | What the speech turned out to be: `request` (a new turn), `stop_phrase`, or `empty` (nothing was transcribed). |
+| `interrupt.next_turn_id` | The turn the speech became, for `request`. |
+
+For `speech`, also record what the detector saw when it accepted the onset:
+
+| Attribute | Value |
+|---|---|
+| `vad.model` | The detector in effect, `silero` or `energy`. |
+| `vad.probability` | The speech probability at the onset, when the detector gives one. |
+| `vad.level` | The input level at the onset. |
+| `vad.threshold` | The level it had to exceed, with the barge-in multiplier applied. |
+
+An `empty` result is a false trigger: something was loud and speech-like enough
+to stop the reply, and it was not speech.
+
+### Why it didn't stop
+
+A sound that does not interrupt leaves no event, so record a summary on every
+`voice.turn` that sent reply audio, covering the time from the first PCM sent to
+`drained`:
+
+| Attribute | Value |
+|---|---|
+| `barge.mic_ms` | How much microphone audio arrived in that time. Zero means the device was not sending audio, so nothing could have interrupted. |
+| `barge.speech_ms` | How much of it the detector's model called speech. |
+| `barge.rejected_quiet_ms` | Speech by the model, but below the level threshold: the person was too quiet, or it was the reply's own echo. |
+| `barge.rejected_noise_ms` | Above the level threshold, but not speech by the model. |
+| `barge.peak_probability` | The highest speech probability seen. |
+| `barge.peak_level` | The highest input level seen. |
+| `barge.threshold` | The level threshold in force. |
+
+These are totals and peaks for the turn, never one record for each block of
+audio.
+
 ## Limits
 
 - Export is asynchronous and bounded. When a queue is full, drop telemetry.
@@ -94,4 +143,13 @@ a device received a grant in time; that is the client's to record.
 4. The winner's `claim_id` is on its `voice.turn` spans through a follow-up.
 5. A denied device that sends audio anyway produces a `voice.turn` with its
    denied `claim_id`.
-6. No span carries audio, a transcript, or reply text.
+6. Speaking over a reply stops it: the turn has one interrupt event with cause
+   `speech`, its phase, the detector's reading, and the turn the speech became.
+7. A noise that stops a reply and transcribes to nothing is recorded with result
+   `empty`.
+8. Speaking too quietly to interrupt leaves no event, and the turn's summary
+   shows `barge.rejected_quiet_ms` above zero with the peak level under the
+   threshold.
+9. A device that sends no microphone audio during a reply shows `barge.mic_ms`
+   of zero.
+10. No span carries audio, a transcript, or reply text.
