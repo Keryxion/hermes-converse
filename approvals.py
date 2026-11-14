@@ -132,7 +132,17 @@ class Approvals:
                 "turn_id": getattr(attachment.session, "_active_turn_id", None),
                 "approval_id": p.request_id, "summary": p.summary, "command": p.command,
                 "choices": p.choices})
-        self._speak(p, speech or p.summary)
+        self._speak(p, self._cue(speech or p.summary))
+
+    @staticmethod
+    def _cue(text: str) -> str:
+        """Wrap the summary so it is unmistakably an approval request with a spoken answer."""
+        text = " ".join((text or "").split())
+        if not text:
+            text = "Run a command that needs permission?"
+        if not text.endswith(("?", ".", "!")):
+            text += "?"
+        return f"Approval request. {text} Say yes, no, or always."
 
     def _speak(self, p: _Pending, text: str) -> None:
         turn = self._adapter._turns.get(p.chat_id)
