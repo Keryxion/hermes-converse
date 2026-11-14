@@ -1,7 +1,7 @@
 # Server spec
 
 Server responsibilities behind the [client contract](client.md).
-Election and client observability are defined in [client tracing](client_tracing.md).
+What the server records is defined in [server tracing](server_tracing.md).
 
 ## Voice lifecycle
 
