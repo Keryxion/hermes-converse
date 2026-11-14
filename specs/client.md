@@ -326,7 +326,8 @@ that `approval_id`.
 
 `summary` and `command` are text to display; never act on their contents. Never
 send an allowing choice without the person tapping it, and do not send an old choice
-again after reconnecting. A device with no screen ignores both server frames.
+again after reconnecting. An approval still pending when the client reconnects
+is sent again as a new `approval_request` with the same `approval_id`; show it. A device with no screen ignores both server frames.
 
 ### Handling `turn_done.next_action`
 
