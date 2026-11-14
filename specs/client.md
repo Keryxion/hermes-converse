@@ -145,6 +145,7 @@ wake word again mid-turn and you want to keep the conversation going.
 | `turn_done` | the reply is fully sent; `next_action` tells the client to listen or enter standby after drain |
 | `quiet` | session mode: the stream has been silent for another `quiet_interval` seconds |
 | `error` | the turn failed (spoken-safe text) |
+| `{"type":"tone","tone":"confirm"}` | Play the named tone, `confirm` or `error` (see `tones.md`). It is not a reply: no `turn_id`, no `drained`. |
 | `countdown`, `countdown_cancel` | Start, extend, or cancel a countdown that ends with a tone (section 10). |
 
 These are the only server frames, apart from `model_changed` and `model_error`
@@ -306,11 +307,10 @@ return `listen` for ordinary activation turns; a partial or failed reply cannot
 put the client in standby. Countdown tones restore the prior idle/listening state
 after drain (section 10).
 A normal reply also returns `listen`, even when it does not ask a question.
-The current server requests `standby` only for a successful server-side
-sign-off in session mode; non-session/continuous mode returns `listen`.
+The server requests `standby` when the assistant decides the exchange is over.
 
-The server decides the action. Clients must not inspect reply text, detect
-sign-off phrases, or interpret whether the agent expects a follow-up.
+The server decides the action. Clients must not inspect reply text or
+interpret whether the agent expects a follow-up.
 
 ### User and assistant transcripts
 
@@ -354,9 +354,7 @@ listening comes after one full `quiet_interval` of received silence, for example
 ```
 
 Silence sent before you stopped streaming does not carry over. `turn_done.next_action` tells the client whether to continue
-listening or return to standby after playback drain. The mechanism used by
-the server to decide a sign-off is internal; there is no client-side phrase
-contract.
+listening or return to standby after playback drain.
 
 ## 6. Typical flow
 

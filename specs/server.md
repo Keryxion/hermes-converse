@@ -49,7 +49,7 @@ cancel a reply. Model failure falls back to the energy detector without ending t
 socket. Onset acceptance is separate from the decision to capture its words.
 
 Once capture owns input, old completion, cancellation, `drained`, and tail timeout
-must not clear its audio, pre-roll, or pending transcript. An old sign-off must not
+must not clear its audio, pre-roll, or pending transcript. An old `standby` call must not
 put a client into standby over an accepted continuation. Fence discarded or
 superseded output: it must not send more PCM or create another agent run. Settle
 old work before admitting the next run; never execute both concurrently.
@@ -174,7 +174,7 @@ by token count. Configure these server-side; do not add client fields or another
 compactor. A compaction trigger is not a hard limit on retained context.
 Hermes owns compression and retention. Verify
 required Hermes API support, preserve history through continuation, and recover
-local sign-off bookkeeping where needed. Never replay an unacknowledged request.
+local `standby` bookkeeping where needed. Never replay an unacknowledged request.
 
 Verify first setup, concurrent creation, reconnect/restart, failed
 lookup, unauthorized access, compression continuation, and replacement
@@ -221,7 +221,7 @@ background process completion, runs as an ordinary turn. Its final reply reaches
 | Device attached and idle | Spoken once. |
 | Device capturing or replying | Spoken after the current exchange. |
 | No device attached, or the reply expired after 60 s | `send` reports failure; nothing is queued for a later connection. |
-| Silent result (`[SILENT]` or empty) | No speech. |
+| `speak_this` with `""`, or an empty or `[SILENT]` reply | No speech. |
 | Voice turn interrupted | Its late reply is discarded. |
 | Stream delta arriving after the final | Discarded, so nothing is spoken twice. |
 
@@ -236,6 +236,57 @@ earlier turn has not settled.
 
 At startup a socket waits up to 30 s for the platform to connect. When the
 platform is not hosted, the connection is refused with `conversation_unavailable`.
+
+## Voice tools
+
+The agent has three tools for controlling the device it is talking through.
+They act only on the device whose conversation calls them.
+
+| Tool | Arguments | Effect |
+|---|---|---|
+| `speak_this` | `text` | The device says exactly `text`, and nothing else the turn produces is spoken. |
+| `play_tone` | `tone`: `confirm` or `error` | The device plays that tone (`tones.md`). |
+| `standby` | None | The device goes to standby when this turn's playback has drained: `turn_done` carries `next_action: "standby"`. It stops sending audio and waits for the wake word or Talk. |
+
+### `speak_this`
+
+Without `speak_this`, a turn's reply text is what the device says. The first
+`speak_this` call turns the rest of the turn inside out: from that point on,
+only text given to the tool is spoken. Reply text written before the call is
+spoken as usual; reply text written after it is not.
+
+| In one turn | The device says |
+|---|---|
+| No `speak_this` call | The turn's reply text. |
+| `speak_this` with text | Any reply text written before the call, then that text exactly. Nothing written after the call. |
+| `speak_this` with `""` | Any reply text written before the call, then nothing. Called first, the turn is silent. |
+| Several `speak_this` calls | Each text in order. An empty one adds nothing. |
+
+The next turn starts with reply text spoken again.
+
+`speak_this` works in any turn, including one nobody spoke to start. A turn
+that only calls `play_tone` still speaks its reply text; call `speak_this` with
+`""` as well to confirm with a tone and no words.
+
+### `play_tone`
+
+Send `{"type":"tone","tone":"confirm"}` to the device. A tone plays before any
+speech from the same turn. It is not a reply: it has no `turn_id`, and the
+device sends no `drained` for it.
+
+### `standby`
+
+The agent calls `standby` when the exchange is over, for example after
+"thanks, that's all". The tool, the `next_action` value, and the device state
+share the one name. Standby is not mute: the device still hears its wake word.
+The server does not look for a sign-off phrase in the reply. A turn that does
+not call `standby` ends with `next_action: "listen"`.
+
+| Tool result | Meaning |
+|---|---|
+| `ok` | Accepted. |
+| `not_a_device` | The call was made from a chat that is not a voice device. Nothing happens. |
+| `not_attached` | No device is connected. Nothing is sent or queued. |
 
 ## Countdowns
 
@@ -285,8 +336,8 @@ which countdown is ringing and for how long, so the agent can do more each time:
 say something in the room, tell another room, or tell the owner elsewhere.
 
 The turn is an ordinary message submitted to the gateway session. Its reply is
-spoken on the device like any other, or not at all when the agent chooses to
-say nothing. No turn starts after `drained`. A snooze starts the sequence again
+spoken on the device like any other, or not at all when the agent calls
+`speak_this` with `""`. No turn starts after `drained`. A snooze starts the sequence again
 from the new deadline.
 
 ### Stopping by voice
