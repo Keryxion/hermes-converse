@@ -62,38 +62,49 @@ An untargeted cancel also abandons a capture in progress. Stop the agent and TTS
 discard that cancelled capture, emit the existing interruption/terminal frames,
 and leave the socket and conversation usable. `stop` closes the attachment.
 
-### Tool approvals
+### Approvals
 
-`approval_choice` says what happens when the agent asks for approval during a
-voice turn:
+Approvals are Hermes's, not a tool of this plugin. When the agent is about to
+run a command that needs permission, Hermes stops the turn and hands the
+platform an approval prompt: the command, a description, and the choices
+allowed. Every platform shows that prompt in its own way; a messaging platform
+shows buttons. The platform answers with one of Hermes's choices, and Hermes
+resumes or refuses. Hermes owns the request, the choices, the timeout
+(`approvals.timeout`), and what happens when nobody answers.
+
+For a voice device the prompt is spoken. `approval_choice` says how it is
+answered:
 
 | `approval_choice` | Outcome |
 |---|---|
-| `deny` (default) | Refused at once. |
-| `once` | Approved at once. |
+| `deny` (default) | Answered `deny` at once. |
+| `once` | Answered `once` at once. |
 | `ask` | The person is asked, as below. |
 
-With `ask`, speak a short question that names the action and what it will do,
-on the device attached to that conversation, and keep the turn waiting with
-`thinking` frames. Answer the gateway's approval prompt once, with the first of:
+With `ask`, speak the prompt's description as a short question on the device
+attached to that conversation, and keep the turn waiting with `thinking`
+frames. Answer Hermes's prompt once, with the first of:
 
 | What happens | Answer |
 |---|---|
-| The person clearly says yes | Approve |
-| The person clearly says no | Deny |
+| The person clearly says yes | `once` |
+| The person clearly says no | `deny` |
 | Anything else is said | None. Ask once more; the request stays pending. |
-| 60 seconds with no answer | Deny |
-| The turn is cancelled, or the device disconnects | Deny |
-| No device is attached when the prompt arrives | Deny at once |
+| The turn is cancelled, or the device disconnects | `deny` |
+| No device is attached when the prompt arrives | `deny` at once |
+| The prompt allows only `deny` | `deny` at once; do not ask. |
+
+A voice answer is never `session` or `always`. If nobody answers, Hermes's own
+timeout ends the request; stop listening for an answer when it does.
 
 While a request is pending, speech from the device is an answer to it, not a new
 request and not an interruption of the waiting turn. The spoken question itself
 must not be taken as the answer. Do not speak secrets. When the action did not
 run, the agent's reply says so.
 
-Verify approval and denial by voice; an unclear answer, silence, cancellation,
-disconnect, and the question's own echo. Verify the action runs once after
-approval and never otherwise.
+Verify approval and denial by voice; an unclear answer, Hermes's timeout,
+cancellation, disconnect, a deny-only prompt, and the question's own echo.
+Verify the action runs once after approval and never otherwise.
 
 ### Endpointing, completion, and recovery
 
@@ -260,7 +271,7 @@ background process completion, runs as an ordinary turn. Its final reply reaches
 
 Status text meant for a screen (busy acknowledgements, tool progress, error notices)
 is never spoken; the platform's display defaults turn it off. Approval prompts are
-answered as described under Tool approvals, and clarify prompts are cancelled.
+answered as described under Approvals, and clarify prompts are cancelled.
 
 The gateway serializes the session. A stopped turn can outlive its stop, for
 example inside a long tool call; the next request is admitted behind it, and the
