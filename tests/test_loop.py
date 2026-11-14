@@ -609,9 +609,11 @@ def test_driver_no_interrupt_on_normal_completion():
 def test_drive_converse_turns_control_frame_ordering():
     session = _FakeConverseSession(["hello there."])
     history: list = []
-    sent = _run_driver(session, history, ["Hi back."])
-    assert _types(sent) == ["transcript", "thinking", "speaking", "bytes", "turn_done"]
-    assert sent[0]["text"] == "hello there." and sent[3] == ("bytes", b"Hi back.")
+    sent = _run_driver(session, history, ["Hi back."], transcripts=True)
+    assert _types(sent) == ["transcript", "thinking", "speaking", "bytes", "transcript", "turn_done"]
+    assert sent[0]["role"] == "user" and sent[0]["text"] == "hello there."
+    assert sent[3] == ("bytes", b"Hi back.")
+    assert sent[4]["role"] == "assistant" and sent[4]["text"] == "Hi back."
     turn_ids = {f["turn_id"] for f in sent if isinstance(f, dict) and "turn_id" in f}
     assert len(turn_ids) == 1 and sent[0]["turn_id"] == sent[-1]["turn_id"]
     thinking = next(f for f in sent if isinstance(f, dict) and f.get("type") == "thinking")
@@ -732,9 +734,11 @@ def test_stt_and_tts_threads_run_in_the_spawners_context(monkeypatch):
 
 def test_drive_converse_turns_flushes_queue_on_signoff():
     session = _FakeConverseSession(["are we done?", "a queued leftover"])
-    sent = _run_driver(session, [], ["All set."], quiet_interval=1.0, standby=lambda: True)
-    transcripts = [f["text"] for f in sent if isinstance(f, dict) and f.get("type") == "transcript"]
-    assert transcripts == ["are we done?"]
+    sent = _run_driver(session, [], ["All set."], quiet_interval=1.0, standby=lambda: True,
+                       transcripts=True)
+    transcripts = [(f["role"], f["text"]) for f in sent
+                   if isinstance(f, dict) and f.get("type") == "transcript"]
+    assert transcripts == [("user", "are we done?"), ("assistant", "All set.")]
     turn_dones = [f for f in sent if isinstance(f, dict) and f.get("type") == "turn_done"]
     assert len(turn_dones) == 1 and turn_dones[0]["next_action"] == "standby"
 
@@ -1051,7 +1055,8 @@ def test_cancel_at_transcript_boundary_never_starts_the_agent():
 
     async def scenario():
         await drive_converse_turns(session=session, synth=_EchoSynth(), cap=4000,
-            loop=asyncio.get_running_loop(), send_json=send, send_bytes=send, run_turn=run, history=[])
+            loop=asyncio.get_running_loop(), send_json=send, send_bytes=send, run_turn=run, history=[],
+            transcripts=True)
 
     asyncio.run(scenario())
     assert calls == []
