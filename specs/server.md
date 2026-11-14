@@ -292,7 +292,9 @@ end of playback.
 
 `thinking` progress is measured, never estimated. `tool_calls` counts the turn's
 tool calls as each starts. `reasoning_tokens` sums the provider-reported count of
-each model call in the turn, and stays `null` until a provider reports one. Do not
+each model call in the turn, and stays `null` until a provider reports one. A call
+whose usage has `reasoning_tokens_reported: false` reports none, even though its
+count reads `0`: `null` means unavailable and `0` means measured. Do not
 derive tokens from elapsed time or reasoning previews, and never forward reasoning
 text. Counters reset at each turn's start.
 Send opt-in user and assistant `transcript` frames as defined in
