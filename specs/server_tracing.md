@@ -18,6 +18,26 @@ Use the host's OpenTelemetry setup; add no setting of the plugin's own.
 | Otherwise, Hermes monitoring has OTLP export enabled with an endpoint | A provider of the plugin's own for that endpoint, with `service.name` `hermes-gateway` and `telemetry.scope` `voice`. The global provider is never replaced. |
 | Neither | Nothing is exported. |
 
+## Connections
+
+Record one `voice.connection` span for each socket, from accepting it to
+closing it:
+
+| Attribute | Value |
+|---|---|
+| `device_name` | The device, once `start` has named it. |
+| `session.id` | The `session_id` sent in `ready`. |
+| `connection.ready_ms` | From accepting the socket to sending `ready`. |
+| `close.code` | The WebSocket close code, such as `4401` or `4409`. |
+| `close.by` | Who ended it: `client`, `server`, or `lost` when it dropped with no close. |
+
+A socket refused before `ready`, for a bad key or a bad `start`, is still
+recorded, with its close code and whatever it had sent. A replacement shows as
+two spans for one device: the old one closing `4409` as the new one opens.
+
+"It did not respond" is answered here first: either the device had a
+connection at that moment or it did not.
+
 ## Voice turns
 
 Record one `voice.turn` span for each turn, opened when capture starts, with a
@@ -48,13 +68,23 @@ A `timeout` means the device never said it finished. A `drain.wait_ms` far from
 the audio still unplayed when sending ended means the device is playing late or
 reporting early.
 
-Every `voice.turn` carries `device_name`, `session.id`, and `turn_id`, and the
-`claim_id` of the wake that started it, if one did. A follow-up keeps the claim
-of the wake that opened the exchange.
+Every `voice.turn` carries:
+
+| Attribute | Value |
+|---|---|
+| `device_name`, `session.id`, `turn_id` | Which device, connection, and turn. |
+| `claim_id` | The wake that started the exchange, if one did. A follow-up keeps it. |
+| `turn.source` | How the turn started: `wake` (a granted claim), `follow_up` (speech while listening after a reply), `talk` (speech with no wake before it), or `server` (no speech: a reminder or another message submitted to the conversation). |
+| `outcome` | How it ended: `ok`, `interrupted`, `timeout`, or `error`. |
+| `turn.attached` | Whether a device was attached when the reply was ready. `false` means the reply went nowhere. |
+| `message.user_id`, `message.assistant_id` | The `message_id`s of what was heard and what was said, when there are any. |
+
+The message IDs are the link to the words. Traces never carry text; to see what
+was heard or said, look those messages up in Hermes's history.
 
 Beyond those, spans carry measurements and decisions only: rates, endpoint mode
 and decision, pause lengths, counts of characters and PCM chunks, time to first
-token and first PCM, the outcome, and `next_action`.
+token and first PCM, and `next_action`.
 
 ## Wake elections
 
@@ -149,23 +179,32 @@ audio.
 
 1. With no collector, and with a failing one, a turn and an election behave the
    same as with tracing on.
-2. A turn produces `voice.turn` with its five phases at their measured times,
+2. A device that connects, drops, and reconnects shows two connection spans, the
+   first closed `lost`; a second device taking the same names closes the first
+   with `4409`.
+3. A wake, a follow-up, a Talk press, and a reminder each produce a turn with
+   the matching `turn.source`.
+4. A reply that finishes after its device disconnected has `turn.attached`
+   false and no `voice.drain`.
+5. A turn's message IDs find its user and assistant messages in Hermes's
+   history.
+6. A turn produces `voice.turn` with its five phases at their measured times,
    carrying its device, session, and turn.
-3. A reply played to the end records `voice.drain` ending `drained`; a device
+7. A reply played to the end records `voice.drain` ending `drained`; a device
    that never reports records `timeout`.
-4. Four devices claim one phrase, none of them exporting: one election span with
+8. Four devices claim one phrase, none of them exporting: one election span with
    four claim events naming the four devices, one `granted`, three `denied`, and
    the input that decided it.
-5. The winner's `claim_id` is on its `voice.turn` spans through a follow-up.
-6. A denied device that sends audio anyway produces a `voice.turn` with its
+9. The winner's `claim_id` is on its `voice.turn` spans through a follow-up.
+10. A denied device that sends audio anyway produces a `voice.turn` with its
    denied `claim_id`.
-7. Speaking over a reply stops it: the turn has one interrupt event with cause
+11. Speaking over a reply stops it: the turn has one interrupt event with cause
    `speech`, its phase, the detector's reading, and the turn the speech became.
-8. A noise that stops a reply and transcribes to nothing is recorded with result
+12. A noise that stops a reply and transcribes to nothing is recorded with result
    `empty`.
-9. Speaking too quietly to interrupt leaves no event, and the turn's summary
+13. Speaking too quietly to interrupt leaves no event, and the turn's summary
    shows `barge.rejected_quiet_ms` above zero with the peak level under the
    threshold.
-10. A device that sends no microphone audio during a reply shows `barge.mic_ms`
+14. A device that sends no microphone audio during a reply shows `barge.mic_ms`
    of zero.
-11. No span carries audio, a transcript, or reply text.
+15. No span carries audio, a transcript, or reply text.
