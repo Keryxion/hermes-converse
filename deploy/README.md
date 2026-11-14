@@ -18,7 +18,7 @@ deploys to `~/.hermes/plugins/hermes-converse/.git/alpha-deploy.log`.
 
 ## Setup
 
-- Crow secrets on `Keryxion/hermes-converse`, event `deployment`, image `alpine:3`:
+- Crow secrets on `Keryxion/hermes-converse`, event `deployment`:
   `alpha_ssh_key` (private key), `alpha_ssh_config` (`Host sakura penny hermie` with
   `HostName`, `User hermes`, `IdentityFile ~/.ssh/alpha`), `alpha_known_hosts`.
 - On each host, install `hermes-converse-alpha` as `~/.local/bin/hermes-converse-alpha` and add
