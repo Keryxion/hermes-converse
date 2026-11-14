@@ -89,8 +89,19 @@ then live binary PCM16 mono at `input_rate` without a gap or duplication.
 the granted activation, including thinking and playback (sections 4 and 8).
 A client that does not use wake detection may start streaming after `ready`.
 
-The server replies with `ready` and clock-skew timestamps. Named-device
-attachment IDs and reconnect behavior are defined in section 11.
+The server replies with `ready`:
+
+```json
+{"type": "ready", "session_id": "socket-9", "recipient_id": "device-7",
+ "assistant_name": "Arya", "device_name": "Den Echo", "transcripts": false,
+ "input": {"sample_rate": 16000, "format": "pcm16", "block_ms": 30},
+ "output": {"sample_rate": 24000, "format": "pcm16"},
+ "server_recv_unix_ms": 1794142800100, "server_send_unix_ms": 1794142800140}
+```
+
+`input.sample_rate` and `output.sample_rate` are the rates in use; play reply
+PCM at `output.sample_rate`. The two timestamps are for clock-skew estimation.
+Named-device attachment IDs and reconnect behavior are defined in section 11.
 
 ## 3. Client control frames (send anytime)
 
@@ -113,7 +124,7 @@ wake word again mid-turn and you want to keep the conversation going.
 
 | frame | meaning |
 |---|---|
-| `ready` | rates, `session_id`, clock-skew timestamps |
+| `ready` | `input` and `output` rates, `session_id`, clock-skew timestamps; see section 2 |
 | `wake_grant` | recommends this client handle the wake activation; echoes its `claim_id` and `wake_word`. |
 | `wake_deny` | recommends this client stand down for the activation; echoes its `claim_id` and `wake_word`. |
 | `transcript` | user input or assistant reply text, identified by `role` and `turn_id`; see below |
@@ -123,6 +134,10 @@ wake word again mid-turn and you want to keep the conversation going.
 | `turn_done` | the reply is fully sent; `next_action` tells the client to listen or enter standby after drain |
 | `quiet` | session mode: the stream has been silent for another `quiet_interval` seconds |
 | `error` | the turn failed (spoken-safe text) |
+
+These are the only server frames, apart from `model_changed` and `model_error`
+(section 12). Turn liveness is the repeated `thinking` frame; there is no
+separate keep-alive frame. Ignore a frame type you do not recognize.
 
 Reply PCM arrives at about playback speed: the first audio is sent immediately,
 then the server stays at most about 1.5 s ahead of real-time playback. Keep

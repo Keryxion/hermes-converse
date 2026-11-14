@@ -7,8 +7,8 @@ in [animations.md](animations.md).
 | Tone | When | Sound |
 |---|---|---|
 | Listening | Every time the device enters listening: a matching `wake_grant`, manual Talk, or a return to listening after a reply | Rising pair: 523 Hz then 784 Hz, 70 ms each |
-| Thinking | Each `thinking` frame | One soft 280 ms pulse at 330 Hz |
-| Listening ended | Listening ends in silence with no request, and the device returns to standby | Falling pair: 784 Hz then 523 Hz, 70 ms each |
+| Thinking | Each `thinking` frame before the reply starts, including the five-second repeats | One soft 280 ms pulse at 330 Hz |
+| Listening ended | Listening ends in silence with no request (a `quiet` frame), and the device returns to standby | Falling pair: 784 Hz then 523 Hz, 70 ms each |
 
 ## Rules
 
@@ -20,7 +20,8 @@ in [animations.md](animations.md).
   `wake_grant` arrives. It does not wait for the server. A denied or timed-out
   claim makes no sound.
 - A thinking tone still sounding when the reply starts, or on interruption,
-  cancellation, or error, is cut off. It never overlaps the reply.
+  cancellation, or error, is cut off. It never overlaps the reply: `thinking`
+  frames that arrive while the reply is playing make no sound.
 - While muted, the listening and listening-ended tones do not play.
 - A tone never delays audio processing, triggers a wake, or causes an
   interruption. If a tone cannot play, the device carries on silently.
