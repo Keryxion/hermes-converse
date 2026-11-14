@@ -124,11 +124,11 @@ See [client spec section 9](specs/client.md#9-conversation-output-without-user-i
 
 Announcement/alarm capabilities and playback acknowledgements, server-owned timers, and
 synchronized group announcements remain in [issue #34](https://github.com/Keryxion/hermes-converse/issues/34).
-Heartbeat 2 scheduling still needs integration with API conversations; installing it alone does
-not enable later voice delivery. Its installed `pulse` tool may refuse API-server sessions;
-the prompt requires the assistant to report that refusal and to confirm only successful scheduling
-receipts. It explains that cancelling speech does not cancel a scheduled timer. Clients do not
-schedule offline alarms.
+Reminders and wakes come from a scheduler plugin such as
+[Cadence](https://github.com/Keryxion/cadence): a voice conversation is a gateway conversation,
+so its `pulse` tool arms them there and the reply is spoken on the attached device when one fires.
+The prompt requires the assistant to confirm only successful scheduling receipts, and explains
+that cancelling speech does not cancel a scheduled timer. Clients do not schedule offline alarms.
 
 ## Settings
 

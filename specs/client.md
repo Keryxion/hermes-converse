@@ -635,12 +635,11 @@ scheduled wait separate from the agent-run timeout. User barge-in or cancel
 stops that client's chime and speech; group-wide cancellation is an explicit
 server operation, not an automatic consequence of one device's interruption.
 
-**Heartbeat 2 integration.** Heartbeat 2 currently schedules turns for
-messaging-gateway chats and rejects API-server sessions. Installing it does
-not by itself schedule future voice output. An integration must explicitly
-publish approved output to an attached API conversation; the endpoint above
-is available for that delivery. Timer/scheduler integration and its policy
-remain in [issue #34](https://github.com/Keryxion/hermes-converse/issues/34).
+**Scheduling.** A voice conversation is a gateway conversation, so a
+scheduler plugin such as [Cadence](https://github.com/Keryxion/cadence) can
+arm reminders and wakes in it with its `pulse` tool. When one fires, the reply
+is spoken on the attached device as an outbound turn. Announcement and alarm
+capabilities remain in [issue #34](https://github.com/Keryxion/hermes-converse/issues/34).
 The voice system prompt does not claim unsupported scheduling abilities.
 
 ## 10. Server-owned timers and client alarm sounds (proposed extension)
