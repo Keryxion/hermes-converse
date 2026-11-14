@@ -62,6 +62,82 @@ An untargeted cancel also abandons a capture in progress. Stop the agent and TTS
 discard that cancelled capture, emit the existing interruption/terminal frames,
 and leave the socket and conversation usable. `stop` closes the attachment.
 
+### Approvals
+
+Approvals are Hermes's, not a tool of this plugin. When the agent is about to
+run a command that needs permission, Hermes stops the turn and hands the
+platform an approval prompt: the command, a description, and the choices
+allowed. Every platform shows that prompt in its own way; a messaging platform
+shows buttons. The platform answers with one of Hermes's choices, and Hermes
+resumes or refuses. Hermes owns the request, the choices, the timeout
+(`approvals.timeout`), and what happens when nobody answers.
+
+For a voice device the prompt is spoken. `approval_choice` says how it is
+answered:
+
+| `approval_choice` | Outcome |
+|---|---|
+| `deny` (default) | Answered `deny` at once. |
+| `once` | Answered `once` at once. |
+| `ask` | The person is asked, as below. |
+
+With `ask`, the person is asked in two ways at once, and the first answer wins:
+
+- **Spoken.** A summary is spoken on the device attached to that conversation.
+- **On screen.** `approval_request` is sent with the summary, Hermes's redacted
+  command, and the choices Hermes allows for this request, for a device that
+  can show a box.
+
+The turn keeps waiting with `thinking` frames.
+
+#### The summary
+
+Hermes's prompt is a command and a description, which is not something to read
+aloud. Make the summary with a separate model call, outside the conversation:
+it adds nothing to the history and does not run as a turn. Give it the command
+and the description and ask for a yes-or-no question of twenty words or fewer
+saying what will happen. If that call fails, use Hermes's description.
+
+#### The answer
+
+Whatever the person says next goes to a second separate model call, with the
+summary and the choices Hermes allows, which returns one of those choices or
+unclear.
+
+| The person's reply means | Answer to Hermes | `outcome` |
+|---|---|---|
+| Yes, with nothing more | `once` | `approved` |
+| Yes for the rest of this conversation, such as "yes, for now" | `session`, or `once` if `session` is not allowed | `approved` |
+| Yes from now on, such as "always allow that" | `always`, or `once` if `always` is not allowed | `approved` |
+| No | `deny` | `denied` |
+| Unclear, or the call fails | None. Ask once more; a second unclear reply answers `deny`. | `denied` |
+
+A plain yes is never widened: `session` and `always` need the person to say so.
+
+| Otherwise | Answer to Hermes | `outcome` |
+|---|---|---|
+| `approval_response` from that device for this `request_id`, with an allowed choice | Its `choice` | `approved` or `denied` |
+| Hermes's timeout passes | Hermes ends the request. | `expired` |
+| The turn is cancelled, or the device disconnects | `deny` | `cancelled` |
+| No device is attached when the prompt arrives | `deny` at once | none sent |
+| The prompt allows only `deny` | `deny` at once; do not ask. | none sent |
+
+Send `approval_resolved` when the request is settled. A response for another
+request, a second response, one from another device, or one with a choice that
+was not offered changes nothing.
+
+While a request is pending, speech from the device is an answer to it, not a new
+request and not an interruption of the waiting turn. The spoken summary itself
+must not be taken as the answer. Do not speak secrets. When the action did not
+run, the agent's reply says so.
+
+Verify each allowed choice by voice and by screen; a plain yes answering `once`;
+a choice that was not offered; an unclear reply once and
+twice, a failed summary call, Hermes's timeout, a stale or repeated response,
+cancellation, disconnect, a deny-only prompt, and the summary's own echo. Verify
+the action runs once after approval and never otherwise, and that neither model
+call appears in the conversation's history.
+
 ### Endpointing, completion, and recovery
 
 Keep endpointing separate from onset detection. Received silence of
@@ -227,7 +303,7 @@ background process completion, runs as an ordinary turn. Its final reply reaches
 
 Status text meant for a screen (busy acknowledgements, tool progress, error notices)
 is never spoken; the platform's display defaults turn it off. Approval prompts are
-answered at once with `approval_choice`, and clarify prompts are cancelled.
+answered as described under Approvals, and clarify prompts are cancelled.
 
 The gateway serializes the session. A stopped turn can outlive its stop, for
 example inside a long tool call; the next request is admitted behind it, and the
