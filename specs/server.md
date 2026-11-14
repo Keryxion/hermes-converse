@@ -263,11 +263,21 @@ alarm to ring or stop, so a turn can call it for its own device.
 | Device not attached | `not_attached` | Nothing is queued for a later connection and no other device rings. The caller decides what to do instead. |
 | Name unknown or ambiguous | `unknown_device`, `ambiguous_device` | Nothing is sent. |
 
-The alarm ends when the device sends `drained`. A voice interruption during
-ringing sends `interrupted` for the alarm's `turn_id` and is not transcribed as
-a request. A sent frame is not proof that a speaker sounded or stopped.
+The alarm ends when the device sends `drained`.
+
+An alarm can be stopped by voice without a wake word. While a device rings, the
+server transcribes what it hears from that device:
+
+| Heard while ringing | Outcome |
+|---|---|
+| A stop phrase, such as "stop" | The server sends `interrupted` for the alarm's `turn_id`. No agent turn runs. |
+| Anything else | Ignored. The alarm keeps ringing, so nearby conversation does not silence it. |
+
+Use the existing stop phrases. The alarm's own sound must not be transcribed as
+speech. A sent frame is not proof that a speaker sounded or stopped.
 
 Acceptance scenarios: Kitchen asks for a Bedroom timer and hears the
 confirmation; only Bedroom rings. Exercise an ambiguous name, a destination that
-is not attached, an alarm arriving during a reply, local and voice dismissal,
+is not attached, an alarm arriving during a reply, local dismissal, a spoken stop phrase,
+other speech while ringing, a wake word while ringing,
 the 60-second limit, and reconnect without a stale alarm.

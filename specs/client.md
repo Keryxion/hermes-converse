@@ -697,7 +697,9 @@ reply.
 Stop ringing on the first of:
 
 - a local dismissal, such as a button or tap;
-- `interrupted` for the alarm's `turn_id`;
+- `interrupted` for the alarm's `turn_id`, which the server sends when it hears
+  "stop";
+- the wake word, which then proceeds as an ordinary wake;
 - 60 seconds.
 
 When the sound has actually stopped, send `drained` for the alarm's `turn_id`:
@@ -707,7 +709,7 @@ When the sound has actually stopped, send `drained` for the alarm's `turn_id`:
 ```
 
 Keep sending microphone audio while ringing, unless muted, so the alarm can be
-stopped by voice. Alarm audio must not become a new request. After the alarm
+stopped by saying "stop" without the wake word. Alarm audio must not become a new request. After the alarm
 stops, return to the state the device was in before it; an alarm does not open
 a user activation. A device that was not connected when its alarm fired does
 not ring it after reconnecting.
