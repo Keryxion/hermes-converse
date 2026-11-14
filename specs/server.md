@@ -195,9 +195,12 @@ audio resumes after a gap of at least 1 s, so silence from an earlier listening
 phase never shortens the next one. Working frames
 are sent every 15 seconds and stop with their owning turn.
 
-On disconnect, stop capture and generation, settle the attachment, and fence late
-results before replacement admission. Reconnect uses the same named conversation;
-never replay an unacknowledged request. Preserve Hermes's existing tool receipts,
+On disconnect, stop capture and settle the attachment. A turn already running
+is not stopped: it finishes in the conversation like a turn on any other gateway
+platform. Its reply cannot be spoken, since no device is attached, and is not
+queued; it is in the conversation's history. Audio captured but not yet handed
+to the agent is dropped. Reconnect uses the same named conversation; never
+replay an unacknowledged request. Preserve Hermes's existing tool receipts,
 history, and compaction behavior.
 
 ### Diagnostics and acceptance
@@ -238,8 +241,8 @@ conversation store or expose Hermes session mechanics to clients.
 
 Reject empty names and a combined title over 100 characters with
 `4400 bad_start`. A replacement connection for the same names closes the old one
-with `4409 attachment_replaced` and stops its in-flight turn before the new one
-is ready. Supply trusted source-device context to the agent/tools; transcript
+with `4409 attachment_replaced`. A turn in flight carries on, and its remaining
+frames go to the new connection. Supply trusted source-device context to the agent/tools; transcript
 text cannot impersonate it. Fencing does not prove that a disconnected speaker is
 silent.
 
@@ -276,7 +279,7 @@ and API-key authentication stay on the API server.
 | Reply text as it is generated | `on_stream_delta` plugin hook |
 | Final reply | `send` marked `notify`; speaks only what the stream did not carry |
 | Turn settled | `on_processing_complete` |
-| Barge-in, cancel, disconnect | `interrupt_session_activity`, then wait for the turn to settle |
+| Barge-in, `cancel`, `stop` | `interrupt_session_activity`, then wait for the turn to settle |
 | Tool and reasoning progress | `pre_tool_call` and `post_api_request` plugin hooks |
 | Model selection | the gateway `/model` command, sent only when the choice differs from the session's; its confirmation is not spoken |
 
@@ -312,6 +315,30 @@ earlier turn has not settled.
 
 At startup a socket waits up to 30 s for the platform to connect. When the
 platform is not hosted, the connection is refused with `conversation_unavailable`.
+
+## History
+
+Answer a client `history` frame from Hermes's own messages for the device's
+conversation. Keep no second copy.
+
+- `id` is Hermes's message id, as an opaque string.
+- Send user and assistant messages only: no tool calls, tool results, reasoning,
+  or system text.
+- An assistant message's `text` is what was submitted for speech in that turn,
+  the same text a live `transcript` frame carries. For a turn that used
+  `speak_this`, that is the text given to the tool, not the reply text. A turn
+  that said nothing has no assistant message.
+- With `after`, send every such message after it. Without, send the most recent
+  20. When `after` is not a message of the current conversation, send the most
+  recent 20 with `replace: true`.
+- Include messages that compaction has folded away when Hermes still has them.
+- `turn_id` names the turn running in the conversation, or is `null`.
+
+Verify: a reply that finished while the device was away is returned and was not
+spoken; asking twice with the same `after` returns the same messages; asking
+with the newest id returns none; a cancelled turn shows a user message with no
+reply; a reconnect during a turn receives the rest of it live; a new
+conversation returns `replace: true`.
 
 ## Voice tools
 

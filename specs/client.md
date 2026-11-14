@@ -125,6 +125,7 @@ All are JSON text frames:
 | `{"type": "cancel", "turn_id": "..."}` | Cancels the **current** turn — stops TTS and the agent — but keeps the socket, session, and history alive. |
 | `{"type": "wake", "claim_id": "...", "wake_word": "Hey Arya"}` | request an advisory wake decision while buffering the new activation locally; see section 8. |
 | `{"type": "drained", "turn_id": "..."}` | Tells the server the reply's last audio has left the speaker, so the server won't transcribe its own echo as a new turn. |
+| `{"type": "history", "after": "..."}` | Ask for the conversation's messages since the one named, to catch up after being away; see "Catching up" in section 4. |
 | `{"type": "say", "text": "..."}` | Speaks the given text (trimmed, at most 400 characters) as a reply of its own: `thinking`, `speaking` + PCM, then `turn_done` with `next_action: "standby"`. No agent turn runs and nothing is added to the conversation. For fixed device prompts such as a spoken help reminder. Empty or non-string text is ignored. |
 | `{"type": "approval_response", "request_id": "...", "choice": "once"}` | Answer a pending approval from a screen with one of its `choices`; see "Approvals" in section 4. |
 
@@ -142,6 +143,7 @@ wake word again mid-turn and you want to keep the conversation going.
 | `transcript` | user input or assistant reply text, identified by `role` and `turn_id`; see below |
 | `thinking` | starts a turn, then repeats every 5 seconds with `tool_calls` and `reasoning_tokens`; refresh inactivity without resetting speaking/playback |
 | `approval_request`, `approval_resolved` | the assistant needs permission before it acts, and when that is settled; see "Approvals" below |
+| `history` | the messages asked for with a client `history` frame; see "Catching up" below |
 | `speaking` + binary frames | the reply as PCM16 at `output_rate` |
 | `interrupted` | the turn was cancelled (you barged in or sent `cancel`); stop playing |
 | `turn_done` | the reply is fully sent; `next_action` tells the client to listen or enter standby after drain |
@@ -383,8 +385,46 @@ it once, and continue audio playback. Silent turns need no assistant frame.
 The text describes what was prepared for speech, not what the user heard. For
 an interrupted or failed turn, send only text already submitted to speech if
 available, and keep the interruption or error visible. Do not send reasoning,
-tool payloads, credentials, or internal errors. This does not provide reconnect
-history or replay; those require a separate contract.
+tool payloads, credentials, or internal errors.
+
+### Catching up
+
+A client that was away, for example an app returning to the foreground or
+relaunched, asks for what it missed. After `ready`, send the `id` of the last
+message it has shown:
+
+```json
+{"type":"history","after":"m-122"}
+```
+
+Omit `after` the first time. The server answers once:
+
+```json
+{"type":"history","messages":[
+ {"id":"m-123","role":"user","text":"What's on my calendar tomorrow?"},
+ {"id":"m-124","role":"assistant","text":"Two things: the dentist at nine and lunch with Sam."}],
+ "replace":false,"turn_id":null}
+```
+
+| field | meaning |
+|---|---|
+| `messages` | In order, oldest first. With `after`, every message since it; without, the most recent 20. `text` is what was heard or said, as in `transcript` frames. |
+| `replace` | `true` when `after` is not in this conversation any more, for example after a new conversation was started. The messages are then the most recent 20; discard what was shown and show these. |
+| `turn_id` | The turn running now, or `null`. Its frames follow as usual. |
+
+Keep the last `id` shown and send it next time, so asking again adds nothing
+twice. A user message with no assistant message after it, and no turn running,
+was not answered: show it that way.
+
+Catching up only fills the conversation view. Do not replay audio for it, do
+not resend the person's request, and do not open the microphone or start an
+activation because of it.
+
+A turn does not end because the connection dropped. If the person asked
+something and the app went away, the assistant still finishes, and the answer is
+there to catch up on. It is not spoken later. A turn still running on reconnect
+continues live: its `thinking`, `speaking`, and `turn_done` frames arrive on the
+new connection. `{"stop": true}` and `cancel` still end a turn.
 
 ## 5. Session mode (`quiet_interval > 0`)
 
