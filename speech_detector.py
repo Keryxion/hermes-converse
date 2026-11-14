@@ -51,6 +51,16 @@ class SpeechDetector:
     def name(self) -> str:
         return "silero" if self._stream is not None else "energy"
 
+    @property
+    def level(self) -> Optional[float]:
+        """The latest block's input level (RMS), for tracing."""
+        return self._energy.last_rms
+
+    @property
+    def threshold(self) -> Optional[float]:
+        """The level the latest block had to exceed to count toward an onset, for tracing."""
+        return self._energy.last_trigger
+
     def _probability(self, block: Any) -> Optional[float]:
         if self._stream is None:
             return None

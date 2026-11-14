@@ -15,7 +15,7 @@ import os
 import threading
 import time
 from contextlib import contextmanager
-from typing import Any, Iterator, Optional
+from typing import Any, Iterable, Iterator, Optional
 
 logger = logging.getLogger(__name__)
 INSTRUMENTATION = "hermes.voice.converse"
@@ -29,6 +29,21 @@ _ATTRIBUTE_KEYS = frozenset({
     "input.continuation", "input.audio_ms", "endpoint.silence_ms", "endpoint.max_silence_ms", "endpoint.wake",
     "endpoint.pause_ms", "endpoint.longest_pause_ms",
     "llm.deltas", "error", "llm.timed_out", "tts.pcm_chunks", "tts.first_pcm_ms",
+    # connection
+    "device_name", "close.code", "close.by",
+    # turn
+    "claim_id", "turn.source", "turn.attached", "message.user_id", "message.assistant_id",
+    # drain
+    "drain.end", "drain.wait_ms",
+    # election and its claim events
+    "election_id", "election.policy", "election.window_ms", "election.claims", "election.decided_by",
+    "election.immediate", "election.winner_claim_id", "wake_word", "wake.confidence", "wake.volume",
+    "wake.heard_at", "claim.arrival", "claim.outcome", "decision.sent",
+    # barge-in: the interrupt event, then the per-turn summary
+    "interrupt.cause", "interrupt.phase", "interrupt.result", "interrupt.next_turn_id",
+    "vad.probability", "vad.level", "vad.threshold",
+    "barge.mic_ms", "barge.rejected_quiet_ms", "barge.peak_probability", "barge.peak_level",
+    "barge.threshold",
 })
 
 
@@ -121,6 +136,10 @@ class TurnTrace:
         self._recorder = recorder if recorder is not None else PhaseRecorder()
         self._tracer, self._span, self._api = tracer, span, api
         self._ended = False
+        self._lock = threading.Lock()
+        self._holds = 0
+        self._end_pending: Optional[int] = None  # set by end() while a hold is open
+        self._events: list[tuple[str, int, dict[str, Any]]] = []
         self.traceparent: Optional[str] = None
         if span is not None:
             try:
@@ -141,14 +160,50 @@ class TurnTrace:
         if not self._ended:
             self._recorder.set(**attrs)
 
+    def set_missing(self, **attrs: Any) -> None:
+        """Set attributes only where nothing has set them yet."""
+        if not self._ended:
+            self._recorder.set(**{k: v for k, v in attrs.items() if k not in self._recorder.attrs})
+
+    def event(self, name: str, **attrs: Any) -> None:
+        """An event on the turn span, timed now. Never delays the caller."""
+        with self._lock:
+            if not self._ended:
+                self._events.append((name, time.time_ns(), _attributes(attrs)))
+
+    def hold(self) -> bool:
+        """Keep the span from being written until :meth:`release`, for an event whose content is
+        settled after the turn is over. False when there is nothing to hold (no collector, or the
+        turn has already ended)."""
+        with self._lock:
+            if self._span is None or self._ended or self._end_pending is not None:
+                return False
+            self._holds += 1
+            return True
+
+    def release(self) -> None:
+        with self._lock:
+            self._holds = max(0, self._holds - 1)
+            pending = self._end_pending if self._holds == 0 else None
+            if pending is None:
+                return
+            self._end_pending = None
+        self.end(pending or None)
+
     def end(self, end_ns: Optional[int] = None) -> None:
-        if self._ended:
-            return
-        self._ended = True
+        with self._lock:
+            if self._ended:
+                return
+            if self._holds:
+                self._end_pending = end_ns or time.time_ns()
+                return
+            self._ended = True
         if self._span is None:
             return
         try:
             self._span.set_attributes(self._recorder.attrs)
+            for name, timestamp, attrs in self._events:
+                self._span.add_event(name, attributes=attrs, timestamp=timestamp)
             if self._recorder.attrs.get("outcome") in ("error", "timeout"):
                 self._span.set_status(self._api.StatusCode.ERROR)
             context = self._api.set_span_in_context(self._span)
@@ -183,18 +238,80 @@ class TurnTrace:
                     logger.debug("voice phase end failed", exc_info=True)
 
 
+def _tracer() -> tuple[Any, Any]:
+    """The tracer for voice spans and the OpenTelemetry trace module; raises when unavailable."""
+    from opentelemetry import trace
+
+    provider = trace.get_tracer_provider()
+    fallback = (_monitoring_provider()
+                if isinstance(provider, (trace.ProxyTracerProvider, trace.NoOpTracerProvider)) else None)
+    tracer = fallback.get_tracer(INSTRUMENTATION) if fallback is not None else trace.get_tracer(INSTRUMENTATION)
+    return tracer, trace
+
+
+def emit_span(name: str, start_ns: int, end_ns: int, attrs: dict[str, Any], *,
+              events: Iterable[tuple[str, int, dict[str, Any]]] = (), error: bool = False) -> None:
+    """Write one finished root span at its measured times. Does nothing without a collector."""
+    span = None
+    try:
+        tracer, api = _tracer()
+        span = tracer.start_span(name, start_time=start_ns, attributes=_attributes(attrs))
+        if not span.get_span_context().is_valid:
+            return
+        for event_name, timestamp, event_attrs in events:
+            span.add_event(event_name, attributes=_attributes(event_attrs), timestamp=timestamp)
+        if error:
+            span.set_status(api.StatusCode.ERROR)
+    except Exception:
+        logger.debug("voice span emission failed", exc_info=True)
+    finally:
+        if span is not None:
+            try:
+                span.end(end_time=max(start_ns, end_ns))
+            except Exception:
+                logger.debug("voice span end failed", exc_info=True)
+
+
+class ConnectionTrace:
+    """One ``voice.connection`` span: from accepting a socket to closing it."""
+
+    def __init__(self) -> None:
+        self.start_ns = time.time_ns()
+        self.attrs: dict[str, Any] = {}
+        self.by: Optional[str] = None
+        self.code: Optional[int] = None
+        self.ws: Any = None
+        self._ended = False
+
+    def set(self, **attrs: Any) -> None:
+        self.attrs.update({k: v for k, v in attrs.items() if v is not None})
+
+    def mark(self, by: str, code: Optional[int] = None) -> None:
+        """Who ended the socket and with what code; the first mark wins."""
+        if self.by is None:
+            self.by, self.code = by, code
+
+    def end(self) -> None:
+        if self._ended:
+            return
+        self._ended = True
+        by = self.by or "server"
+        code = self.code if self.code is not None else getattr(self.ws, "close_code", None)
+        if code is None and by == "lost":
+            code = 1006
+        attrs = {**self.attrs, "close.by": by}
+        if code is not None:
+            attrs["close.code"] = int(code)
+        emit_span("voice.connection", self.start_ns, time.time_ns(), attrs)
+
+
 def start_turn(*, recorder: Optional[PhaseRecorder], turn_id: str, **attrs: Any) -> TurnTrace:
     """Open a live parent; try again on later turns if optional tracing is unavailable."""
     recorder = recorder if recorder is not None else PhaseRecorder()
     recorder.set(turn_id=turn_id, **attrs)
     span = None
     try:
-        from opentelemetry import trace
-
-        provider = trace.get_tracer_provider()
-        fallback = (_monitoring_provider()
-                    if isinstance(provider, (trace.ProxyTracerProvider, trace.NoOpTracerProvider)) else None)
-        tracer = fallback.get_tracer(INSTRUMENTATION) if fallback is not None else trace.get_tracer(INSTRUMENTATION)
+        tracer, trace = _tracer()
         start_ns = min((p.start_ns for p in recorder.phases), default=time.time_ns())
         span = tracer.start_span("voice.turn", context=recorder.parent_context,
                                  kind=trace.SpanKind.SERVER, start_time=start_ns, attributes=recorder.attrs)

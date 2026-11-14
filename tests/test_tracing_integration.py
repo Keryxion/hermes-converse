@@ -27,7 +27,7 @@ async def test_wire_traceparent_matches_exported_turn(monkeypatch, otel):
             assert int(frame['traceparent'].split('-')[1], 16) == parent.context.trace_id
             assert int(frame['traceparent'].split('-')[2], 16) == parent.context.span_id
             assert frame['turn_id'] == parent.attributes['turn_id']
-    assert all(s.parent.span_id == parent.context.span_id for s in spans if s.name != 'voice.turn')
+    assert all(s.parent.span_id == parent.context.span_id for s in spans if s.name.startswith('voice.') and s.name not in ('voice.turn', 'voice.connection'))
     assert 'hello' not in repr([dict(s.attributes) for s in spans])
 
 

@@ -125,6 +125,9 @@ class BargeDetector:
         self.floor_locked = self.playing_prev = self.playback_seen = False
         self.grace_remaining = self.block_idx = 0
         self.blocks_since_playback = 10_000
+        # What the latest block was measured against (read by tracing; never used to decide).
+        self.last_rms: Optional[float] = None
+        self.last_trigger: Optional[float] = None
 
     def _floor(self) -> tuple:
         """(percentile, floor): the configured percentile of the quiet window, clamped to a small
@@ -159,6 +162,7 @@ class BargeDetector:
     def feed(self, rms_value: float, playing: bool, *, interrupting: bool = False) -> Optional[str]:
         """Consume a block; active-turn interruption uses stricter energy than idle onset."""
         self.block_idx += 1
+        self.last_rms = rms_value
         if not self.floor_locked and not self._calibrate(rms_value, playing):
             return None
         self._track_playback(playing)
@@ -173,6 +177,7 @@ class BargeDetector:
             trigger = max(self.quiet_floor * self._onset_mult, ONSET_TRIGGER_MIN)
             if self._onset_ceiling is not None:
                 trigger = min(trigger, self._onset_ceiling)
+        self.last_trigger = trigger
         # Track ambient drift ONLY while nothing plays (never absorb bleed) and ONLY for blocks near
         # the quiet estimate. A block well above the floor is speech, not ambient — absorbing it
         # ratchets the floor up toward speech level until the detector goes deaf.
