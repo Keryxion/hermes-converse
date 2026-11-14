@@ -548,6 +548,9 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
     if attachment is not None:
         # Tools run on worker threads; frames go out through the socket's own loop.
         attachment.send = lambda frame: asyncio.run_coroutine_threadsafe(ws.send_json(frame), loop)
+        if getattr(hub, "countdowns", None) is not None:
+            hub.countdowns.attached(attachment, getattr(client, "_source", None),
+                                    settings.countdown_ring_timeout_seconds, loop)
     default_model = (settings.model, settings.provider)
     selected_model = default_model
     wake_tasks: set[asyncio.Task] = set()
@@ -591,6 +594,8 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                         session.commit()
                     if frame.get("type") == "drained":
                         session.notify_drained(frame.get("turn_id"))
+                        if getattr(hub, "countdowns", None) is not None and attachment is not None:
+                            hub.countdowns.drained(attachment.conversation_id, frame.get("turn_id"))
                     if frame.get("type") == "cancel":
                         session.cancel(frame.get("turn_id"))
                         if adopted is not None:  # a turn carried over from the previous connection

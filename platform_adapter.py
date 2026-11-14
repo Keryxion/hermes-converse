@@ -31,6 +31,7 @@ from typing import Any, Callable, Optional
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from .server_turn import ServerTurn
 
 from .catchup import History
 
@@ -93,6 +94,7 @@ class ConverseAdapter(BasePlatformAdapter):
         self._approval_choice = approval_choice
         self._lock = threading.Lock()  # stream hooks arrive on worker threads
         self._turns: dict[str, _VoiceTurn] = {}  # chat_id -> the voice turn in flight
+        self._server_turns: dict[str, ServerTurn] = {}  # chat_id -> the server-started turn in flight
         self._processing: dict[str, int] = {}  # chat_id -> gateway turns being processed
         self._commands: dict[str, _Command] = {}  # chat_id -> the plugin's own command in flight
         self._active: dict[str, str] = {}  # chat_id -> message id the gateway is processing
@@ -191,6 +193,7 @@ class ConverseAdapter(BasePlatformAdapter):
             return
         turn = self._own(event)
         if turn is None:
+            self._server_turns[chat_id] = ServerTurn()
             return
         turn.started = True
         if turn.stopped:  # cancelled while it waited behind another turn
@@ -211,7 +214,9 @@ class ConverseAdapter(BasePlatformAdapter):
             command.done.set()
             return
         turn = self._own(event)
-        if turn is not None:
+        if turn is None:
+            self._server_turns.pop(chat_id, None)
+        else:
             turn.outcome = outcome
             turn.done.set()
             self._abandoned.pop(str(event.message_id or ""), None)
@@ -234,7 +239,8 @@ class ConverseAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=uuid.uuid4().hex)
         if not notify and self._processing.get(chat_id):
             return SendResult(success=True, message_id=uuid.uuid4().hex)  # status text, not speech
-        text = (content or "").strip()
+        server_turn = self._server_turns.get(chat_id)
+        text = (server_turn.reply(content or "") if server_turn is not None else content or "").strip()
         if not text or text.upper() == SILENT:
             return SendResult(success=True, message_id=uuid.uuid4().hex)
         event_id = f"send:{uuid.uuid4().hex}"

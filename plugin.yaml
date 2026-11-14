@@ -96,3 +96,7 @@ config_schema:
     type: float
     default: 0.75
     description: "How long the arbitrator collects concurrent wake claims for the same wake word before electing the primary device."
+  countdown_ring_timeout_seconds:
+    type: int
+    default: 900
+    description: "How long a countdown alarm rings if nobody ends it. Sent to the device as ring_seconds; the server also keeps the countdown this long past its deadline."

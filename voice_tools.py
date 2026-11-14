@@ -54,14 +54,21 @@ def make_handlers(hub: Any) -> dict[str, Callable[..., str]]:
         adapter = hub.gateway
         return adapter._turns.get(attachment.conversation_id) if adapter is not None else None
 
+    def server_turn_of(attachment: Any) -> Any:
+        adapter = hub.gateway
+        return adapter._server_turns.get(attachment.conversation_id) if adapter is not None else None
+
     def speak_this(args: dict, **kw: Any) -> str:
         error, attachment = device()
         if attachment is None:
             return _result(error)
+        text = args.get("text")
         turn = turn_of(attachment)
         if turn is None or not turn.started or turn.outcome is not None:
-            return _result("not_attached")
-        text = args.get("text")
+            server_turn = server_turn_of(attachment)
+            if server_turn is not None:
+                server_turn.speak(text if isinstance(text, str) else "")
+            return _result("ok")
         turn.exclusive = True
         if isinstance(text, str) and text.strip() and not turn.stopped:
             turn.on_delta("\n" + text + "\n")
@@ -84,9 +91,8 @@ def make_handlers(hub: Any) -> dict[str, Callable[..., str]]:
         if attachment is None:
             return _result(error)
         turn = turn_of(attachment)
-        if turn is None:
-            return _result("not_attached")
-        turn.standby = True
+        if turn is not None:
+            turn.standby = True  # a server-started turn's reply already ends in standby
         return _result("ok")
 
     return {"speak_this": speak_this, "play_tone": play_tone, "standby": standby}
