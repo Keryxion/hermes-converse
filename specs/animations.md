@@ -152,7 +152,7 @@ the state colors and meanings.
 
 | Device | Rendering |
 |---|---|
-| macOS menu mark | The neutral `)` arc stays visible in every state; only the dot takes the state color and animation. The level meter sits beside the dot. The mark stays legible on light and dark menu bars. |
+| macOS menu mark | The `)` arc stays visible in every state. The dot takes the state color and animation; larger animations such as thinking and mute also color and animate the arc. The level meter sits beside the dot. The mark stays legible on light and dark menu bars. |
 | iOS orb | The orb and rings take the state color. The waveform shows the microphone level while listening and the reply level while speaking. A label names the state and microphone status. |
 | LED ring (Voice PE, Echo) | Travelling states orbit the ring. Where the device knows the talker's direction, listening points toward the talker. |
 | LED groups (Echo Pyramid) | The four groups mirror the same state. Travelling states may breathe instead. |
