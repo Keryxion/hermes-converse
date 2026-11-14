@@ -293,6 +293,7 @@ and API-key authentication stay on the API server.
 | Turn settled | `on_processing_complete` |
 | Barge-in, `cancel`, `stop` | `interrupt_session_activity`, then wait for the turn to settle |
 | Tool and reasoning progress | `pre_tool_call` and `post_api_request` plugin hooks |
+| `new_conversation` from the client | the gateway `/new` command, after stopping any turn in flight; its confirmation is not spoken, and the client is sent `new_conversation` when it is done |
 | Model selection | the gateway `/model` command, sent only when the choice differs from the session's; its confirmation is not spoken |
 
 For a named device the chat is the device's conversation: chat name

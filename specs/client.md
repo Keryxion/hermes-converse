@@ -127,6 +127,7 @@ All are JSON text frames:
 | `{"type": "cancel", "turn_id": "..."}` | Cancels the **current** turn — stops TTS and the agent — but keeps the socket, session, and history alive. |
 | `{"type": "wake", "claim_id": "...", "wake_word": "Hey Arya"}` | request an advisory wake decision while buffering the new activation locally; see section 8. |
 | `{"type": "drained", "turn_id": "..."}` | Tells the server the reply's last audio has left the speaker, so the server won't transcribe its own echo as a new turn. |
+| `{"type": "new_conversation"}` | Start a fresh conversation for this device; see "Starting over" below. |
 | `{"type": "say", "text": "..."}` | Speaks the given text (trimmed, at most 400 characters) as a reply of its own: `thinking`, `speaking` + PCM, then `turn_done` with `next_action: "standby"`. No agent turn runs and nothing is added to the conversation. For fixed device prompts such as a spoken help reminder. Empty or non-string text is ignored. |
 | `{"type": "approval_response", "approval_id": "...", "choice": "once"}` | Answer a pending approval from a screen with one of its `choices`; see "Approvals" in section 4. |
 
@@ -134,6 +135,27 @@ All are JSON text frames:
 current turn. Use `cancel` when the user hits the action button, says the
 wake word again mid-turn, or says the `cancel` wake word, and you want to keep
 the conversation going.
+
+### Starting over
+
+An app can give the person a way to start a fresh conversation, such as a
+button, without asking the assistant:
+
+```json
+{"type":"new_conversation"}
+```
+
+The server ends any turn in flight, starts a new conversation for the device,
+and confirms with the same frame:
+
+```json
+{"type":"new_conversation"}
+```
+
+On the confirmation, clear the conversation view and forget the catch-up cursor,
+so the next `start` sends no `after`. The earlier conversation is not deleted;
+it stays in Hermes's history. Countdowns and the connection are unaffected. If
+the server cannot start one, it sends an `error` frame and nothing changes.
 
 ## 4. Server frames
 
