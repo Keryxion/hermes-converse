@@ -27,12 +27,11 @@ closing it:
 |---|---|
 | `device_name` | The device, once `start` has named it. |
 | `session.id` | The `session_id` sent in `ready`. |
-| `connection.ready_ms` | From accepting the socket to sending `ready`. |
 | `close.code` | The WebSocket close code, such as `4401` or `4409`. |
 | `close.by` | Who ended it: `client`, `server`, or `lost` when it dropped with no close. |
 
 A socket refused before `ready`, for a bad key or a bad `start`, is still
-recorded, with its close code and whatever it had sent. A replacement shows as
+recorded, with its close code. A replacement shows as
 two spans for one device: the old one closing `4409` as the new one opens.
 
 "It did not respond" is answered here first: either the device had a
@@ -61,12 +60,9 @@ carries:
 | Attribute | Value |
 |---|---|
 | `drain.end` | How it ended: `drained` (the device reported it), `timeout` (no report within `playback_tail_timeout_seconds`), `interrupted`, or `disconnected`. |
-| `drain.audio_ms` | How much reply audio was sent. |
 | `drain.wait_ms` | How long the device took to report, from the last PCM sent. |
 
-A `timeout` means the device never said it finished. A `drain.wait_ms` far from
-the audio still unplayed when sending ended means the device is playing late or
-reporting early.
+A `timeout` means the device never said it finished.
 
 Every `voice.turn` carries:
 
@@ -74,7 +70,7 @@ Every `voice.turn` carries:
 |---|---|
 | `device_name`, `session.id`, `turn_id` | Which device, connection, and turn. |
 | `claim_id` | The wake that started the exchange, if one did. A follow-up keeps it. |
-| `turn.source` | How the turn started: `wake` (a granted claim), `follow_up` (speech while listening after a reply), `talk` (speech with no wake before it), or `server` (no speech: a reminder or another message submitted to the conversation). |
+| `turn.source` | How the turn started: `wake` (a granted claim), `speech` (the device was already listening: a follow-up, Talk, or a client that always listens), or `server` (no speech: a reminder or another message submitted to the conversation). |
 | `outcome` | How it ended: `ok`, `interrupted`, `timeout`, or `error`. |
 | `turn.attached` | Whether a device was attached when the reply was ready. `false` means the reply went nowhere. |
 | `message.user_id`, `message.assistant_id` | The `message_id`s of what was heard and what was said, when there are any. |
@@ -125,14 +121,13 @@ didn't it stop.
 
 ### Why it stopped
 
-Record an event on the `voice.turn` that was interrupted, at the moment it
-happened:
+Record an event on the `voice.turn` that was interrupted, timed at the
+interruption:
 
 | Attribute | Value |
 |---|---|
 | `interrupt.cause` | `speech` when the server heard the person, `cancel` when the client sent `cancel`. |
 | `interrupt.phase` | Where the reply was: `thinking`, `speaking`, or `drain` (sent, still playing on the device). |
-| `interrupt.reply_ms` | How much reply audio had been sent. |
 | `interrupt.result` | What the speech turned out to be: `request` (a new turn), `stop_phrase`, or `empty` (nothing was transcribed). |
 | `interrupt.next_turn_id` | The turn the speech became, for `request`. |
 
@@ -157,9 +152,7 @@ A sound that does not interrupt leaves no event, so record a summary on every
 | Attribute | Value |
 |---|---|
 | `barge.mic_ms` | How much microphone audio arrived in that time. Zero means the device was not sending audio, so nothing could have interrupted. |
-| `barge.speech_ms` | How much of it the detector's model called speech. |
 | `barge.rejected_quiet_ms` | Speech by the model, but below the level threshold: the person was too quiet, or it was the reply's own echo. |
-| `barge.rejected_noise_ms` | Above the level threshold, but not speech by the model. |
 | `barge.peak_probability` | The highest speech probability seen. |
 | `barge.peak_level` | The highest input level seen. |
 | `barge.threshold` | The level threshold in force. |
@@ -182,8 +175,8 @@ audio.
 2. A device that connects, drops, and reconnects shows two connection spans, the
    first closed `lost`; a second device taking the same names closes the first
    with `4409`.
-3. A wake, a follow-up, a Talk press, and a reminder each produce a turn with
-   the matching `turn.source`.
+3. A wake, a follow-up, and a reminder produce turns with `turn.source` `wake`,
+   `speech`, and `server`.
 4. A reply that finishes after its device disconnected has `turn.attached`
    false and no `voice.drain`.
 5. A turn's message IDs find its user and assistant messages in Hermes's
