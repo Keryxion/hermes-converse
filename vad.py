@@ -42,6 +42,9 @@ DEFAULT_BARGE_MULTIPLIER = 3.0  # over the quiet floor: 300 * 3 = 900 vs 3000+ s
 BLEED_MARGIN = 1.5  # playback threshold = max(fixed floor, bleed * margin): bleed never trips,
 # real speech (typically 2-4x the bleed level) still does. Relative, not a fixed dB number,
 # so it adapts to room volume and playback level.
+BLEED_REF_PERCENTILE = 10.0  # the bleed reference is a LOW percentile of the playback-phase window:
+# bleed fills the gaps between the user's words, so it is the floor of that window. A median or
+# higher drifts up on the user's own speech and raises the gate above the voice it must hear.
 
 # ── converse profile (30 ms blocks at the capture rate) ──
 BLOCK_MS = 30
@@ -169,10 +172,6 @@ class BargeDetector:
         if not self.floor_locked and not self._calibrate(rms_value, playing):
             return None
         self._track_playback(playing)
-        # Track the playback bleed level so the barge-in threshold adapts to the actual speaker
-        # bleed (room volume + playback level) instead of a fixed dB clamp.
-        if playing:
-            self._bleed_ambient.append(rms_value)
         # Trigger: quiet baseline x multiplier, phase-dependent.
         #  • Active-turn interruption / playback: quiet_floor*mult, floored at PLAYBACK_MIN_TRIGGER,
         #    raised to BLEED_MARGIN * bleed level (so bleed never trips), capped at TRIGGER_CEILING
@@ -180,7 +179,7 @@ class BargeDetector:
         #  • Ordinary onset: quiet_floor*onset_mult, floored at ONSET_TRIGGER_MIN and capped
         #    at onset_ceiling IF one is set (the converse profile sets none).
         if playing or interrupting:
-            bleed_floor = (float(self._np.percentile(list(self._bleed_ambient), 50.0))
+            bleed_floor = (float(self._np.percentile(list(self._bleed_ambient), BLEED_REF_PERCENTILE))
                            if self._bleed_ambient else 0.0)
             trigger = min(max(self.quiet_floor * self.mult,
                               PLAYBACK_MIN_TRIGGER,
@@ -197,6 +196,10 @@ class BargeDetector:
         if not playing and rms_value < drift_gate:
             self.ambient.append(rms_value)
             _, self.quiet_floor = self._floor()
+        # Track the playback bleed level so the barge-in threshold adapts to the actual speaker
+        # bleed (room volume + playback level) instead of a fixed dB clamp.
+        if playing:
+            self._bleed_ambient.append(rms_value)
         above = rms_value >= trigger
         if above and self.grace_remaining > 0:
             vad_log(f"grace suppression: block={self.block_idx} rms={rms_value:.0f} "
