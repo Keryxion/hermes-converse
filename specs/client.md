@@ -515,23 +515,10 @@ This does not justify streaming from losing or idle wake-word clients.
 
 ## 9. Conversation output without user input
 
-Converse is an audio transport attached to a conversation. The conversation
-can produce output without a new user utterance, microphone transcript,
-wake detection, or wake grant. A reminder, scheduled follow-up, or server
-event can start an outbound turn while the attached client is idle. Wake
-selection concerns user activations; it must not authorize or gate outbound
-conversation output. The client need not stream ambient audio while idle
-in order to receive outbound events.
-
-The server subscribes to **completed final responses** for attached
-conversations through Hermes's public `post_llm_call` hook. It uses the
-transformed final text, skips the `[SILENT]` control marker, and suppresses
-voice-owned runs that already have streaming TTS. Other processes or
-scheduler integrations can publish completed output using the authenticated
-endpoint below. External output does not create a synthetic transcript or
-another LLM run; TTS begins when the final text is available. Each delivered
-output gets a fresh `turn_id` and carries its `event_id` on the initial
-`thinking` / `speaking` frames.
+The server can start a turn while the client is idle: a reminder, a scheduled
+follow-up, or another server event. No wake word, wake grant, or user
+transcript precedes it, and wake selection does not gate it. The client need
+not stream audio while idle to receive it.
 
 Use the same playback lifecycle as ordinary replies:
 
@@ -553,17 +540,17 @@ wake or arbitration. After the turn and playback drain, stop that temporary
 stream and restore local wake detection unless an activation is now open.
 
 Serialize outbound audio on each socket: never interleave the untagged
-binary PCM of two turns. Queue an announcement behind an active turn and
-its playback drain; discard stale announcements instead of replaying them
-late. Ordinary barge-in, `cancel`, and `drained` apply equally to these turns.
-Output is routed to the one attached client for its exact conversation ID,
-within this plugin profile. It is never implicitly broadcast and never runs
-a wake election. Creation and attachment use the client's validated API key.
-Cross-platform/messaging-conversation ownership is not changed by this API.
+binary PCM of two turns. Output waits behind an active turn and its playback
+drain; stale output is discarded instead of played late. Ordinary barge-in,
+`cancel`, and `drained` apply equally to these turns. Output goes to the one
+device attached to that conversation. It is never broadcast and never runs a
+wake election.
 
 ### Publishing completed output
 
-An authenticated producer can send a completed conversation response:
+An authenticated producer can send a completed conversation response. It is
+spoken as a turn with a fresh `turn_id`, and its `event_id` is carried on the
+initial `thinking` / `speaking` frames:
 
 ```http
 POST /v1/audio/conversations/<conversation_id>/output
@@ -601,76 +588,6 @@ This endpoint delivers supplied text; it does not append a user/model turn
 to persisted history. Producers that require conversation memory must
 record their completed response through the conversation owner.
 
-### Announcement sound and synchronized playback (proposed extension)
-
-An announcement has a distinct lead-in sound before its speech. The server
-may target one attached client or an explicitly selected, authorized device
-group for a system-wide announcement. Use the same announcement ID, content,
-and scheduled playback time on every target; group delivery is deliberate,
-not an automatic broadcast of ordinary conversation replies.
-
-Draft header (requires negotiated announcement support):
-
-```json
-{"type":"announcement","announcement_id":"announce-42","event_id":"delivery-42","turn_id":"turn-10","sound":"announcement-v1","chime_duration_ms":600,"play_at_unix_ms":1794142805000,"expires_at_unix_ms":1794142806000,"late_policy":"skip"}
-```
-
-`play_at_unix_ms` is the intended **audible start of the lead-in sound**,
-in server Unix milliseconds, not the generation time or WebSocket send
-time. `expires_at_unix_ms` bounds how long the event is useful. For a group,
-all members use the same IDs to identify the same announcement; each client
-deduplicates it locally. A rescheduled replacement needs a new delivery
-`event_id` and must explicitly supersede the old one before playback.
-
-Send the header and the complete `speaking` + PCM payload sufficiently ahead
-of the deadline to buffer it; `turn_done` marks payload completion and may
-arrive before scheduled playback. Play the chime at the scheduled time,
-then start speech at `play_at_unix_ms + chime_duration_ms`. Negotiate a
-versioned chime asset with identical content and duration across clients;
-alternatively send one server-rendered chime-plus-speech PCM payload and
-schedule its first sample at `play_at_unix_ms`. Do not play the chime twice
-when using that fallback. For synchronization, do not generate separate TTS
-for each target. Resampling must preserve the shared audio timeline.
-
-Estimate the server-minus-client clock offset from the existing `ready`
-timestamps: record client send time `t0` for `start`, server receive/send
-`server_recv_unix_ms = t1`, `server_send_unix_ms = t2`, and client receive
-time `t3`. The estimate is `offset = ((t1 - t0) + (t2 - t3)) / 2`.
-Convert the server deadline to client time with `play_at_unix_ms - offset`,
-then schedule against a local monotonic clock. Account for measured output
-buffer/device latency so the timestamp refers to sound leaving the speaker,
-not merely enqueueing samples. A long-lived connection needs a periodic
-clock-sync exchange (still to be specified); a handshake estimate alone
-cannot bound drift indefinitely.
-
-A target that is muted, busy with another turn, lacks complete audio or the
-chime asset, or has insufficient clock confidence must report that it cannot
-meet the scheduled time. Do not silently postpone just that device while
-claiming a synchronized broadcast. The default `late_policy: "skip"` skips
-playback if the start deadline is missed; an explicitly requested immediate
-fallback may play before expiry but must report that it was unsynchronized.
-Never replay an expired announcement on reconnect. Preparation/status and
-cancellation frames must be defined before implementation so the server can
-reschedule or report partial delivery. Group playback is best effort, not
-an atomic or sample-accurate guarantee across independent audio devices.
-
-During scheduled buffering, preserve the existing microphone state. When
-announcement playback begins, temporarily stream PCM for interruption/control
-detection even if previously idle, unless explicitly muted. Stop the temporary
-stream after drain if no user activation is open. Mark the full
-chime-and-speech interval as playback for server echo/barge-in handling,
-acknowledge `drained` only after actual playback or discard, and keep the
-scheduled wait separate from the agent-run timeout. User barge-in or cancel
-stops that client's chime and speech; group-wide cancellation is an explicit
-server operation, not an automatic consequence of one device's interruption.
-
-**Heartbeat 2 integration.** Heartbeat 2 currently schedules turns for
-messaging-gateway chats and rejects API-server sessions. Installing it does
-not by itself schedule future voice output. An integration must explicitly
-publish approved output to an attached API conversation; the endpoint above
-is available for that delivery. Timer/scheduler integration and its policy
-remain in [issue #34](https://github.com/Keryxion/hermes-converse/issues/34).
-The voice system prompt does not claim unsupported scheduling abilities.
 
 ## 10. Alarms
 
