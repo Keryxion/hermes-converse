@@ -35,10 +35,11 @@
 - Do not add Unicode normalization requirements or other unrequested name machinery.
 - Use the colon in conversation titles; do not substitute an em dash.
 
-## Timers
+## Countdowns
 
-- A timer belongs to the device whose conversation set it. It counts down and rings there.
-- A timer for another room is arranged by asking that room's conversation; the
-  server has no device argument for timers.
-- Confirmation is spoken where the person asked; the alarm rings where the timer lives.
+- The specs call it a countdown. "Timer" is only what a person says, as in "set a timer".
+- A countdown belongs to the device whose conversation set it. It counts down and rings there.
+- A countdown for another room is arranged by asking that room's conversation; the
+  server has no device argument for countdowns.
+- Confirmation is spoken where the person asked; the alarm rings where the countdown lives.
 - Keep client messages simple; server scheduling details belong in the server spec.

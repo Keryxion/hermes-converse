@@ -184,7 +184,7 @@ attachments without duplicate history or competing work. Include the case
 The implementation stores only device identity in the profile's
 `plugin-data/hermes-converse/devices.db`.
 The prompt supplies both names and the routing identity, explains proactive output without
-another wake word, and requires successful scheduling receipts before confirming timers.
+another wake word, and requires successful tool receipts before confirming countdowns or reminders.
 A prompt does not bypass a scheduling tool's refusal.
 
 ## Gateway conversation
@@ -355,7 +355,7 @@ from that device:
 Use the existing stop phrases. The tone itself must not be transcribed as
 speech. A sent frame is not proof that a speaker sounded or stopped.
 
-Acceptance scenarios: a timer set in the Kitchen counts down and rings only in
+Acceptance scenarios: a countdown set in the Kitchen counts down and rings only in
 the Kitchen. Exercise a call from a chat that is not a device, a device that is
 not attached, a reconnect before the deadline, a device that is off at the
 deadline, local dismissal, a spoken stop phrase, other speech while ringing, a
