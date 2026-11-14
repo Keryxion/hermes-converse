@@ -21,10 +21,10 @@ def test_default_and_provider_choice():
 async def test_switch_does_not_interrupt_current_run_and_reset_restores_default(monkeypatch, named):
     from hermes_converse import route as route_module
     from tests.test_route import API_KEY, Harness, _FakeStreamer, _patch_speech, _collect_turn
-    from tests.support.fake_api import FakeRunsAPI
+    from tests.support.fake_hermes import FakeHermes
     import numpy as np
 
-    fake = FakeRunsAPI(API_KEY, deltas=('Four.',), hang=True)
+    fake = FakeHermes(API_KEY, deltas=('Four.',), hang=True)
     _patch_speech(monkeypatch, _FakeStreamer([np.zeros(240, np.int16).tobytes()]))
     created = []
     original = route_module._resolve_session
@@ -44,13 +44,13 @@ async def test_switch_does_not_interrupt_current_run_and_reset_restores_default(
         session.transcripts.put('first question')
         while (await ws.receive_json())['type'] != 'thinking':
             pass
-        # thinking can precede Runs admission by one event-loop tick.
+        # thinking can precede gateway admission by one event-loop tick.
         import asyncio
         for _ in range(100):
-            if fake.runs:
+            if fake.turns:
                 break
             await asyncio.sleep(.01)
-        assert next(iter(fake.runs.values()))['body']['model'] == 'agent'
+        assert fake.turns[0]['model'] == 'agent'
         await ws.send_json({'type': 'set_model', 'request_id': 'bad-choice', 'model': []})
         assert await ws.receive_json() == {'type': 'model_error', 'request_id': 'bad-choice',
                                           'error': 'bad_model_selection'}
@@ -60,22 +60,22 @@ async def test_switch_does_not_interrupt_current_run_and_reset_restores_default(
         changed = await ws.receive_json()
         assert changed == {'type': 'model_changed', 'request_id': 'choose-beta', 'model': 'beta',
                            'provider': 'litellm', 'uses_default': False, 'applies_to': 'next_turn'}
-        assert fake.stop_calls == [], 'changing a model must not cancel the current run'
-        assert len(fake.runs) == 1 and next(iter(fake.runs.values()))['body']['model'] == 'agent'
+        assert fake.stopped == [], 'changing a model must not cancel the current turn'
+        assert len(fake.turns) == 1 and fake.turns[0]['model'] == 'agent'
         await ws.send_json({'type': 'cancel'})
         await _collect_turn(ws)
         fake.hang = False
         session.transcripts.put('second question')
         await _collect_turn(ws)
-        bodies = [run['body'] for run in fake.runs.values()]
+        bodies = fake.turns
         assert bodies[-1]['model'] == 'beta' and bodies[-1]['provider'] == 'litellm'
         await ws.send_json({'type': 'set_model', 'request_id': 'reset', 'model': None, 'provider': None})
         reset = await ws.receive_json()
         assert reset['uses_default'] and reset['model'] == 'agent'
         session.transcripts.put('third question')
         await _collect_turn(ws)
-        assert list(fake.runs.values())[-1]['body']['model'] == 'agent'
-        assert len({run['body']['session_id'] for run in fake.runs.values()}) == 1
+        assert fake.turns[-1]['model'] == 'agent'
+        assert len({turn['chat_id'] for turn in fake.turns}) == 1
         await ws.close()
 
 
@@ -86,9 +86,9 @@ async def test_ready_catalog_is_opt_in(monkeypatch, tmp_path, unavailable, named
     import numpy as np
     from aiohttp import web
     from tests.test_route import API_KEY, Harness, _FakeStreamer, _patch_speech
-    from tests.support.fake_api import FakeRunsAPI
+    from tests.support.fake_hermes import FakeHermes
 
-    fake = FakeRunsAPI(API_KEY)
+    fake = FakeHermes(API_KEY)
     _patch_speech(monkeypatch, _FakeStreamer([np.zeros(240, np.int16).tobytes()]))
     queries = []
 

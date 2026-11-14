@@ -186,3 +186,45 @@ async def test_logs_correlate_claims_elections_and_decisions_without_phrase(capl
     assert any('decision=wake_deny' in m and "claim_id='client-2'" in m for m in messages)
     assert any('decision=wake_grant' in m and 'wait_ms=' in m for m in messages)
     assert 'Hey Arya' not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_single_registered_device_is_granted_without_waiting_the_window():
+    arb = Arbitrator(wake_window=5)
+    await arb.register('d1')
+    result = await asyncio.wait_for(
+        arb.claim_wake('d1', claim_id='1', wake_word='Arya'), timeout=1)
+    assert result == (True, 'd1', '1')
+
+
+@pytest.mark.asyncio
+async def test_election_closes_early_once_every_device_has_claimed():
+    arb = Arbitrator(wake_window=5)
+    await arb.register('d1')
+    await arb.register('d2')
+    results = await asyncio.wait_for(asyncio.gather(
+        arb.claim_wake('d1', claim_id='1', wake_word='Arya', confidence=0.6),
+        arb.claim_wake('d2', claim_id='2', wake_word='Arya', confidence=0.9),
+    ), timeout=1)
+    assert [r[:2] for r in results] == [(False, 'd2'), (True, 'd2')]
+
+
+@pytest.mark.asyncio
+async def test_partial_claims_keep_the_full_window():
+    arb = Arbitrator(wake_window=0.2)
+    await arb.register('d1')
+    await arb.register('d2')
+    started = asyncio.get_running_loop().time()
+    assert (await arb.claim_wake('d1', claim_id='1', wake_word='Arya'))[0]
+    assert asyncio.get_running_loop().time() - started >= 0.18
+
+
+@pytest.mark.asyncio
+async def test_election_closes_when_the_only_silent_device_unregisters():
+    arb = Arbitrator(wake_window=5)
+    await arb.register('d1')
+    await arb.register('d2')
+    claim = asyncio.create_task(arb.claim_wake('d1', claim_id='1', wake_word='Arya'))
+    await asyncio.sleep(0)
+    await arb.unregister('d2')
+    assert (await asyncio.wait_for(claim, timeout=1))[0]

@@ -1,8 +1,7 @@
 """The barge/onset detector as a pure RMS state machine, and the endpointer over the mic shim."""
 
 import threading
-import wave
-from collections import deque
+import time
 
 import numpy as np
 import pytest
@@ -125,20 +124,26 @@ def test_network_mic_stream_zero_pads_and_returns_on_stop():
     assert np.all(data[100:] == 0)
 
 
-def test_capture_until_quiet_produces_wav_from_shim():
+def test_network_mic_stream_flags_resume_after_a_gap_even_from_one_byte():
     stream = NetworkMicStream(np, stop=threading.Event(), poll_seconds=0.01)
-    block = int(vad.SAMPLE_RATE * 0.03)
-    speech = np.ones(block, dtype=np.int16) * 8000
-    silence = np.zeros(block, dtype=np.int16)
-    endpoint_blocks = max(1, 1250 // 30)
-    stream.feed(speech.tobytes())
-    stream.feed(speech.tobytes())
-    for _ in range(endpoint_blocks + 2):
-        stream.feed(silence.tobytes())
-    wav_path, volume = vad.capture_until_quiet(stream, np, block, deque(maxlen=4), endpoint_blocks=endpoint_blocks,
-                                               max_blocks=max(1, 30_000 // 30), sample_rate=22050)
-    assert wav_path
-    assert volume > 0  # the fed audio was loud, not silence
-    with wave.open(wav_path, "rb") as wf:
-        assert wf.getframerate() == 22050 and wf.getnchannels() == 1 and wf.getnframes() > 0
-    vad.unlink_quietly(wav_path)
+    stream.resume_gap_seconds = 0.05
+    stream.feed(np.zeros(480, dtype=np.int16).tobytes())
+    stream.read(480)
+    assert stream.resumed is False
+    time.sleep(0.1)
+    stream.feed(b"\x00")  # a lone odd byte queues nothing
+    stream.feed(b"\x00" + np.zeros(479, dtype=np.int16).tobytes() + b"\x00")
+    stream.read(480)
+    assert stream.resumed is True
+
+
+def test_network_mic_stream_discard_clears_pending_resume():
+    stream = NetworkMicStream(np, stop=threading.Event())
+    stream._last_feed -= 1.1
+    stream.feed(b"\xff")  # the resume marker belongs to this incomplete sample
+    stream.discard()
+    samples = np.arange(480, dtype=np.int16)
+    stream.feed(samples.tobytes())
+    data, _ = stream.read(480)
+    np.testing.assert_array_equal(data, samples)
+    assert stream.resumed is False

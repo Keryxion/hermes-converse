@@ -11,9 +11,10 @@ Each Arya has a name and uses an existing Hermes conversation, titled
 which handles voice activity detection, endpointing, speech-to-text, and the
 agent turn, then streams reply PCM back. Conversation history persists across
 turns and reconnects; closing the socket does not end the Hermes conversation.
-If the conversation was deleted in Hermes, reconnecting reuses a compatible
-conversation with the same title or starts a fresh one. The device name and
-routing identity stay the same; deleted history is not restored.
+If the conversation is deleted in Hermes, the next turn reuses a compatible
+conversation with the same title or starts a fresh one, on the open socket or
+after reconnecting. The device name and routing identity stay the same;
+deleted history is not restored.
 
 Wake selection is cooperative: it recommends an answering device without
 restricting audio processing. Section 8 defines the cooperative wake contract.
@@ -89,8 +90,19 @@ then live binary PCM16 mono at `input_rate` without a gap or duplication.
 the granted activation, including thinking and playback (sections 4 and 8).
 A client that does not use wake detection may start streaming after `ready`.
 
-The server replies with `ready` and clock-skew timestamps. Named-device
-attachment IDs and reconnect behavior are defined in section 11.
+The server replies with `ready`:
+
+```json
+{"type": "ready", "session_id": "socket-9", "recipient_id": "device-7",
+ "assistant_name": "Arya", "device_name": "Den Echo", "transcripts": false,
+ "input": {"sample_rate": 16000, "format": "pcm16", "block_ms": 30},
+ "output": {"sample_rate": 24000, "format": "pcm16"},
+ "server_recv_unix_ms": 1794142800100, "server_send_unix_ms": 1794142800140}
+```
+
+`input.sample_rate` and `output.sample_rate` are the rates in use; play reply
+PCM at `output.sample_rate`. The two timestamps are for clock-skew estimation.
+Named-device attachment IDs and reconnect behavior are defined in section 11.
 
 ## 3. Client control frames (send anytime)
 
@@ -99,10 +111,11 @@ All are JSON text frames:
 | frame | meaning |
 |---|---|
 | `{"stop": true}` | Stops live work and closes the socket. Preserves the device's Hermes conversation and its history for reconnection (section 11). |
-| `{"commit": true}` | Forces the current utterance to endpoint now (runs a turn on it). |
+| `{"commit": true}` | Ends the current utterance now, with the audio already sent (runs a turn on it). |
 | `{"type": "cancel", "turn_id": "..."}` | Cancels the **current** turn — stops TTS and the agent — but keeps the socket, session, and history alive. |
 | `{"type": "wake", "claim_id": "...", "wake_word": "Hey Arya"}` | request an advisory wake decision while buffering the new activation locally; see section 8. |
 | `{"type": "drained", "turn_id": "..."}` | Tells the server the reply's last audio has left the speaker, so the server won't transcribe its own echo as a new turn. |
+| `{"type": "say", "text": "..."}` | Speaks the given text (trimmed, at most 400 characters) as a reply of its own: `thinking`, `speaking` + PCM, then `turn_done` with `next_action: "standby"`. No agent turn runs and nothing is added to the conversation. For fixed device prompts such as a spoken help reminder. Empty or non-string text is ignored. |
 | `timer_request` | Set, update, cancel, dismiss, or synchronize timers (section 10). |
 
 **`cancel` vs `stop`:** `stop` tears down the session; `cancel` only kills the
@@ -113,18 +126,27 @@ wake word again mid-turn and you want to keep the conversation going.
 
 | frame | meaning |
 |---|---|
-| `ready` | rates, `session_id`, clock-skew timestamps |
+| `ready` | `input` and `output` rates, `session_id`, clock-skew timestamps; see section 2 |
 | `wake_grant` | recommends this client handle the wake activation; echoes its `claim_id` and `wake_word`. |
 | `wake_deny` | recommends this client stand down for the activation; echoes its `claim_id` and `wake_word`. |
 | `transcript` | user input or assistant reply text, identified by `role` and `turn_id`; see below |
-| `thinking` | the agent turn is running (show "thinking", not "listening") |
-| `working` | every 15 seconds during an active turn; refresh its inactivity timer without changing thinking/speaking state |
+| `thinking` | starts a turn, then repeats every 5 seconds with `tool_calls` and `reasoning_tokens`; refresh inactivity without resetting speaking/playback |
 | `speaking` + binary frames | the reply as PCM16 at `output_rate` |
 | `interrupted` | the turn was cancelled (you barged in or sent `cancel`); stop playing |
 | `turn_done` | the reply is fully sent; `next_action` tells the client to listen or enter standby after drain |
 | `quiet` | session mode: the stream has been silent for another `quiet_interval` seconds |
 | `error` | the turn failed (spoken-safe text) |
 | `timer_result`, `timer_snapshot`, `alarm` | Timer results, state, and playback (section 10). |
+
+These are the only server frames, apart from `model_changed` and `model_error`
+(section 12). Turn liveness is the repeated `thinking` frame; there is no
+separate keep-alive frame. Ignore a frame type you do not recognize.
+
+Reply PCM arrives at about playback speed: the first audio is sent immediately,
+then the server stays at most about 1.5 s ahead of real-time playback. Keep
+reading the socket while you play. A buffer of 1.5 s plus network jitter never
+has to stop reading, so `interrupted`, `turn_done`, and pings reach you without
+waiting behind queued audio.
 
 ### Microphone streaming and barge-in
 
@@ -199,60 +221,56 @@ continuation. A bounded playback-tail timeout handles a missing `drained`.
 
 ### Handling `thinking`
 
-`thinking` is the server's explicit signal that the agent turn has started.
-For example:
+The server sends `thinking` at turn start, then approximately every **5 seconds**
+until the turn ends, including agent/TTS waits and speech:
 
 ```json
-{"type": "thinking", "turn_id": "<turn_id>"}
+{"type": "thinking", "turn_id": "turn-42", "tool_calls": 3, "reasoning_tokens": 2400}
 ```
 
-Treat it as a turn boundary even if the client has not received a
-`transcript` for that turn. Mark the agent turn active and show "thinking".
+Both counters are measured for this turn and reset for each turn:
+
+- `tool_calls` is the cumulative number of tool calls started in this turn. The
+  count includes calls that
+  later fail; it is not a count of completed or currently running calls, or a
+  percentage complete.
+- `reasoning_tokens` is the cumulative reasoning-token count the model provider
+  reported for this turn, or `null` when none has been reported. `null` means
+  unavailable; `0` is a measured zero. The count is updated when a model call
+  finishes, so it can lag during a long call and can increase while speaking.
+
+The initial frame has `tool_calls: 0` and `reasoning_tokens: null`. Replies
+prepared without an agent run report `tool_calls: 0` and `reasoning_tokens: null`.
+No tool names, arguments, results, or reasoning text are included. When tracing
+is active, frames also carry the turn's `traceparent`.
+
+The first `thinking` starts the turn even without a preceding user `transcript`.
+Mark the turn active and show thinking. Repeated frames with the same active
+`turn_id` update the count and refresh the inactivity timer; preserve any existing
+speaking/playback state. Do not treat them as new turns or restart playback.
+Ignore late frames for completed/cancelled turns and stale IDs. An unfamiliar ID
+may start a server-originated turn as described in section 9.
+
 During an active activation, keep sending microphone PCM so the server can
-accept a continuation. The UI state
-and microphone transport are independent. See section 9 for outbound turns
-that start while the client is otherwise idle.
+accept a continuation. UI state and microphone transport are independent.
 
-If the client uses a turn deadline, arm it on `thinking` when `transcript`
-has not already armed it; do not restart an existing deadline. Record the
-event in the turn trace if tracing is enabled. When both frames arrive,
-`transcript` identifies what was heard and `thinking` confirms that the
-agent has started; they belong to the same `turn_id`.
+Arm an inactivity timer on the initial `thinking` if `transcript` has not already
+armed it. Refresh it on repeated frames for the active turn. Allow more than five
+seconds plus network/scheduling delays (for example, 15 seconds). Record frames in
+the turn trace when tracing is enabled. A short turn may send only the initial frame.
+An unchanged count still indicates turn liveness, not proof that model/tool work
+has advanced.
 
-This is a lifecycle status notification, not streamed reasoning text.
-Continue handling `working`, `speaking`, `interrupted`, `error`, and `turn_done` as
-usual to play the reply or finish the turn.
-
-### Handling `working`
-
-During an active turn, the server sends a keepalive approximately every **15 seconds**,
-starting 15 seconds after `thinking`. It continues through agent and TTS waits,
-including speaking, until the turn completes or is interrupted/cancelled. For example:
-
-```json
-{"type":"working","turn_id":"turn-42"}
-```
-
-When tracing is active, the frame also carries the turn's `traceparent`, as on
-`thinking` and `speaking`. There is no tool name or reasoning text in this frame.
-Shorter turns normally send no `working` frames.
-
-If `turn_id` matches the client's active turn, refresh that turn's **inactivity**
-deadline from receipt time. Choose an inactivity allowance longer than 15 seconds
-with room for network/scheduling delays; a 30-second allowance permits a normal
-keepalive before expiry. Keep the existing thinking/speaking/playback state and
-continue handling PCM and control frames normally. `working` does not begin a turn,
-restart a completed/cancelled turn, or imply that model/tool output has advanced.
-Ignore frames for inactive, stale, or unknown turn IDs.
-
-An optional absolute client turn limit remains independent; do not extend that
-limit on `working`. These frames never extend the server's
-`turn_timeout_seconds` (default 120 seconds). The server stops sending them before
-terminal `interrupted`, `error`, or `turn_done` frames and when the socket closes;
-clients stop refreshing the inactivity timer when their turn ends. Clients that
-ignore unknown frame types remain compatible, but need this handling to avoid
-abandoning long turns prematurely. Network delays can still deliver an old frame
-after local cancellation, so clients must check the active turn ID.
+The server ends a turn that makes no progress for `turn_timeout_seconds`
+(default 120 seconds) with an `error` and `turn_done`. Progress is a tool call
+starting or finishing, a model call, reply text, or reply audio; a turn that
+keeps working is not cut off. Repeated `thinking` frames are liveness, not
+progress: they never extend this limit, and any absolute client turn limit
+stays independent of them.
+The server stops these updates before terminal `interrupted`, `error`, or
+`turn_done` frames and on disconnect. Network delays can still deliver an old
+frame after local cancellation, so check its turn ID before refreshing timers.
+Continue handling `speaking`, PCM, `interrupted`, `error`, and `turn_done` normally.
 
 ### Handling `turn_done.next_action`
 
@@ -317,7 +335,16 @@ history or replay; those require a separate contract.
 ## 5. Session mode (`quiet_interval > 0`)
 
 For wake-word devices. The server reports quiet in **received** audio (never
-wall-clock, so a held-open socket never accrues phantom quiet). `turn_done.next_action` tells the client whether to continue
+wall-clock, so a held-open socket never accrues phantom quiet). Each listening
+phase counts from zero: speech, a turn, and resuming upstream audio after
+stopping it all restart the count. The first `quiet` after you start or resume
+listening comes after one full `quiet_interval` of received silence, for example:
+
+```json
+{"type": "quiet", "quiet_seconds": 3.0}
+```
+
+Silence sent before you stopped streaming does not carry over. `turn_done.next_action` tells the client whether to continue
 listening or return to standby after playback drain. The mechanism used by
 the server to decide a sign-off is internal; there is no client-side phrase
 contract.
@@ -329,6 +356,8 @@ contract.
    the matching grant for up to 1000 ms. On denial/timeout, discard the buffer.
 3. On grant, flush the buffered PCM and continue with live PCM. Server VAD
    endpoints the user request, then emits `thinking` (preceded by `transcript` if enabled).
+   The user may pause after the wake word, or mid-request, for up to
+   `endpoint_max_silence_ms` (default 3 s) without the request being split.
 4. Keep sending live PCM during thinking, `speaking` + reply PCM, and queued
    playback. The server captures accepted interruptions as continuations.
 5. Receive `turn_done`; send `drained` after actual speaker drain/discard.
@@ -520,8 +549,7 @@ its playback drain; discard stale announcements instead of replaying them
 late. Ordinary barge-in, `cancel`, and `drained` apply equally to these turns.
 Output is routed to the one attached client for its exact conversation ID,
 within this plugin profile. It is never implicitly broadcast and never runs
-a wake election. Creation and attachment use the client's validated API key
-against `/api/sessions`; only `api_server` conversations are supported.
+a wake election. Creation and attachment use the client's validated API key.
 Cross-platform/messaging-conversation ownership is not changed by this API.
 
 ### Publishing completed output
@@ -667,8 +695,8 @@ A timer defaults to this Arya. Supply `target` to set it on another named Arya:
 
 Kitchen receives that result and says "Five-minute timer set on Bedroom."
 Only Bedroom rings. Choosing Bedroom does not change Kitchen's conversation.
-Room names and aliases may resolve to an Arya; ask which one if ambiguous.
-An unauthorized or unavailable target returns an error before creation; do not
+`target` is the destination's `device_name`; ask which one if a spoken name is
+ambiguous. An unavailable target returns an error before creation; do not
 silently ring another device or claim an offline speaker will sound.
 
 Use the returned `timer_id` for subsequent operations:
@@ -687,12 +715,12 @@ Use the returned `timer_id` for subsequent operations:
 
 `update` takes `timer_id`, a new `duration_seconds` starting from confirmation,
 and optionally `label`. `cancel` stops a pending timer. `dismiss` stops its
-ringing occurrence. Authorized clients can manage timers on another Arya by ID;
+ringing occurrence. A client can manage a timer on another Arya by its ID;
 the destination is fixed when created. Show success only after `timer_result`.
 If expiry beats cancellation, the result is `already_expired`; use `dismiss`.
 Errors return `status: "error"` and an explanatory `error` field. Ambiguous
-names return `target_ambiguous`; inaccessible/offline targets return
-`target_unavailable` without disclosing unauthorized devices.
+names return `target_ambiguous`; unknown or offline targets return
+`target_unavailable`.
 
 Use a new `request_id` per action. Retry the same request with the same ID after
 a lost reply; it must not create a second timer. Never change a retry's payload.
@@ -736,8 +764,8 @@ a snapshot never instructs playback. Do this before new timer operations.
 Do not ring expired timers on reconnect or fire an alarm when a local countdown
 reaches zero. Mark disconnected countdowns unconfirmed. There is no promise of
 an audible alarm while the destination is offline. A disconnected client can
-silence its speaker, but must not claim a server mutation succeeded. Neither
-reconnect nor changing conversation moves a timer to a different Arya.
+silence its speaker, but must not claim a server mutation succeeded.
+Reconnecting does not move a timer to a different Arya.
 
 
 ## 11. Named Aryas
@@ -846,15 +874,15 @@ acknowledges it without cancelling an in-flight run or changing its TTS/audio:
 {"type":"model_changed","request_id":"model-7","model":"beta","provider":"litellm","uses_default":false,"applies_to":"next_turn"}
 ```
 
-Each new run snapshots the current selection at submission. Already-submitted
-runs retain their model. Selection changes preserve the conversation, wake
+Each new turn snapshots the current selection at submission. Already-submitted
+turns retain their model. Selection changes preserve the conversation, wake
 activation, microphone stream, current phase, and queued playback. They do not
 create a new voice turn or run another wake election. Outbound supplied-text
 announcements have no LLM selection to change.
 
 `model_changed` confirms the stored request, not that an upstream provider has
 successfully executed it. Model/provider access and execution still use the
-normal authenticated Runs API and its error reporting. No global configuration
+conversation's normal execution and its error reporting. No global configuration
 or another device's selection is modified. A client may persist the confirmed
 preference per server and resend it after `ready` on reconnect.
 
