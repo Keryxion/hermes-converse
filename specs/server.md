@@ -289,51 +289,74 @@ reply. A turn that does not call it ends with `next_action: "listen"`.
 ## Countdowns
 
 A countdown is a timer that ends with a tone on a device. The device keeps the
-time and rings; the server records pending countdowns and relays them. Spoken
+time and rings; the server records its countdowns and relays them. Spoken
 reminders are ordinary turns from a scheduler plugin and are not countdowns.
 
-The server provides one tool:
+A countdown belongs to one device's conversation. The server provides one tool,
+which acts only on the device whose conversation calls it:
 
 | `countdown` action | Arguments | Effect |
 |---|---|---|
-| `set` | `device_name`; the future time as `at` (ISO 8601) or `in_seconds`; `sound` (`alarm-1` to `alarm-4`, default `alarm-1`); `label` (optional) | Sends `countdown` to that device. Returns `countdown_id` and the deadline. |
-| `cancel` | `countdown_id` | Sends `countdown_cancel` to its device. |
-| `list` | `device_name` (optional) | Returns pending countdowns with their device, label, and deadline. |
+| `set` | The future time as `at` (ISO 8601) or `in_seconds`; `sound` (`alarm-1` to `alarm-4`, default `alarm-1`); `label` (optional) | Sends `countdown` to the device. Returns `countdown_id` and the deadline. |
+| `snooze` | `countdown_id`; the new future time as `at` or `in_seconds` | Sends `countdown` again with the same `countdown_id` and the new deadline. Extends a pending countdown; stops a ringing one and starts it counting again. |
+| `cancel` | `countdown_id` | Sends `countdown_cancel` to the device, whether the countdown is pending or ringing. |
+| `list` | None | Returns the device's countdowns with their label, deadline, and state: `pending` or `ringing`. |
 
-`device_name` defaults to the device whose conversation the call is made in. That
-device comes from the session, so transcript text cannot set it. A call made
-anywhere else, such as from a chat that is not a voice device, must give
-`device_name`. The tool resolves the name through the device directory,
-including rooms and aliases, and refuses an ambiguous name rather than
-guessing. Any device's conversation can list and cancel any countdown.
+The device comes from the session, so transcript text cannot set it. There is
+no device argument. Another room does not operate this device's countdowns; it
+asks this device's conversation, for example "stop your alarm" or "set a
+five-minute timer", through a session-to-session plugin. The server provides
+nothing for that.
 
-| Situation on `set` | Result | Outcome |
+| Situation | Result | Outcome |
 |---|---|---|
 | Device attached | `set` | `countdown` is sent at once. |
-| Device not attached | `not_attached` | Nothing is recorded and no other device is used. The caller decides what to do instead. |
-| Name unknown or ambiguous | `unknown_device`, `ambiguous_device` | Nothing is sent. |
+| Device not attached | `not_attached` | Nothing is recorded. The caller decides what to do instead. |
+| Called from a chat that is not a voice device | `not_a_device` | Nothing is sent. |
 | Time not in the future | `bad_time` | Nothing is sent. |
+| No such countdown on this device | `unknown_countdown` | Nothing is sent. |
 
-Keep each pending countdown until its deadline, then drop it. Send a device its
-pending countdowns again after `ready`, so one that reconnects or restarts
-shows them. The server does not ring anything itself and does not send a frame
-at the deadline.
+`countdown_ring_timeout_seconds` (default 900) is how long an alarm rings if
+nobody ends it. Send it in each `countdown` frame as `ring_seconds`; the device
+enforces it.
 
-A ringing countdown can be stopped by voice without a wake word. From a
-countdown's deadline until the device sends `drained`, the server transcribes
-what it hears from that device:
+Keep a countdown until its device sends `drained` for it, or until its deadline
+plus the ring timeout has passed. Send a device its countdowns again after
+`ready`, so one that reconnects or restarts shows them. The server does not ring
+anything itself and does not send a frame at the deadline.
+
+### Still ringing
+
+While a countdown rings and the device has not sent `drained`, start a turn in
+that device's conversation at 1, 2, 4, 8 minutes after the deadline, doubling,
+until the alarm ends. With the default timeout that is four turns. Each says
+which countdown is ringing and for how long, so the agent can do more each time:
+say something in the room, tell another room, or tell the owner elsewhere.
+
+The turn is an ordinary message submitted to the gateway session. Its reply is
+spoken on the device like any other, or not at all when the agent calls
+`speak_this` with `""`. No turn starts after `drained`. A snooze starts the sequence again
+from the new deadline.
+
+### Stopping by voice
+
+A ringing alarm can be ended by voice without a wake word. From a countdown's
+deadline until the device sends `drained`, the server transcribes what it hears
+from that device:
 
 | Heard while ringing | Outcome |
 |---|---|
 | A stop phrase, such as "stop" | The server sends `interrupted` with the `countdown_id` as its `turn_id`. No agent turn runs. |
+| The wake word and a request | An ordinary turn. The alarm keeps its place: the agent ends it with `cancel` or `snooze`, or leaves it ringing. |
 | Anything else | Ignored. The tone keeps ringing, so nearby conversation does not silence it. |
 
 Use the existing stop phrases. The tone itself must not be transcribed as
 speech. A sent frame is not proof that a speaker sounded or stopped.
 
-Acceptance scenarios: Kitchen asks for a Bedroom timer and hears the
-confirmation; only Bedroom shows the countdown and rings. Exercise an ambiguous
-name, a destination that is not attached, cancelling from another device, a
-deadline during a reply, a reconnect before the deadline, a device that is off
-at the deadline, local dismissal, a spoken stop phrase, other speech while
-ringing, a wake word while ringing, and the 60-second limit.
+Acceptance scenarios: a timer set in the Kitchen counts down and rings only in
+the Kitchen. Exercise a call from a chat that is not a device, a device that is
+not attached, a reconnect before the deadline, a device that is off at the
+deadline, local dismissal, a spoken stop phrase, other speech while ringing, a
+reply and a wake word while ringing, snooze while pending and while ringing,
+cancel while ringing, still-ringing turns at 1, 2, 4 and 8 minutes and none
+after `drained`, and the ring timeout from the setting.
