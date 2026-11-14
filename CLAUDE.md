@@ -19,6 +19,8 @@
   `specs/server.md`, not the client contract.
 - State intended behavior directly. Do not qualify it with "currently" or recount
   old implementations and abandoned designs.
+- A merged spec is simple, accurate, and not proposed. A proposal lives in a pull
+  request until it is decided; do not write "proposed" sections into a spec.
 - A spec-only request authorizes documentation changes, not implementation or deployment.
 - Keep related PRs consistent, but do not add unrelated features while editing them.
 
