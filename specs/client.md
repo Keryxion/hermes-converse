@@ -695,8 +695,8 @@ A timer defaults to this Arya. Supply `target` to set it on another named Arya:
 
 Kitchen receives that result and says "Five-minute timer set on Bedroom."
 Only Bedroom rings. Choosing Bedroom does not change Kitchen's conversation.
-`target` is the destination's `device_name`; ask which one if a spoken name is
-ambiguous. An unavailable target returns an error before creation; do not
+Room names and aliases may resolve to an Arya; ask which one if ambiguous.
+An unavailable target returns an error before creation; do not
 silently ring another device or claim an offline speaker will sound.
 
 Use the returned `timer_id` for subsequent operations:

@@ -242,7 +242,7 @@ platform is not hosted, the connection is refused with `conversation_unavailable
 Agent tools and client requests use the same server timer service. Persist each
 timer's identity, owner, source Arya, originating Hermes session reference,
 destination recipient, label, deadline, and state. Resolve the spoken target
-through the authorized device directory and keep the original destination.
+through the device directory and keep the original destination.
 
 Default to the trusted requesting Arya. Authenticated clients may target or
 manage another Arya on the same server. Reject ambiguous names before mutation.
@@ -268,6 +268,6 @@ Define server retention/retry bounds before implementation. Those details and
 the backing store are server responsibilities, not additional client modes.
 
 Acceptance scenarios: Kitchen requests a Bedroom timer and keeps its own
-conversation; only Bedroom rings. Exercise ambiguous/unauthorized and
+conversation; only Bedroom rings. Exercise ambiguous and
 offline destinations, lost create replies, expiry/cancel races, restart,
 duplicate alarms, local/remote dismissal, and reconnect without stale playback.
