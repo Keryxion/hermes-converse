@@ -1036,6 +1036,12 @@ class _Driver:
     tool_calls: Optional[Callable[[], int]]
     reasoning_tokens: Optional[Callable[[], Optional[int]]]
     last_progress: Optional[Callable[[], float]]
+    message_ids: Any = None  # reads Hermes's ids for the turn's messages (catchup.MessageIds)
+    present: Optional[Callable[[], bool]] = None  # a device is attached to a stopped session's turn
+
+    def gone(self) -> bool:
+        """Nobody is listening: the session ended and no replacement connection has taken the turn."""
+        return self.session.stopped and not (self.present is not None and self.present())
 
 
 class _Turn:
@@ -1057,6 +1063,9 @@ class _Turn:
         self.pcm_chunks = 0
         self.timed_out = False
         self.progress_at = 0.0  # monotonic time of the last reply text
+        self.user_frame: Optional[asyncio.Future] = None  # sends the user transcript once it has an id
+        self.user_id: Optional[str] = None
+        self.assistant_id: Optional[str] = None
 
     def on_delta(self, delta: str) -> None:
         # Called from run_turn's execution context (loop coroutine or a worker thread); thread-safe.
@@ -1091,6 +1100,8 @@ async def drive_converse_turns(
     tool_calls: Optional[Callable[[], int]] = None,
     reasoning_tokens: Optional[Callable[[], Optional[int]]] = None,
     last_progress: Optional[Callable[[], float]] = None,
+    message_ids: Any = None,
+    present: Optional[Callable[[], bool]] = None,
 ) -> None:
     """Run the per-transcript incremental-TTS turn loop.
 
@@ -1115,7 +1126,8 @@ async def drive_converse_turns(
                 quiet_interval=quiet_interval, interrupt_turn=interrupt_turn,
                 turn_timeout=turn_timeout, tail_fallback=tail_fallback, max_tts_chars=max_tts_chars,
                 standby=standby, transcripts=transcripts, tool_calls=tool_calls,
-                reasoning_tokens=reasoning_tokens, last_progress=last_progress)
+                reasoning_tokens=reasoning_tokens, last_progress=last_progress,
+                message_ids=message_ids, present=present)
     session.enable_turn_control()
     async def notify_tail_barge(turn_id):
         await send_json({"type": "interrupted", "turn_id": turn_id})
@@ -1196,8 +1208,11 @@ async def drive_converse_turns(
         turn.input_text = "\n".join([*unsubmitted, str(transcript)])
         try:
             session.reserve_turn(turn_id, turn.tts_stop, transcript)
-            if d.transcripts:
+            if d.transcripts and (d.message_ids is None or not await d.message_ids.readable()):
                 await send_json({"type": "transcript", "role": "user", "text": transcript, **meta})
+            elif d.transcripts:
+                # Hermes writes the user message as the agent starts; the frame follows its id.
+                turn.user_frame = asyncio.ensure_future(_send_user_transcript(d, turn))
             action = await _run_turn(d, turn, tt)
             if turn.agent_started:
                 unsubmitted.clear()
@@ -1217,6 +1232,25 @@ async def drive_converse_turns(
             raise
         finally:
             _close_trace(session, tt, turn)
+
+
+async def _send_user_transcript(d: _Driver, turn: _Turn) -> None:
+    """The user's transcript frame, carrying Hermes's id for the message once it exists."""
+    message_id = None
+    while not turn.agent_started and not turn.tts_stop.is_set():
+        await asyncio.sleep(0.02)
+    if turn.agent_started:
+        message_id = turn.user_id = await d.message_ids.user_id()
+    frame: dict[str, Any] = {"type": "transcript", "role": "user", "text": turn.transcript, **turn.meta}
+    if message_id is not None:
+        frame["message_id"] = message_id
+    await d.send_json(frame)
+
+
+async def _flush_user_transcript(turn: _Turn) -> None:
+    frame, turn.user_frame = getattr(turn, "user_frame", None), None
+    if frame is not None:
+        await frame
 
 
 async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
@@ -1248,6 +1282,7 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
         speech.spawn_context_thread(_produce_speech, name="converse-tts", args=(d, turn)).start()
         progress_task = asyncio.create_task(_report_thinking(d, turn))
         await _stream_reply(d, turn, turn_task)
+        await _flush_user_transcript(turn)
 
         # Barge-in: the VAD worker set `tts_stop` and the audio is already cut. Cancel the IN-FLIGHT
         # agent turn via the host's hook so `await turn_task` below returns at once instead of
@@ -1300,10 +1335,13 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
     )
     if completed and turn.output:
         next_action = turn.output.next_action
-    if d.transcripts and turn.spoken_parts:
-        await d.send_json({"type": "transcript", "role": "assistant",
-                           "turn_id": turn.turn_id, "text": " ".join(turn.spoken_parts)})
-    tt.set(**{"turn.attached": not session.stopped})  # a device was there when the reply was ready
+    if d.message_ids is not None and turn.agent_started and not (barged or turn_err or turn.timed_out):
+        turn.assistant_id = await d.message_ids.assistant_id()
+    if d.transcripts and turn.spoken_parts and turn.assistant_id is not None:
+        # The reply went out a piece at a time before its audio; this completes it.
+        await d.send_json({"type": "transcript", "message_id": turn.assistant_id, "role": "assistant",
+                           "turn_id": turn.turn_id, "text": ""})
+    tt.set(**{"turn.attached": not d.gone()})  # a device was there when the reply was ready
     # Arm before turn_done so an immediate drained acknowledgement cannot be lost.
     if session.finish_turn(turn.turn_id, d.tail_fallback if turn.pcm_chunks else 0):
         next_action = "listen"
@@ -1339,7 +1377,7 @@ async def _report_thinking(d: _Driver, turn: _Turn) -> None:
     """Repeat turn liveness and measured progress, including while streaming speech."""
     while True:
         await asyncio.sleep(THINKING_FRAME_INTERVAL)
-        if turn.tts_stop.is_set() or d.session.stopped:
+        if turn.tts_stop.is_set() or d.gone():
             return
         await d.send_json(_thinking_frame(d, turn))
 
@@ -1368,11 +1406,13 @@ def _reply_sentences(d: _Driver, turn: _Turn) -> Iterator[str]:
     without a new delta (at once if it already ends a sentence), unless it is an open <think>."""
     chunker = speech.sentence_chunker()
     idle_polls = 0
-    while not (turn.tts_stop.is_set() or d.session.stopped):
+    while not turn.tts_stop.is_set():
         try:
             delta = turn.text_q.get(timeout=IDLE_POLL_SECONDS)
         except queue.Empty:
             idle_polls += 1
+            if d.gone():
+                continue
             buffered = chunker.buf.strip()
             if not buffered or ("<think" in chunker.buf and "</think>" not in chunker.buf):
                 continue
@@ -1380,6 +1420,11 @@ def _reply_sentences(d: _Driver, turn: _Turn) -> Iterator[str]:
                 yield from chunker.flush()
             continue
         idle_polls = 0
+        if d.gone():  # nobody is listening: the text is in the conversation, not spoken
+            chunker = speech.sentence_chunker()
+            if delta is None:
+                return
+            continue
         if delta is None:
             yield from chunker.flush()
             return
@@ -1396,12 +1441,20 @@ def _produce_speech(d: _Driver, turn: _Turn) -> None:
                 continue
             turn.ns.setdefault("first_sentence", time.time_ns())
             for piece in split_text_for_tts_stream(cleaned, d.cap):
-                if turn.tts_stop.is_set() or d.session.stopped:
+                if turn.tts_stop.is_set():
                     return
+                if d.gone():
+                    break
+                if d.transcripts:
+                    text = piece if not turn.spoken_parts else " " + piece
+                    d.loop.call_soon_threadsafe(turn.pcm_q.put_nowait, {
+                        "type": "transcript", "role": "assistant", "turn_id": turn.turn_id, "text": text})
                 turn.spoken_parts.append(piece)
                 for chunk in d.synth.synth(piece):
-                    if turn.tts_stop.is_set() or d.session.stopped:
+                    if turn.tts_stop.is_set():
                         return
+                    if d.gone():
+                        break
                     turn.ns.setdefault("first_pcm", time.time_ns())
                     d.loop.call_soon_threadsafe(turn.pcm_q.put_nowait, chunk)
             spoken_chars += len(cleaned)
@@ -1451,6 +1504,10 @@ async def _stream_reply(d: _Driver, turn: _Turn, turn_task: asyncio.Future) -> N
             deadline = d.loop.time() + d.turn_timeout  # audio arriving is progress
         if chunk is None or turn.tts_stop.is_set():
             break
+        await _flush_user_transcript(turn)
+        if isinstance(chunk, dict):  # a transcript frame, sent in order ahead of the PCM it speaks
+            await d.send_json(chunk)
+            continue
         if not speaking:
             d.session.set_playing(True, tts_stop=turn.tts_stop)
             if turn.tts_stop.is_set():
@@ -1505,7 +1562,8 @@ def _finish_trace(tt: Any, turn: _Turn, reply: str, *, err: bool, barged: bool,
                  **{"tts.pcm_chunks": turn.pcm_chunks,
                     "tts.first_pcm_ms": turn.ms("first_pcm", since="first_sentence")})
     outcome = ("timeout" if turn.timed_out else "interrupted" if barged else "error" if err else "ok")
-    tt.set(outcome=outcome, interrupted=barged, next_action=next_action)
+    tt.set(outcome=outcome, interrupted=barged, next_action=next_action,
+           **{"message.user_id": turn.user_id, "message.assistant_id": turn.assistant_id})
 
 
 def _open_trace(session: Any, tt: Any, turn_id: str, source: str, claim_id: Optional[str] = None) -> None:

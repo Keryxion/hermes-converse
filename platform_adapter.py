@@ -32,6 +32,8 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 
+from .catchup import History
+
 
 logger = logging.getLogger(__name__)
 
@@ -368,6 +370,16 @@ class GatewayTurns:
         self._settle_timeout = settle_timeout
         self._turn: Optional[_VoiceTurn] = None
         self._model: Optional[tuple[Optional[str], Optional[str]]] = None
+
+    @property
+    def history(self) -> History:
+        """The device conversation's messages in Hermes's session store."""
+        return History(getattr(self._adapter, "_session_store", None), self._session_key)
+
+    @property
+    def message_key(self) -> Optional[str]:
+        """The platform message id of the turn in flight, which Hermes stores with its user message."""
+        return str(self._turn.event.message_id) if self._turn is not None else None
 
     @property
     def tool_calls(self) -> int:

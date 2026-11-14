@@ -47,6 +47,7 @@ from aiohttp import ClientError, ClientSession, ClientTimeout, web
 
 from .arbitrate import Arbitrator
 from .auth import offered_key_protocol, verify_api_key
+from .catchup import Detached, MessageIds, Relay, replay_frames
 from .conversation import ConversationHub
 from .named import DeviceStore, NamedError, parse_names
 from .platform_adapter import GatewayTurns
@@ -258,7 +259,8 @@ class ConverseRoute:
                 await self._connected(ws, session, api_key, http, base_url, synth, cap, name,
                                       quiet_interval, settings, attachment, server_recv_unix_ms, input_rate, output_rate,
                                       transcripts=frame.get("transcripts") is True,
-                                      models=frame.get("models") is True, turns=turns)
+                                      models=frame.get("models") is True, turns=turns,
+                                      after=frame.get("after"))
             finally:
                 self.hub.detach(session.session_id, attachment)
                 session.stop()
@@ -300,7 +302,8 @@ class ConverseRoute:
             await self._connected(ws, session, api_key, http, base_url, synth, cap, names[0],
                                   quiet_interval, settings, attachment, recv_ms, input_rate, output_rate,
                                   named=(device, connection), transcripts=frame.get("transcripts") is True,
-                                  models=frame.get("models") is True, turns=turns)
+                                  models=frame.get("models") is True, turns=turns,
+                                  after=frame.get("after"))
         except NamedError as exc:
             await _fail(ws, exc.error, exc.code)
         except (ClientError, TimeoutError, ValueError):
@@ -323,7 +326,7 @@ class ConverseRoute:
 
     async def _connected(self, ws, session, api_key, http, base_url, synth, cap, name,
                          quiet_interval, settings, attachment, server_recv_unix_ms, input_rate, output_rate,
-                         named=None, transcripts=False, models=False, turns=None):
+                         named=None, transcripts=False, models=False, turns=None, after=None):
         client = turns
         ready = {
             "type": "ready",
@@ -348,6 +351,17 @@ class ConverseRoute:
                          device_name=device.device_name)
         ready["server_send_unix_ms"] = int(time.time() * 1000)
         await ws.send_json(ready)
+        # Catch the client up before anything live, then hand it any turn still running.
+        relay, adopted = Relay(ws), None
+        history = getattr(client, "history", None)
+        if transcripts and history is not None:
+            rows = await asyncio.to_thread(history.rows)
+            for replay in replay_frames(rows or [], after if isinstance(after, str) else None):
+                await ws.send_json(replay)
+        adopted = self.hub.detached.pop(attachment.conversation_id, None)
+        if adopted is not None:
+            client = adopted.client
+            adopted.relay.attach(ws)
         device_name = named[0].device_name if named is not None else name
         session.device_name = device_name
         connection_trace = _connection_trace(ws)
@@ -366,7 +380,8 @@ class ConverseRoute:
                      name=name, quiet_interval=quiet_interval, arbitrator=arbitrator,
                      device_id=device_id, hub=self.hub, attachment=attachment,
                      named_device=named[0] if named else None,
-                     named_connection=named[1] if named else None, transcripts=transcripts)
+                     named_connection=named[1] if named else None, transcripts=transcripts,
+                     relay=relay, adopted=adopted)
 
 
 async def _model_options(base_url: str, api_key: str, http: ClientSession) -> dict[str, Any]:
@@ -523,7 +538,8 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                  client: Any, settings: Settings, name: str, quiet_interval: float,
                  arbitrator: Optional[Arbitrator] = None,
                  device_id: str = "", hub=None, attachment=None, named_device=None,
-                 named_connection=None, transcripts: bool = False) -> None:
+                 named_connection=None, transcripts: bool = False, relay: Optional[Relay] = None,
+                 adopted: Optional[Detached] = None) -> None:
     """Run the client pump and the turn driver until the socket ends; always stop the live turn."""
     loop = asyncio.get_running_loop()
     session.enable_turn_control()
@@ -535,6 +551,8 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
     default_model = (settings.model, settings.provider)
     selected_model = default_model
     wake_tasks: set[asyncio.Task] = set()
+    relay = relay or Relay(ws)
+    explicit_stop = False
     async def _reply_wake(frame: dict) -> None:
         reply, sent = None, False
         try:
@@ -553,7 +571,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                 _trace_immediate_wake(frame, session=session, sent=sent)
 
     async def _pump_client() -> None:
-        nonlocal selected_model
+        nonlocal selected_model, explicit_stop
         try:
             async for msg in ws:
                 if msg.type == web.WSMsgType.BINARY:
@@ -566,6 +584,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                     if not isinstance(frame, dict):
                         continue
                     if frame.get("stop"):
+                        explicit_stop = True
                         _mark_closed(ws, "client")
                         break
                     if frame.get("commit"):
@@ -574,6 +593,8 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                         session.notify_drained(frame.get("turn_id"))
                     if frame.get("type") == "cancel":
                         session.cancel(frame.get("turn_id"))
+                        if adopted is not None:  # a turn carried over from the previous connection
+                            adopted.session.cancel(frame.get("turn_id"))
                     if frame.get("type") == "say":
                         text = _say_text(frame.get("text"))
                         if text:
@@ -633,7 +654,9 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
     async def _drive_turns() -> None:
         await drive_converse_turns(
             session=session, synth=synth, cap=cap, loop=loop,
-            send_json=ws.send_json, send_bytes=ws.send_bytes, run_turn=_run_turn, history=history,
+            send_json=relay.send_json, send_bytes=relay.send_bytes, run_turn=_run_turn, history=history,
+            message_ids=MessageIds(client) if hasattr(client, "history") else None,
+            present=lambda: relay.attached,
             quiet_interval=quiet_interval, interrupt_turn=_interrupt_turn, transcripts=transcripts,
             tool_calls=lambda: client.tool_calls,
             reasoning_tokens=lambda: client.reasoning_tokens,
@@ -643,6 +666,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
             standby=lambda: client.standby,
         )
 
+    detached = False
     pump = asyncio.ensure_future(_pump_client())
     driver = asyncio.ensure_future(_drive_turns())
     fence = asyncio.create_task(named_connection.replaced.wait()) if named_connection else None
@@ -651,9 +675,11 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                                      return_when=asyncio.FIRST_COMPLETED)
         if driver in done:
             driver.result()  # surface a crash
+        elif not explicit_stop and hub is not None and attachment is not None and not client.settled:
+            # The connection went away while the agent was working. The turn carries on; its reply
+            # is not spoken (nobody is there), and a replacement connection picks up its frames.
+            detached = True
         else:
-            # The client went away mid-turn: abandon the turn now (its run is stopped below) rather
-            # than wait for a reply nobody will hear.
             driver.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await driver
@@ -664,17 +690,31 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
     finally:
         session.stop()
         pump.cancel()
-        driver.cancel()
+        if not detached:
+            driver.cancel()
         for task in wake_tasks:
             task.cancel()
         if fence is not None:
             fence.cancel()
-        await asyncio.gather(pump, driver, *wake_tasks, *([fence] if fence else []), return_exceptions=True)
+        await asyncio.gather(pump, *([] if detached else [driver]), *wake_tasks,
+                             *([fence] if fence else []), return_exceptions=True)
         if arbitrator is not None:
             with contextlib.suppress(Exception):
                 await arbitrator.unregister(device_id)
-        with contextlib.suppress(Exception):
-            await client.stop()  # a socket that drops mid-turn must not leave the turn running
+        if detached and hub is not None and attachment is not None:
+            relay.ws = None
+            entry = Detached(relay, client, session, driver)
+            hub.detached[attachment.conversation_id] = entry
+
+            def forget(finished: asyncio.Future) -> None:
+                if not finished.cancelled():
+                    finished.exception()  # retrieved: a crash here has nobody to report to
+                if hub.detached.get(attachment.conversation_id) is entry:
+                    hub.detached.pop(attachment.conversation_id, None)
+            driver.add_done_callback(forget)
+        else:
+            with contextlib.suppress(Exception):
+                await client.stop()  # `stop` and a turn nobody can finish end the run
         with contextlib.suppress(Exception):
             if named_connection is not None and named_connection.replaced.is_set():
                 _mark_closed(ws, "server", 4409)
