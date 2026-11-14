@@ -34,7 +34,6 @@ A device shows one state at a time.
 | `arbitrating` | Wake word heard; waiting for the grant | Orange | Smooth 1 s breath between 35% and 100% brightness |
 | `wake_denied` | Matching `wake_deny` received | Red | Steady for 1.5 s, then standby |
 | `listening` | Wake granted, manual Talk, or follow-up listening | Green | Steady, with a meter driven by the microphone level where the device can show one |
-| `transcribing` | Speech has ended; transcription in progress | Yellow | Steady or gently breathing |
 | `thinking` | The agent turn has started | Orange | Clearly animated: an orbit on a ring or screen, a breath on a single LED |
 | `speaking` | Reply playing, including its local tail | Speaking blue | Large and prominent, driven by the reply audio level where the device can show it |
 | `error` | Connection, authentication, capture, or playback failure | Fault red | Persistent pulse, with error text or a warning symbol where available |
@@ -51,7 +50,6 @@ output while speaking.
 |---|---|
 | Neutral | `#FFFFFF` on dark surfaces, `#111111` on light surfaces |
 | Orange | `#FF9500` |
-| Yellow | `#FFCC00` |
 | Green | `#34C759` |
 | Speaking blue | `#32ADFF` |
 | Blue | `#3478F6` |
@@ -75,9 +73,8 @@ stateDiagram-v2
     arbitrating --> standby: timeout / abandon
     wake_denied --> standby: 1.5 s, if no newer event
     standby --> listening: manual Talk
-    listening --> transcribing: transcribing
-    transcribing --> thinking: thinking
-    transcribing --> listening: listening / no request
+    listening --> thinking: thinking
+    listening --> standby: quiet / no request
     thinking --> speaking: speaking / reply audio
     speaking --> listening: drained + next_action listen
     speaking --> standby: drained + next_action standby
@@ -91,7 +88,7 @@ stateDiagram-v2
     reconnecting --> connecting: retry
 ```
 
-The frames named here are defined in `client spec.md`.
+The frames named here are defined in [client.md](client.md).
 
 - A wake timeout is not a denial: return to standby without showing red.
 - `ready` alone does not grant a wake. Manual Talk enters listening without
@@ -99,7 +96,10 @@ The frames named here are defined in `client spec.md`.
 - Stay in speaking until local playback has drained, even after `turn_done`.
   Apply `next_action` after the drain; do not show green while reply audio is
   still queued.
-- `working` keeps thinking alive. It does not restart the animation.
+- Stay in listening after the user stops speaking, until `thinking` arrives. No
+  frame marks the end of speech.
+- A repeated `thinking` frame keeps thinking alive. It does not restart the
+  animation or replace speaking.
 - `interrupted` discards queued audio and returns to listening. It is not an
   error.
 - A new state replaces the old one immediately and cancels its timers,
