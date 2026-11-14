@@ -1,0 +1,39 @@
+# Alpha deploys: a PR labeled alpha:sakura, alpha:penny or alpha:hermie is deployed to that
+# Hermes host when the label is added and again on every push while the label stays.
+# This creates a GitHub deployment of the PR's head commit to environment <host>; Crow
+# receives the deployment webhook and runs .crow/alpha.yaml, which does the deploy.
+# Removing the label stops further deploys; the host keeps what it last got.
+name: Alpha deploy
+
+on:
+  pull_request_target: # base-branch code; the PR's code is never checked out here
+    types: [labeled, synchronize, reopened]
+
+permissions:
+  deployments: write
+
+jobs:
+  deploy:
+    # Fork PRs never deploy: their head commit carries their own .crow/alpha.yaml.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          ACTION: ${{ github.event.action }}
+          ADDED: ${{ github.event.label.name }}
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          if [ "$ACTION" = labeled ]; then labels=$ADDED; else labels=$(jq -r '.[]' <<<"$LABELS"); fi
+          for label in $labels; do
+            case "$label" in alpha:sakura|alpha:penny|alpha:hermie) ;; *) continue ;; esac
+            host=${label#alpha:}
+            jq -n --arg ref "$SHA" --arg env "$host" --arg desc "PR #$PR" \
+              '{ref: $ref, environment: $env, description: $desc, auto_merge: false,
+                required_contexts: [], transient_environment: true, production_environment: false}' |
+              gh api "repos/$GH_REPO/deployments" --silent --input -
+            echo "PR #$PR ${SHA:0:7} -> $host"
+          done

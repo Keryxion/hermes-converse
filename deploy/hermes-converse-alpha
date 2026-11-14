@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Forced command for the Crow alpha-deploy key on a Hermes host (see deploy/README.md).
+# The key can run only this: SSH_ORIGINAL_COMMAND="deploy <commit sha>".
+# It checks out that commit in the plugin directory, restarts the gateway, and goes back
+# to the previous commit if the converse route does not come up.
+set -euo pipefail
+
+read -r action sha extra <<<"${SSH_ORIGINAL_COMMAND:-}" || true
+if [[ "$action" != deploy || ! "$sha" =~ ^[0-9a-f]{40}$ || -n "${extra:-}" ]]; then
+  echo "usage: deploy <40-hex commit sha>" >&2
+  exit 2
+fi
+
+cd ~/.hermes/plugins/hermes-converse
+exec 9>.git/alpha-deploy.lock
+flock -w 600 9
+
+restart_and_check() {
+  sudo -n systemctl restart hermes-gateway
+  for _ in $(seq 60); do
+    # 400 = the route is up and refused a plain GET (it wants a WebSocket upgrade).
+    [[ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8642/v1/audio/converse)" == 400 ]] && return 0
+    sleep 2
+  done
+  return 1
+}
+
+previous=$(git rev-parse HEAD)
+if [[ "$previous" == "$sha" ]]; then
+  echo "$(hostname) already runs ${sha:0:7}"
+  exit 0
+fi
+
+git fetch -q origin "$sha"
+deps() { git show "$1:plugin.yaml" | sed -n '/^python_dependencies:/,/^[a-z_]*:/p'; }
+[[ "$(deps "$previous")" == "$(deps "$sha")" ]] ||
+  echo "warning: python_dependencies changed; this deploy does not install them" >&2
+git checkout -q --detach "$sha"
+echo "$(date -Is) ${previous:0:7} -> ${sha:0:7}" >> .git/alpha-deploy.log
+
+if restart_and_check; then
+  echo "$(hostname) runs ${sha:0:7}, was ${previous:0:7}"
+else
+  echo "converse route did not come up on ${sha:0:7}; rolling back to ${previous:0:7}" >&2
+  git checkout -q --detach "$previous"
+  restart_and_check || echo "rollback did not come up either" >&2
+  exit 1
+fi
