@@ -132,17 +132,20 @@ class Approvals:
                 "turn_id": getattr(attachment.session, "_active_turn_id", None),
                 "approval_id": p.request_id, "summary": p.summary, "command": p.command,
                 "choices": p.choices})
+            # The tone says a question is coming; it plays before the summary is spoken.
+            self._send(attachment, {"type": "tone", "tone": "approval"})
         self._speak(p, self._cue(speech or p.summary))
 
     @staticmethod
     def _cue(text: str) -> str:
-        """Wrap the summary so it is unmistakably an approval request with a spoken answer."""
+        """The summary as a question, with how to answer it. The approval tone has already said
+        that a question is coming."""
         text = " ".join((text or "").split())
         if not text:
             text = "Run a command that needs permission?"
         if not text.endswith(("?", ".", "!")):
             text += "?"
-        return f"Approval request. {text} Say yes, no, or always."
+        return f"{text} Say yes, no, or always."
 
     def _speak(self, p: _Pending, text: str) -> None:
         turn = self._adapter._turns.get(p.chat_id)
