@@ -390,6 +390,11 @@ completes the reply carries `message_id`; the earlier ones do not. A reply of on
 sentence is a single frame with `message_id`. This applies to ordinary replies and
 outbound conversation output. Silent turns need no assistant frame.
 
+When a reply is interrupted and the request is run again, the new reply arrives
+under a new `turn_id`, with no user `transcript` between the two. Replace the
+interrupted reply with the new one; do not show both. An interrupted reply with
+a new user `transcript` after it stays, marked as interrupted.
+
 A user `transcript` is one frame and always carries `message_id`. A `message_id` is unique in
 the conversation; treat it as opaque.
 
