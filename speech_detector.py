@@ -18,6 +18,9 @@ DEFAULT_VAD_MODEL = "silero"
 SPEECH_ON = 0.5
 SPEECH_OFF = 0.35
 MIN_SPEECH_MS = 250
+# Interrupting an active turn: the speech may be spread over this window, so the gaps between
+# words do not restart the count. Idle onset still needs it unbroken.
+INTERRUPT_WINDOW_MS = 510
 ECHO_MARGIN = 1.5
 _LEVEL_WINDOW_BLOCKS = 10  # 300 ms window RMS
 _ECHO_LAG_BLOCKS = 10  # reference excludes the newest 300 ms (longer than the onset run)
@@ -35,6 +38,7 @@ class SpeechDetector:
         self.probability: Optional[float] = None
         self._in_speech = False
         self._speech_ms = 0.0
+        self._voiced: deque = deque(maxlen=INTERRUPT_WINDOW_MS // vad.BLOCK_MS)
         self._levels: deque = deque(maxlen=_LEVEL_WINDOW_BLOCKS)
         self._echo: deque = deque(maxlen=100 + _ECHO_LAG_BLOCKS)
         if model != "energy":
@@ -74,22 +78,37 @@ class SpeechDetector:
         self.quiet = self._energy_quiet(block) if probability is None else probability < SPEECH_OFF
         if probability is None:
             return energy_phase
-        voiced = probability >= (SPEECH_OFF if self._in_speech else SPEECH_ON)
+        voiced = heard = probability >= (SPEECH_OFF if self._in_speech else SPEECH_ON)
+        level = gate = None
         if playing:
             self._levels.append(float(self._np.mean(block.astype(self._np.float64) ** 2)))
             level = float(self._np.sqrt(self._np.mean(self._levels)))
             settled = list(self._echo)[:-_ECHO_LAG_BLOCKS]
             baseline = (float(self._np.percentile(settled, 90))
                         if len(settled) >= _ECHO_MIN_BLOCKS else None)
-            self._echo.append(level)
-            voiced = (voiced and baseline is not None
-                      and level >= max(baseline, vad.MIN_QUIET_FLOOR) * ECHO_MARGIN)
+            gate = None if baseline is None else max(baseline, vad.MIN_QUIET_FLOOR) * ECHO_MARGIN
+            voiced = voiced and gate is not None and level >= gate
+            if not voiced:
+                # The reference is playback alone. Speech over it must not raise the level its
+                # own next word has to beat.
+                self._echo.append(level)
         else:
             self._levels.clear()
             self._echo.clear()
         self._in_speech = voiced
-        self._speech_ms = self._speech_ms + block.size * 1000 / self._input_rate if voiced else 0.0
+        if not (voiced or playing or interrupting):
+            self._voiced.clear()
+        self._voiced.append(block.size * 1000 / self._input_rate if voiced else 0.0)
+        self._speech_ms = sum(self._voiced)
         if self._speech_ms < MIN_SPEECH_MS:
+            if energy_phase is not None:
+                # An energy candidate Silero did not confirm: say which condition held it back.
+                reason = ("not_voiced" if not heard else "echo_baseline_warming" if playing and gate is None
+                          else "below_echo_gate" if not voiced else "speech_too_short")
+                vad.vad_log(f"candidate rejected ({energy_phase}): reason={reason} "
+                            f"probability={probability:.2f} speech_ms={self._speech_ms:.0f}/{MIN_SPEECH_MS} "
+                            f"level={'-' if level is None else f'{level:.0f}'} "
+                            f"echo_gate={'-' if gate is None else f'{gate:.0f}'}")
             return None
         # Silero answers "is this speech?", not "is this a sustained, audible
         # interruption?" Require the warm energy detector's sustained threshold
@@ -98,6 +117,7 @@ class SpeechDetector:
         if (playing or interrupting) and energy_phase is None:
             return None
         self._in_speech, self._speech_ms = False, 0.0
+        self._voiced.clear()
         return "playback" if playing else "generation"
 
     def is_quiet(self, block: Any) -> bool:
