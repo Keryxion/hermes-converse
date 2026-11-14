@@ -607,6 +607,10 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                             # turn and no history. The client returns to its wake word afterwards.
                             session.transcripts.put(ConversationOutput(
                                 text, f"say-{uuid.uuid4().hex}", next_action="standby"))
+                    if frame.get("type") == "command":
+                        task = asyncio.create_task(_command(frame.get("text")))
+                        wake_tasks.add(task)
+                        task.add_done_callback(wake_tasks.discard)
                     if frame.get("type") == "set_model":
                         request_id = frame.get("request_id")
                         if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", request_id):
@@ -640,6 +644,26 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
             _mark_closed(ws, "lost", 1006)
             logger.debug("converse client pump ended", exc_info=True)
         session.stop()
+
+    async def _command(text: Any) -> None:
+        reply: dict[str, Any] = {"type": "command", "text": text}
+        if not isinstance(text, str) or not text.startswith("/") or not text[1:].strip():
+            reply["error"] = "bad_command"
+        elif not hasattr(client, "run_command"):
+            reply["error"] = "failed"
+        else:
+            session.cancel()
+            try:
+                result = await client.run_command(text.strip())
+            except Exception:
+                logger.warning("converse: command %r failed", text, exc_info=True)
+                result = None
+            if result is None:
+                reply["error"] = "failed"
+            else:
+                reply["reply"] = result
+        if not ws.closed:
+            await ws.send_json(reply)
 
     async def _run_turn(transcript: str, on_delta, *, interrupted: bool) -> tuple[str, Optional[str]]:
         model, provider = selected_model  # Snapshot once; do not alter a turn already in flight.

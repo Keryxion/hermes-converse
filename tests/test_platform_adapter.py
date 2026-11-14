@@ -370,6 +370,23 @@ async def test_model_selection_is_sent_as_the_gateway_model_command(rig):
     assert spoken == ["ok"] * 4  # the command's confirmation is never spoken
 
 
+async def test_command_runs_through_the_gateway_and_the_chat_follows_the_new_session(rig):
+    turns, key = await _turns(rig)
+    seen = []
+
+    async def handler(event):
+        seen.append(event.text)
+        if event.get_command() == "new":
+            rig.store.ids[key] = "sid-fresh"
+            return "Started a new session."
+        return "ok"
+
+    rig.adapter.set_message_handler(handler)
+    assert await turns.run_command("/new") == "Started a new session."
+    assert seen == ["/new"]
+    assert rig.store.peek_session_id(key) == "sid-fresh"  # History reads whatever session the key names
+
+
 async def test_new_socket_clears_a_model_left_by_an_earlier_one(rig):
     turns, key = await _turns(rig)
     rig.store.models[key] = {"model": "terra", "provider": "litellm"}
