@@ -381,21 +381,32 @@ time, so the words are on screen as they are spoken:
 ```
 
 ```json
-{"type":"transcript","message_id":"m-124","role":"assistant","turn_id":"turn-42","text":"The dentist at nine and lunch with Sam."}
+{"type":"transcript","role":"assistant","turn_id":"turn-42","text":"The dentist at nine and lunch with Sam."}
 ```
 
-Each frame is the next piece of the reply, sent before the PCM that speaks it.
-Append the pieces for a `turn_id` in the order they arrive. The piece that
-completes the reply carries `message_id`; the earlier ones do not. A reply of one
-sentence is a single frame with `message_id`. This applies to ordinary replies and
-outbound conversation output. Silent turns need no assistant frame.
+```json
+{"type":"transcript","message_id":"m-124","role":"assistant","turn_id":"turn-42","text":""}
+```
+
+Each frame with text is the next piece of the reply, sent before the PCM that
+speaks it. Append the pieces for a `turn_id` in the order they arrive. They
+carry no `message_id`.
+
+When the reply is complete, one closing frame follows with empty `text` and the
+reply's `message_id`. It adds nothing to show: it says the reply is whole and
+gives the ID to keep as the catch-up cursor. Every reply ends this way, so a
+one-sentence reply is two frames. A reply that is interrupted has no closing
+frame. This applies to ordinary replies and outbound conversation output.
+Silent turns need no assistant frame.
 
 When a reply is interrupted and the request is run again, the new reply arrives
 under a new `turn_id`, with no user `transcript` between the two. Replace the
 interrupted reply with the new one; do not show both. An interrupted reply with
 a new user `transcript` after it stays, marked as interrupted.
 
-A user `transcript` is one frame and always carries `message_id`. A `message_id` is unique in
+A user `transcript` is one frame and always carries `message_id`. It arrives
+once the agent turn has started, so it follows that turn's first `thinking`
+frame. A `message_id` is unique in
 the conversation; treat it as opaque.
 
 The text describes what was prepared for speech, not what the user heard. For
@@ -464,7 +475,7 @@ listening or return to standby after playback drain.
 2. Detect the wake word locally; send `wake` and buffer PCM while awaiting
    the matching grant for up to 1000 ms. On denial/timeout, discard the buffer.
 3. On grant, flush the buffered PCM and continue with live PCM. Server VAD
-   endpoints the user request, then emits `thinking` (preceded by `transcript` if enabled).
+   endpoints the user request, then emits `thinking` (followed by the user `transcript` if enabled).
    The user may pause after the wake word, or mid-request, for up to
    `endpoint_max_silence_ms` (default 3 s) without the request being split.
 4. Keep sending live PCM during thinking, `speaking` + reply PCM, and queued

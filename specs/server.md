@@ -190,8 +190,8 @@ text. Counters reset at each turn's start.
 Send opt-in user and assistant `transcript` frames as defined in
 [the client spec](client.md), for both voice replies and outbound output. Send
 each piece of reply text when it is submitted for speech, before the PCM that
-speaks it, and never hold PCM back for it. The last piece carries the message's
-`message_id`. Distinguish generated text,
+speaks it, and never hold PCM back for it. After the last piece, send a closing frame with empty
+text and the message's `message_id`. Distinguish generated text,
 PCM sent, and client playback drain. `turn_done`
 means sending finished. `drained` means playback finished or was discarded; it
 cannot prove the user heard the response. An interruption records that a reply
@@ -330,8 +330,11 @@ platform is not hosted, the connection is refused with `conversation_unavailable
 
 ## Catching up
 
-Give every user `transcript` frame, and the last assistant piece of each turn,
-a `message_id`: Hermes's message id for that message, as an opaque string.
+Give every user `transcript` frame, and the closing assistant frame of each
+turn, a `message_id`: Hermes's message id for that message, as an opaque string.
+Hermes stores a message only once it is whole, which is why the ID follows the
+text instead of travelling with it: the user frame is sent after the agent turn
+starts, and the assistant's ID comes in a closing frame with empty text.
 
 When a client connects with `transcripts: true`, replay what it missed from
 Hermes's own messages for the device's conversation, right after `ready` and
