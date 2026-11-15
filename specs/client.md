@@ -1024,6 +1024,34 @@ optional `turn_id` to target a specific turn.
 
 ## 8. Cooperative wake selection
 
+### The wake word
+
+The server sets each device's wake phrase and sends it in `ready`, with the
+model files that detect it:
+
+```json
+{"type":"ready","wake_word":{"phrase":"Hey Arya","models":{
+  "micro_wake_word":{"url":"/v1/audio/wake/hey_arya/manifest.json","sha256":"9f2c…"},
+  "open_wake_word":{"url":"/v1/audio/wake/hey_arya/hey_arya.onnx","sha256":"41d0…"}}}}
+```
+
+| `models` key | File | Used by |
+|---|---|---|
+| `micro_wake_word` | An ESPHome microWakeWord manifest. Its `model` names the `.tflite` file beside it. | ESP32, and Echo running microWakeWord |
+| `open_wake_word` | An openWakeWord head `.onnx`. The melspectrogram and embedding models stay bundled with the client. | macOS, iOS |
+
+Fetch a model with `GET` on the server's host and port, with
+`Authorization: Bearer <API_SERVER_KEY>`. `sha256` is the hash of the file at
+`url`. Keep what you downloaded and fetch again only when `sha256` changes. Go
+on detecting with the current model until the new one is ready.
+
+Listen for `phrase` with the model for your engine, and send exactly `phrase`
+as `wake_word` in wake claims, so every device in the house elects together. If
+`models` has nothing for your engine, or the download fails, keep your previous
+wake word and show that the configured one is not available. A `ready` without
+`wake_word` sets nothing; keep your own. The `cancel` wake word (section 10)
+stays the device's own.
+
 ### Participation and lifetime
 
 Wake selection helps cooperating devices decide which one should respond when

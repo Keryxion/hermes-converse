@@ -374,6 +374,31 @@ The prompt supplies both names and the routing identity, explains proactive outp
 another wake word, and requires successful tool receipts before confirming countdowns or reminders.
 A prompt does not bypass a scheduling tool's refusal.
 
+## Wake words
+
+The server sets each device's wake phrase and serves the models that detect it,
+so every device in the house wakes to the same words and elects together.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `wake_word` | none | The phrase every named device wakes to, such as `Hey Arya`. |
+| `device_wake_words` | none | A phrase for particular devices by `device_name`, such as `{"Den Echo": "Hey Sakura"}`. |
+
+Models live in the profile's `plugin-data/hermes-converse/wake/<slug>/`, where
+`<slug>` is the phrase in lowercase with spaces as `_` (`hey_arya`). A folder
+holds a microWakeWord `manifest.json` with its `.tflite`, an openWakeWord
+`<slug>.onnx`, or both. `ready` lists only the formats present (client spec,
+section 8), each with its URL and the file's `sha256`. A phrase with no folder
+is still sent, with empty `models`.
+
+Serve the files at `GET /v1/audio/wake/<slug>/<file>` on the API server, with
+the same API key as the voice route. Serve only files in that folder.
+
+Verify: two devices given one phrase send identical `wake_word` claims; a
+changed model changes `sha256` and nothing else does; a device whose engine has
+no model keeps its own phrase; a request without the key is refused; and a path
+outside the phrase's folder is refused.
+
 ## Gateway conversation
 
 Every voice conversation is a gateway session on the `converse` platform, the
