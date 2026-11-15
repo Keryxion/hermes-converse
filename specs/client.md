@@ -300,6 +300,12 @@ plays the `approval` tone, asks out loud with a short summary, and also sends:
 device; the client does nothing special for that, since it already sends
 microphone audio during a turn.
 
+Once the spoken question has played, show listening until `approval_resolved`,
+even as `thinking` frames arrive: the assistant is waiting for the person, and
+listening is how the person knows it is their turn to talk. If the question is
+asked again, it plays as speaking, then listening resumes. After
+`approval_resolved`, show thinking until the turn's reply.
+
 A device with a screen also shows a box with `summary`, `command`, and one
 button for each entry in `choices`:
 
