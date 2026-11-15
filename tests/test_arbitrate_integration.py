@@ -196,7 +196,7 @@ async def test_pending_wake_does_not_block_control_frames(monkeypatch):
         await ws.send_json({'type': 'wake', 'claim_id': 'slow', 'wake_word': 'Hey Arya'})
         await ws.send_json({'type': 'cancel'})
         await ws.send_json({'commit': True})
-        await ws.send_json({'type': 'drained'})
+        await ws.send_json({'type': 'state', 'turn_id': 'turn-1', 'state': 'listening'})
         await asyncio.wait_for(asyncio.gather(*(e.wait() for e in seen.values())), timeout=1)
         await ws.close()
 

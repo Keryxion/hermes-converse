@@ -91,10 +91,10 @@ async def test_second_output_waits_for_matching_speaker_drain(monkeypatch):
         await publish(client, cid)
         frames, _ = await _collect_turn(ws, drain=False)
         await publish(client, cid, event_id='second')
-        await ws.send_json({'type': 'drained', 'turn_id': 'stale'})
+        await ws.send_json({'type': 'state', 'turn_id': 'stale', 'state': 'listening'})
         with pytest.raises(TimeoutError):
             await ws.receive_json(timeout=.1)
-        await ws.send_json({'type': 'drained', 'turn_id': frames[-1]['turn_id']})
+        await ws.send_json({'type': 'state', 'turn_id': frames[-1]['turn_id'], 'state': 'listening'})
         frames, _ = await _collect_turn(ws)
         assert frames[0]['event_id'] == 'second'
         await ws.close()
@@ -174,7 +174,7 @@ async def test_expired_queued_output_is_skipped_and_other_outputs_still_run(monk
         await publish(client, cid, event_id='expires', expires_at_unix_ms=(time.time() + .1) * 1000)
         await publish(client, cid, event_id='valid')
         await asyncio.sleep(.15)
-        await ws.send_json({'type': 'drained', 'turn_id': first[-1]['turn_id']})
+        await ws.send_json({'type': 'state', 'turn_id': first[-1]['turn_id'], 'state': 'listening'})
         frames, _ = await _collect_turn(ws)
         assert frames[0]['event_id'] == 'valid'
         await ws.close()
@@ -301,7 +301,7 @@ async def test_tail_barge_captures_continuation_before_old_drain(monkeypatch):
         interrupted, _ = await _collect_turn(ws, drain=False)
         assert [f['type'] for f in interrupted] == ['interrupted', 'turn_done']
         assert interrupted[-1]['turn_id'] == original[-1]['turn_id']
-        await ws.send_json({'type': 'drained', 'turn_id': original[-1]['turn_id']})
+        await ws.send_json({'type': 'state', 'turn_id': original[-1]['turn_id'], 'state': 'listening'})
         following, pcm = await _collect_turn(ws)
         assert following[0]['text'] == 'additional idea' and pcm
         assert following[0]['turn_id'] != original[-1]['turn_id']

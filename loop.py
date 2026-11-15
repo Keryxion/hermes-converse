@@ -248,7 +248,7 @@ class QuietTick:
 
 class TailBarge:
     """Marker: speech tripped DURING the playback tail (after turn_done, before the client's
-    `drained`). The driver emits ``interrupted``; accepted user speech is captured separately."""
+    state leaves `speaking`). The driver emits ``interrupted``; accepted user speech is captured separately."""
 
     __slots__ = ("turn_id",)
 
@@ -343,7 +343,7 @@ class ConverseSession:
         self._tail_drained = threading.Event()
         self._tail_drained.set()
         self._tail_interrupted = False
-        # Playback tail: between turn_done and the client's `drained` (or a fallback) the client is
+        # Playback tail: between turn_done and the client's state report (or a fallback) the client is
         # still PLAYING the reply; quiet is suppressed and onset must pass the echo guard.
         self._tail_active = False
         self._tail_turn_id: Optional[str] = None
@@ -521,7 +521,7 @@ class ConverseSession:
             while not self._stop.is_set():
                 interrupt = None
                 if self._tail_active and time.monotonic() >= self._tail_deadline:
-                    self.end_playback_tail("timeout")  # client never sent `drained`: don't stay suppressed forever
+                    self.end_playback_tail("timeout")  # client never reported its state: don't stay suppressed forever
                 data, _ = self.stream.read(self._block)
                 if self._stop.is_set():
                     break
@@ -737,7 +737,7 @@ class ConverseSession:
         self._tail_deadline = time.monotonic() + fallback_seconds
 
     @_session_state
-    def end_playback_tail(self, reason: str = "drained") -> None:
+    def end_playback_tail(self, reason: str = "reported") -> None:
         if self._tail_active and self._tail_turn_id is not None:
             self._tail_result = (self._tail_turn_id,
                                  "interrupted" if self._tail_interrupted else reason, time.time_ns())
@@ -754,8 +754,8 @@ class ConverseSession:
 
     @_session_state
     def notify_drained(self, turn_id: Optional[str] = None) -> None:
-        """Client hook (``{"type":"drained"}``): ends the playback tail for the matching turn (or
-        the current tail when no id is given)."""
+        """Client hook (its ``state`` left ``speaking``): ends the playback tail for the matching
+        turn (or the current tail when no id is given)."""
         if self._tail_active and (turn_id is None or turn_id == self._tail_turn_id):
             self.end_playback_tail()
 
@@ -1385,7 +1385,7 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
         await d.send_json({"type": "transcript", "message_id": turn.assistant_id, "role": "assistant",
                            "turn_id": turn.turn_id, "text": ""})
     tt.set(**{"turn.attached": not d.gone()})  # a device was there when the reply was ready
-    # Arm before turn_done so an immediate drained acknowledgement cannot be lost.
+    # Arm before turn_done so an immediate state report cannot be lost.
     if session.finish_turn(turn.turn_id, d.tail_fallback if turn.pcm_chunks else 0):
         next_action = "listen"
     # One line per turn that says which turn it was and why it was (or was not) heard. Lengths

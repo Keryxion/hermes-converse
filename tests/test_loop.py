@@ -1402,3 +1402,12 @@ def test_answer_taken_ends_the_wait_before_it_is_settled():
     assert not session.awaiting_answer()
     session.answer_hook = None
     assert not session.awaiting_answer()
+
+
+def test_a_state_report_ends_the_tail_only_when_it_leaves_speaking_for_that_turn():
+    session = ConverseSession(np)
+    session.begin_playback_tail("turn-1", 5)
+    session.notify_drained("turn-0")  # another turn: ignored
+    assert session._tail_active
+    session.notify_drained("turn-1")
+    assert not session._tail_active and session._tail_result[1] == "reported"
