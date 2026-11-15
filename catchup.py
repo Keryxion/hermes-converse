@@ -148,23 +148,38 @@ def replay_frames(rows: list[dict[str, Any]], after: Optional[str]) -> list[dict
 class Relay:
     """Where one device conversation's turn frames go: the connected socket, or nowhere."""
 
-    def __init__(self, ws: Any) -> None:
+    def __init__(self, ws: Any, *, audio=None, source_rate=None) -> None:
         self.ws = ws
+        self.audio, self.source_rate = audio, source_rate
 
     @property
     def attached(self) -> bool:
         return self.ws is not None
 
-    def attach(self, ws: Any) -> None:
+    def attach(self, ws: Any, *, audio=None) -> None:
         self.ws = ws
+        self.audio = audio
 
     async def send_json(self, frame: dict) -> None:
         if self.ws is not None:
+            if self.audio is not None:
+                if frame.get("type") == "speaking":
+                    self.audio.begin(frame.get("turn_id"))
+                elif frame.get("type") in ("interrupted", "error"):
+                    self.audio.discard()
+                elif (frame.get("type") == "turn_done"
+                      or frame.get("type") == "state" and frame.get("state") == "listening"):
+                    for packet in self.audio.finish():
+                        await self.ws.send_bytes(packet)
             await self.ws.send_json(frame)
 
     async def send_bytes(self, data: bytes) -> None:
         if self.ws is not None:
-            await self.ws.send_bytes(data)
+            if self.audio is None:
+                await self.ws.send_bytes(data)
+            else:
+                for packet in self.audio.encode(data, self.source_rate):
+                    await self.ws.send_bytes(packet)
 
 
 @dataclass

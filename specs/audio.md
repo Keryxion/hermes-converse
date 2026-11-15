@@ -15,15 +15,18 @@ on how loud that is.
 ## What the device sends
 
 - Send the microphone's own output: after the device's echo cancellation and
-  beamforming where it has them, as PCM16 mono at `input_rate`.
+  beamforming where it has them, as mono samples at `input_rate`, sent as
+  PCM16 or encoded as Opus when selected in `start` (client spec, section 2).
 - Send it at the level it was captured. No automatic gain control, no fixed
-  digital gain, no compression, limiting, noise gate, or noise suppression that
-  lowers speech. Adaptive gain makes a voice raised over a reply look like the
+  digital gain, no dynamic range compression, limiting, noise gate, or noise
+  suppression that lowers speech. Adaptive gain makes a voice raised over a reply look like the
   voice before it and lifts residual echo into false barge-in; any gain hides
   what the microphone heard. Quiet PCM16 still carries the speech.
 - Allowed: echo cancellation and beamforming, format conversion that loses no
   level (sample rate, a lossless narrowing to 16 bits), and analog preamp
   settings.
+- Opus encoding and its DTX are allowed when selected; keep the encoder input
+  at the captured level and send the DTX packets as the client spec requires.
 - A wake word engine that wants a different level changes its own copy, never
   the audio sent upstream.
 

@@ -50,6 +50,8 @@ from typing import Any, Awaitable, Callable, Optional
 from aiohttp import ClientError, ClientSession, ClientTimeout, web
 
 from .arbitrate import Arbitrator
+from .audio_transport import AudioTransport, audio_format
+from .opus import OpusError
 from .auth import offered_key_protocol, verify_api_key
 from .catchup import Detached, MessageIds, Relay, replay_frames
 from .conversation import ConversationHub
@@ -206,8 +208,12 @@ class ConverseRoute:
             settings = self._settings()
             try:
                 names = parse_names(frame)
+                audio_format(frame)
             except NamedError as exc:
                 await _fail(ws, exc.error, exc.code)
+                return ws
+            except ValueError:
+                await _fail(ws, "bad_start", 4400)
                 return ws
             conn.set(device_name=names[1])
             return await self._named_handle(ws, frame, names, api_key, http, base_url,
@@ -217,6 +223,7 @@ class ConverseRoute:
         connection = _NamedConnection()
         device = None
         attachment = None
+        audio = None
         try:
             async with self._named_lock:
                 device = await asyncio.to_thread(self._devices.reserve, *names)
@@ -239,6 +246,7 @@ class ConverseRoute:
                                             recipient_id=device.recipient_id, device_name=device.device_name)
                 turns = GatewayTurns(gateway, source, await gateway.bind(source))
                 input_rate, output_rate, quiet_interval = parse_start_config(frame)
+                audio = AudioTransport(audio_format(frame), input_rate, output_rate)
                 synth, cap, session = await asyncio.to_thread(
                     _resolve_session, settings, input_rate, output_rate, quiet_interval)
                 connection.session = session
@@ -248,7 +256,7 @@ class ConverseRoute:
                                   quiet_interval, settings, attachment, recv_ms, input_rate, output_rate,
                                   named=(device, connection), transcripts=frame.get("transcripts") is True,
                                   models=frame.get("models") is True, turns=turns,
-                                  after=frame.get("after"))
+                                  after=frame.get("after"), audio=audio)
         except NamedError as exc:
             await _fail(ws, exc.error, exc.code)
         except (ClientError, TimeoutError, ValueError):
@@ -260,6 +268,8 @@ class ConverseRoute:
             logger.exception('named converse setup failed')
             await _fail(ws, 'conversation_unavailable', 4404)
         finally:
+            if audio is not None:
+                audio.close()
             if attachment is not None:
                 self.hub.detach(attachment.conversation_id, attachment)
             if connection.session is not None:
@@ -271,7 +281,7 @@ class ConverseRoute:
 
     async def _connected(self, ws, session, api_key, http, base_url, synth, cap, name,
                          quiet_interval, settings, attachment, server_recv_unix_ms, input_rate, output_rate,
-                         *, named, transcripts=False, models=False, turns=None, after=None):
+                         *, named, transcripts=False, models=False, turns=None, after=None, audio=None):
         client = turns
         device, connection = named
         ready = {
@@ -286,6 +296,9 @@ class ConverseRoute:
             "server_recv_unix_ms": server_recv_unix_ms,
             "server_send_unix_ms": int(time.time() * 1000),
         }
+        if audio is not None and audio.encoder is not None:
+            ready["input"].update(format="opus", block_ms=20)
+            ready["output"].update(format="opus", block_ms=20)
         if models:
             try:
                 ready["model_catalog"] = public_model_catalog(await _model_options(base_url, api_key, http))
@@ -302,14 +315,14 @@ class ConverseRoute:
         ready["server_send_unix_ms"] = int(time.time() * 1000)
         await ws.send_json(ready)
         # Catch the client up before anything live, then hand it any turn still running.
-        relay, adopted = Relay(ws), None
+        relay, adopted = Relay(ws, audio=audio, source_rate=output_rate), None
         if rows is not None:
             for replay in replay_frames(rows or [], after if isinstance(after, str) else None):
                 await ws.send_json(replay)
         adopted = self.hub.detached.pop(attachment.conversation_id, None)
         if adopted is not None:
             client = adopted.client
-            adopted.relay.attach(ws)
+            adopted.relay.attach(ws, audio=audio)
         device_name = device.device_name
         session.device_name = device_name
         if hasattr(session, "attach_device"):
@@ -330,7 +343,7 @@ class ConverseRoute:
                      name=name, quiet_interval=quiet_interval, arbitrator=arbitrator,
                      device_id=device_id, hub=self.hub, attachment=attachment,
                      named_device=device, named_connection=connection, transcripts=transcripts,
-                     relay=relay, adopted=adopted)
+                     relay=relay, adopted=adopted, audio=audio)
 
 
 async def _model_options(base_url: str, api_key: str, http: ClientSession) -> dict[str, Any]:
@@ -488,7 +501,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                  named_device, named_connection, arbitrator: Optional[Arbitrator] = None,
                  device_id: str = "", hub=None, attachment=None,
                  transcripts: bool = False, relay: Optional[Relay] = None,
-                 adopted: Optional[Detached] = None) -> None:
+                 adopted: Optional[Detached] = None, audio=None) -> None:
     """Run the client pump and the turn driver until the socket ends; always stop the live turn."""
     loop = asyncio.get_running_loop()
     session.enable_turn_control()
@@ -529,7 +542,13 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
         try:
             async for msg in ws:
                 if msg.type == web.WSMsgType.BINARY:
-                    session.stream.feed(msg.data)
+                    try:
+                        pcm = audio.decode(msg.data) if audio is not None else msg.data
+                    except OpusError:
+                        explicit_stop = True
+                        await _fail(ws, "bad_audio", 4400)
+                        break
+                    session.stream.feed(pcm)
                 elif msg.type == web.WSMsgType.TEXT:
                     try:
                         frame = json.loads(msg.data)
@@ -684,11 +703,18 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await driver
     except (asyncio.CancelledError, RuntimeError, ConnectionResetError):
-        pass
+        # aiohttp may cancel the request handler on disconnect before the pump returns.
+        # Preserve the same running turn as on an ordinary socket close.
+        detached = (not explicit_stop and hub is not None and attachment is not None
+                    and not client.settled and not driver.done())
     except Exception:
         logger.exception("converse loop crashed")
     finally:
         session.stop()
+        if detached:
+            relay.ws = None
+        if adopted is not None:
+            adopted.relay.ws = None
         pump.cancel()
         if not detached:
             driver.cancel()
