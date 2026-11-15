@@ -34,6 +34,7 @@ from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from .server_turn import ServerTurn
 
 from .catchup import History
+from . import command_catalog
 
 
 logger = logging.getLogger(__name__)
@@ -474,6 +475,14 @@ class GatewayTurns:
         if turn.outcome is ProcessingOutcome.CANCELLED:
             return TurnResult("", "agent run was cancelled", "cancelled", turn_id)
         return TurnResult("", "agent run failed", "failed", turn_id)
+
+    def commands(self) -> list[dict[str, Any]]:
+        """The gateway commands this device may name in a ``command`` frame."""
+        return command_catalog.catalog(getattr(self._adapter.config, "extra", None), self._source.user_id)
+
+    def canonical_command(self, name: str) -> Optional[str]:
+        """The canonical name of command or alias *name*; None when the gateway has no such command."""
+        return command_catalog.canonical(name)
 
     async def run_command(self, text: str) -> Optional[str]:
         """End the turn in flight, then run the gateway command; its reply, or None on failure."""

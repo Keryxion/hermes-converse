@@ -246,15 +246,20 @@ async def test_command_frame_runs_the_command_and_new_closes_the_socket(monkeypa
         assert (await ws.receive_json())["type"] == "ready"
         await ws.send_json({"type": "command", "name": "/new"})
         assert await ws.receive_json() == {"type": "command", "name": "/new", "error": "bad_command"}
+        await ws.send_json({"type": "command", "name": "no-such-command"})
+        assert await ws.receive_json() == {"type": "command", "name": "no-such-command", "error": "unknown_command"}
+        await ws.send_json({"type": "commands"})
+        listing = await ws.receive_json()
+        assert listing["type"] == "commands" and "new" in {entry["name"] for entry in listing["commands"]}
         await ws.send_json({"type": "command", "name": "compress", "args": "keep it short"})
         frame = await ws.receive_json()
         assert frame["name"] == "compress" and frame["args"] == "keep it short" and "reply" in frame
-        await ws.send_json({"type": "command", "name": "new"})
+        await ws.send_json({"type": "command", "name": "reset"})  # an alias of new closes the socket too
         frame = await ws.receive_json()
-        assert frame["type"] == "command" and frame["name"] == "new" and "reply" in frame
+        assert frame["type"] == "command" and frame["name"] == "reset" and "reply" in frame
         await ws.receive()
         assert ws.close_code == 4410
-    assert [turn["text"] for turn in fake.turns] == ["/compress keep it short", "/new"]  # the fake gateway has no commands of its own
+    assert [turn["text"] for turn in fake.turns] == ["/compress keep it short", "/reset"]  # the fake gateway has no commands of its own
 
 
 @pytest.mark.asyncio

@@ -611,6 +611,10 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                             # turn and no history. The client returns to its wake word afterwards.
                             session.transcripts.put(ConversationOutput(
                                 text, f"say-{uuid.uuid4().hex}", next_action="standby"))
+                    if frame.get("type") == "commands":
+                        listing = getattr(client, "commands", None)  # reads config.yaml: off the loop
+                        await ws.send_json({"type": "commands", "commands": await asyncio.to_thread(listing)}
+                                           if listing else {"type": "commands", "error": "failed"})
                     if frame.get("type") == "command":
                         task = asyncio.create_task(_command(frame.get("name"), frame.get("args")))
                         wake_tasks.add(task)
@@ -651,6 +655,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
 
     async def _command(name: Any, args: Any) -> None:
         reply: dict[str, Any] = {"type": "command", "name": name}
+        command: Optional[str] = None
         if args is not None:
             reply["args"] = args
         if (not isinstance(name, str) or not re.fullmatch(r"[a-z0-9_-]{1,40}", name)
@@ -658,6 +663,8 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
             reply["error"] = "bad_command"
         elif not hasattr(client, "run_command"):
             reply["error"] = "failed"
+        elif (command := await asyncio.to_thread(client.canonical_command, name)) is None:
+            reply["error"] = "unknown_command"
         else:
             session.cancel()
             text = f"/{name} {args or ''}".strip()
@@ -672,7 +679,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                 reply["reply"] = result
         if not ws.closed:
             await ws.send_json(reply)
-            if "reply" in reply and name in ("new", "reset"):
+            if "reply" in reply and command == "new":  # or an alias of it, such as reset
                 # The client reconnects and finds the fresh conversation with a normal start.
                 _mark_closed(ws, "server", 4410)
                 await ws.close(code=4410, message=b"conversation_changed")

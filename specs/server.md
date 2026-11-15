@@ -338,7 +338,14 @@ reply in a `command` frame without speaking it. There is no list of allowed
 commands: a device holding the API key can run what a chat user can, including
 commands that change approvals.
 
-After a command that starts a new conversation (`new`, or its alias `reset`), send the answer and
+Answer a `commands` frame with Hermes's command registry, as its `/help` in a
+chat would list it: each command that runs outside a terminal and that the
+platform's slash-access policy lets the device's `recipient_id` run, with its
+description, aliases, `args_hint`, and subcommands, then plugin commands. Answer
+a `command` frame whose `name` is not one of Hermes's commands or aliases with
+`unknown_command` instead of sending it.
+
+After a command that starts a new conversation (`new`, or any alias of it), send the answer and
 then close the socket with `4410 conversation_changed`. Do not move the live
 socket to the new conversation: the device reconnects and attaches to it in the
 ordinary way. The conversation keeps the title

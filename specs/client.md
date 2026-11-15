@@ -128,6 +128,7 @@ All are JSON text frames:
 | `{"type": "cancel", "turn_id": "..."}` | Cancels the **current** turn — stops TTS and the agent — but keeps the socket, session, and history alive. |
 | `{"type": "wake", "claim_id": "...", "wake_word": "Hey Arya"}` | request an advisory wake decision while buffering the new activation locally; see section 8. |
 | `{"type": "drained", "turn_id": "..."}` | Tells the server the reply's last audio has left the speaker, so the server won't transcribe its own echo as a new turn. |
+| `{"type": "commands"}` | Ask which commands this device may run; see "Commands" below. |
 | `{"type": "command", "name": "new"}` | Run a Hermes command for this device's conversation, such as starting a fresh one; see "Commands" below. |
 | `{"type": "say", "text": "..."}` | Speaks the given text (trimmed, at most 400 characters) as a reply of its own: `thinking`, `speaking` + PCM, then `turn_done` with `next_action: "standby"`. No agent turn runs and nothing is added to the conversation. For fixed device prompts such as a spoken help reminder. Empty or non-string text is ignored. |
 | `{"type": "approval_response", "approval_id": "...", "choice": "once"}` | Answer a pending approval from a screen with one of its `choices`; see "Approvals" in section 4. |
@@ -150,7 +151,7 @@ reach with a control, such as a "New conversation" button, that names one:
 the rest of what a chat user would type after it:
 
 ```json
-{"type":"command","name":"compress","args":"keep the plan"}
+{"type":"command","name":"title","args":"Kitchen timers"}
 ```
 
 The server ends any turn in flight, runs the command for the device's
@@ -160,15 +161,39 @@ conversation, and answers with the same frame plus the command's own reply:
 {"type":"command","name":"new","reply":"Started a new conversation."}
 ```
 
-`reply` is text to show, not to speak. Any command the server's Hermes knows
-can be named.
+`reply` is text to show, not to speak. Any command the server's Hermes runs
+for a chat user can be named.
 
-A command that starts a new conversation, `new`, needs nothing special from the
+To learn which those are, for a command menu, send `{"type":"commands"}`. The
+server answers with every command this device may run, in Hermes's own order:
+
+```json
+{"type":"commands","commands":[
+  {"name":"new","description":"Start a new session (fresh session ID + history)","aliases":["reset"],"args_hint":"[name]","subcommands":[]},
+  {"name":"title","description":"Set a title for the current session","aliases":[],"args_hint":"[name]","subcommands":[]}
+]}
+```
+
+| field | Meaning |
+|---|---|
+| `name` | What to put in a `command` frame's `name`. |
+| `description` | One line to show beside it. |
+| `aliases` | Other names for the same command. |
+| `args_hint` | How the command reads `args`, for display: `<x>` is required, `[x]` optional, `a\|b` a choice. Empty when it takes none. |
+| `subcommands` | Words `args` may start with, for completion. Often empty. |
+
+Hermes has no stricter description of arguments than `args_hint`, so `args` is
+free text and the command itself says when it is wrong. Commands that only run
+in a terminal are not listed, nor are commands the server's slash-command
+access settings keep from this device. The list can change when the server's
+Hermes is updated; ask again after each `ready` rather than storing it.
+
+A command that starts a new conversation, `new` or its alias `reset`, needs nothing special from the
 app. After answering, the server closes the connection with
 `4410 conversation_changed`. The app reconnects as it would after any drop, and
 `ready` comes back with `after_found: false`, which is where it clears its view
 ("Catching up", section 4). The earlier conversation is not deleted; it stays
-in Hermes's history. Other commands, such as `compress`, leave the connection
+in Hermes's history. Other commands, such as `title`, leave the connection
 open.
 
 A command that did not run is answered with `error` in place of `reply`, and
@@ -181,9 +206,11 @@ nothing changes:
 | `error` | Meaning |
 |---|---|
 | `bad_command` | `name` is missing or is not lowercase letters, digits, `-` and `_` (at most 40), or `args` is not a string. |
+| `unknown_command` | Hermes has no command by that name that runs outside a terminal. |
 | `failed` | The server did not accept the command, or it did not finish. |
 
-An unknown command is not an error here: Hermes answers it, and its answer
+A command Hermes refuses after it runs, such as one the access settings keep
+from this device or one given bad `args`, is not an error here: its refusal
 comes back in `reply`.
 
 Countdowns are unaffected by a command.
