@@ -43,9 +43,9 @@ MAX_GAIN = 100.0              # +40 dB: the Echo's -83 dBFS floor (RMS 2-3) come
 # The floor falls at once and rises slowly. Blocks are learned until an onset starts a capture, so
 # speech the detector does not hear yet is in the window too: with a 6 s window at its 20th
 # percentile, a far voice's sentence raised the floor from 4.9 to 33 RMS and the gain from +18 to
-# +1.6 dB within it, and the speech went unheard (sakura, 2026-11-15). A long window's low end and a
+# +1.6 dB within it, and the speech went unheard (sakura, 2026-11-15). A long window and a
 # rise limit keep a sentence from moving it; a TV left on is followed, at 1 dB a second.
-FLOOR_PERCENTILE = 10.0
+FLOOR_PERCENTILE = 20.0       # the gaps between words are not the room: brief dips stay below it
 WINDOW_BLOCKS = 600           # 18 s of idle blocks: a sentence is a third of it at most
 RISE_DB_PER_S = 1.0
 MIN_BLOCKS = 10               # 300 ms before the gain leaves 1
