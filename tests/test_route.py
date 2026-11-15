@@ -142,7 +142,7 @@ async def _collect_turn(ws, timeout=8.0, *, drain=True):
             frames.append(payload)
             if payload["type"] == "turn_done":
                 if drain:
-                    await ws.send_json({"type": "drained", "turn_id": payload["turn_id"]})
+                    await ws.send_json({"type": "state", "turn_id": payload["turn_id"], "state": "listening"})
                 break
             continue
         break

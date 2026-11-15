@@ -25,7 +25,9 @@ Protocol:
            ``bad_start`` — then binary PCM16 mono frames at ``input_rate`` (30 ms blocks preferred),
            ``{"stop": true}`` to end, ``{"commit": true}`` to force an endpoint,
            ``{"type":"cancel","turn_id":?}`` to cancel the current turn and keep the session,
-           ``{"type":"drained","turn_id":?}`` when the reply's last audio has left the speaker,
+           ``{"type":"state","turn_id":?,"state":...}`` the state the device now shows (leaving
+           ``speaking`` means the reply's audio has played or been discarded), ``{"type":"countdown",
+           "countdown_id":...,"ringing":true}`` or ``..."ended":true}`` a countdown ringing or ended,
            ``{"type":"wake","claim_id":"...","wake_word":"...", ...}`` requests an
            advisory wake recommendation; see ``specs/client.md``. Accepted interruptions are captured as continuations.
   server → ``ready`` (rates, ``session_id``, clock-skew timestamps), ``transcript``, ``thinking``,
@@ -310,6 +312,8 @@ class ConverseRoute:
             adopted.relay.attach(ws)
         device_name = device.device_name
         session.device_name = device_name
+        if hasattr(session, "attach_device"):
+            session.attach_device(device_name)
         connection_trace = _connection_trace(ws)
         if connection_trace is not None:
             connection_trace.set(**{"session.id": session.session_id, "device_name": device_name})
@@ -539,10 +543,13 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                         break
                     if frame.get("commit"):
                         session.commit()
-                    if frame.get("type") == "drained":
-                        session.notify_drained(frame.get("turn_id"))
-                        if getattr(hub, "countdowns", None) is not None and attachment is not None:
-                            hub.countdowns.drained(attachment.conversation_id, frame.get("turn_id"))
+                    if frame.get("type") == "state":
+                        # Leaving `speaking` for a turn: its audio has played or been discarded.
+                        if isinstance(frame.get("turn_id"), str) and frame.get("state") != "speaking":
+                            session.playback_ended(frame["turn_id"])
+                    if (frame.get("type") == "countdown" and attachment is not None
+                            and getattr(hub, "countdowns", None) is not None):
+                        hub.countdowns.reported(attachment.conversation_id, frame)
                     if frame.get("type") == "approval_response" and attachment is not None:
                         gateway = getattr(hub, "gateway", None)
                         if gateway is not None:

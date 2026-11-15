@@ -6,6 +6,8 @@ record per audio block, and nothing here reads or changes a decision.
 """
 from __future__ import annotations
 
+import math
+
 import uuid
 from typing import Any, Optional
 
@@ -72,14 +74,20 @@ class SpeechInterrupt:
             self._trace.release()
 
 
-def begin_speech_interrupt(turn_trace: Any, reply_phase: str, detector: Any) -> Optional[SpeechInterrupt]:
+def _raw(value: Optional[float], gain: float) -> Optional[float]:
+    return None if value is None else value / gain
+
+
+def begin_speech_interrupt(turn_trace: Any, reply_phase: str, detector: Any,
+                           gain: float = 1.0) -> Optional[SpeechInterrupt]:
     """Hold *turn_trace* and describe what the detector saw at the onset; None when there is
-    nothing to record on."""
+    nothing to record on. Levels as received: the detector's over *gain* (level.py)."""
     if turn_trace is None or not turn_trace.hold():
         return None
     attrs: dict[str, Any] = {"interrupt.cause": "speech", "interrupt.phase": reply_phase,
                              "vad.model": getattr(detector, "name", None),
                              "vad.probability": getattr(detector, "probability", None),
-                             "vad.level": getattr(detector, "level", None),
-                             "vad.threshold": getattr(detector, "threshold", None)}
+                             "vad.level": _raw(getattr(detector, "level", None), gain),
+                             "vad.threshold": _raw(getattr(detector, "threshold", None), gain),
+                             "input.gain_db": round(20 * math.log10(gain), 1)}
     return SpeechInterrupt(turn_trace, {k: v for k, v in attrs.items() if v is not None})

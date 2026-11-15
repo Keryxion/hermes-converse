@@ -63,7 +63,7 @@ def test_stt_capture_survives_old_completion_but_not_explicit_cancel(worker, can
         # Even a completed reply with queued speaker audio cannot arm a tail over this capture.
         assert session.finish_turn('old', 20)
         assert not session._tail_active
-        session.notify_drained('old')
+        session.playback_ended('old')
         release.set()
         result = session.transcripts.get(timeout=3)
         if cancel:
@@ -118,7 +118,7 @@ async def test_multiple_unstarted_corrections_retain_original_context_once(worke
     async def send(frame):
         frames.append(frame)
         if isinstance(frame, dict) and frame.get('type') == 'turn_done':
-            session.notify_drained(frame['turn_id'])
+            session.playback_ended(frame['turn_id'])
 
     await drive_converse_turns(session=session, synth=_EchoSynth(), cap=4000,
         loop=asyncio.get_running_loop(), send_json=send, send_bytes=send,

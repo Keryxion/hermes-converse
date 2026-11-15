@@ -13,6 +13,9 @@ import logging
 import re
 from typing import Any, Callable, Iterable, Iterator, Optional
 
+from . import vad
+from .level import for_stt
+
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +36,24 @@ def stt_model_override() -> Optional[str]:
     return stt.get("model")
 
 
+def _conditioned_copy(wav_path: str) -> Optional[str]:
+    """The capture as speech to text gets it (level.py for_stt: high-passed, one gain up to -3 dBFS), in a temp WAV;
+    None when it cannot be made, and the capture goes as it is. The capture itself stays as received."""
+    try:
+        import wave
+
+        import numpy as np
+
+        with wave.open(wav_path, "rb") as w:
+            if w.getsampwidth() != 2 or w.getnchannels() != 1:
+                return None
+            rate, audio = w.getframerate(), np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16)
+        return vad.write_wav(np, for_stt(np, audio, rate), sample_rate=rate)
+    except Exception:
+        logger.debug("converse: STT copy not made, the capture goes as it is", exc_info=True)
+        return None
+
+
 def transcribe_wav(wav_path: str, *, model: Optional[str] = None) -> str:
     """Transcribe one captured WAV through the configured STT provider and apply the plugin's
     transcript policy: a Whisper hallucination on silence is dropped, ``no_speech`` is an
@@ -40,7 +61,12 @@ def transcribe_wav(wav_path: str, *, model: Optional[str] = None) -> str:
     from tools.transcription_tools import transcribe_audio
     from tools.voice_mode_transcript import is_whisper_hallucination
 
-    result = transcribe_audio(wav_path, model=model, source=SOURCE_LABEL)
+    stt_path = _conditioned_copy(wav_path)
+    try:
+        result = transcribe_audio(stt_path or wav_path, model=model, source=SOURCE_LABEL)
+    finally:
+        if stt_path:
+            vad.unlink_quietly(stt_path)
     if not isinstance(result, dict):
         return ""
     if not result.get("success"):

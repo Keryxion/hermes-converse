@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Iterator, Optional
 
 from . import speech, vad
+from .level import InputLevel
 from .speech_detector import DEFAULT_VAD_MODEL, SpeechDetector
 from .settings import (
     DEFAULT_CAPTURE_NO_DATA_SECONDS, DEFAULT_ENDPOINT_MAX_SILENCE_MS,
@@ -248,7 +249,7 @@ class QuietTick:
 
 class TailBarge:
     """Marker: speech tripped DURING the playback tail (after turn_done, before the client's
-    `drained`). The driver emits ``interrupted``; accepted user speech is captured separately."""
+    state leaves `speaking`). The driver emits ``interrupted``; accepted user speech is captured separately."""
 
     __slots__ = ("turn_id",)
 
@@ -340,10 +341,10 @@ class ConverseSession:
         self._active_turn_id: Optional[str] = None
         self._interrupt_callback: Optional[Callable[[], None]] = None
         self.on_tail_barge: Optional[Callable[[Optional[str]], None]] = None
-        self._tail_drained = threading.Event()
-        self._tail_drained.set()
+        self._tail_ended = threading.Event()
+        self._tail_ended.set()
         self._tail_interrupted = False
-        # Playback tail: between turn_done and the client's `drained` (or a fallback) the client is
+        # Playback tail: between turn_done and the client's state report (or a fallback) the client is
         # still PLAYING the reply; quiet is suppressed and onset must pass the echo guard.
         self._tail_active = False
         self._tail_turn_id: Optional[str] = None
@@ -371,6 +372,7 @@ class ConverseSession:
         self.transcripts: queue.Queue = queue.Queue()
         self._block = int(self._input_rate * vad.BLOCK_MS / 1000)
         self._detector = SpeechDetector(np, model=vad_model, input_rate=self._input_rate, mult=barge_multiplier)
+        self._level = InputLevel(np)  # specs/audio.md: one gain for this device, held through turns
         self._pre_roll: deque = deque(maxlen=max(1, vad.PRE_ROLL_MS // vad.BLOCK_MS))
         self._endpoint_blocks = max(1, math.ceil(endpoint_silence_ms / vad.BLOCK_MS))
         self._max_silence_blocks = max(self._endpoint_blocks, math.ceil(endpoint_max_silence_ms / vad.BLOCK_MS))
@@ -489,7 +491,7 @@ class ConverseSession:
         """End the loop and unblock the reader and any transcript waiter."""
         self._stop.set()
         self.stream.close()
-        self._tail_drained.set()
+        self._tail_ended.set()
         self.transcripts.put(None)
 
     @property
@@ -501,6 +503,10 @@ class ConverseSession:
         pause. The marker is one silent block queued after the audio already received, so it also
         wakes a capture that is waiting for audio."""
         self.stream.feed(self._np.zeros(self._block, dtype=self._np.int16).tobytes(), commit=True)
+
+    def attach_device(self, device_name: Optional[str]) -> None:
+        """The device this session's microphone belongs to: its input gain starts from what was learned before."""
+        self._level.attach(device_name)
 
     @_session_state
     def note_wake(self, claim_id: Optional[str] = None) -> None:
@@ -521,7 +527,7 @@ class ConverseSession:
             while not self._stop.is_set():
                 interrupt = None
                 if self._tail_active and time.monotonic() >= self._tail_deadline:
-                    self.end_playback_tail("timeout")  # client never sent `drained`: don't stay suppressed forever
+                    self.end_playback_tail("timeout")  # client never reported its state: don't stay suppressed forever
                 data, _ = self.stream.read(self._block)
                 if self._stop.is_set():
                     break
@@ -534,6 +540,7 @@ class ConverseSession:
                         self.stream.resumed = False
                         self._reset_quiet()
                     busy = self._turn_active.is_set() or self._pending_turn.is_set() or self._tail_active
+                    data = self._level.apply(data, learn=not busy and not self.playing())
                     # A pending approval whose question has played out listens for its answer as
                     # ordinary listening: the open turn is not playback, and a short "yes" counts.
                     answering = (self.answer_hook is not None
@@ -541,10 +548,12 @@ class ConverseSession:
                     playing = (self.playing() or self._tail_active) and not answering
                     phase = self._detector.feed(data, playing, interrupting=busy and not answering)
                     if self._barge is not None:
+                        gain = self._level.gain  # traces carry levels as received (level.py)
+                        lv, th = getattr(self._detector, "level", None), getattr(self._detector, "threshold", None)
                         self._barge.add(self._block * 1000 / self._input_rate,
-                                        getattr(self._detector, "level", None),
+                                        None if lv is None else lv / gain,
                                         getattr(self._detector, "probability", None),
-                                        getattr(self._detector, "threshold", None))
+                                        None if th is None else th / gain)
                     if phase is not None:
                         reply_phase = ("answer" if answering
                                        else "drain" if self._tail_active else "speaking" if playing
@@ -555,7 +564,7 @@ class ConverseSession:
                                     getattr(self._detector, 'probability', None))
                         if reply_phase in ("thinking", "speaking", "drain"):
                             interrupt = begin_speech_interrupt(self._trace_of_active_turn(), reply_phase,
-                                                               self._detector)
+                                                               self._detector, self._level.gain)
                     # Onset filtering rejects echo/noise; accepted speech always owns a capture.
                     self._pre_roll.append(data.copy())
                     if phase is None:
@@ -585,7 +594,8 @@ class ConverseSession:
                         self._trigger_barge_in()
                     capture_generation = self._generation
                     recorder = PhaseRecorder(input_rate=self._input_rate, session_mode=self._quiet_interval > 0,
-                                             **{"session.id": self.session_id, "input.continuation": busy})
+                                             **{"session.id": self.session_id, "input.continuation": busy,
+                                                "input.gain_db": round(self._level.gain_db, 1)})
                 try:
                     transcript, _volume = self._capture_and_transcribe(recorder, wake=wake)
                 except BaseException:
@@ -729,7 +739,7 @@ class ConverseSession:
         """Driver hook: the reply is fully SENT but the client is still PLAYING it."""
         if fallback_seconds <= 0:
             return
-        self._tail_drained.clear()
+        self._tail_ended.clear()
         self._tail_interrupted = False
         self._tail_active = True
         self._tail_turn_id = turn_id
@@ -737,7 +747,7 @@ class ConverseSession:
         self._tail_deadline = time.monotonic() + fallback_seconds
 
     @_session_state
-    def end_playback_tail(self, reason: str = "drained") -> None:
+    def end_playback_tail(self, reason: str = "reported") -> None:
         if self._tail_active and self._tail_turn_id is not None:
             self._tail_result = (self._tail_turn_id,
                                  "interrupted" if self._tail_interrupted else reason, time.time_ns())
@@ -747,22 +757,22 @@ class ConverseSession:
         if not self.capture_pending():
             self.stream.discard()
             self._pre_roll.clear()
-        self._tail_drained.set()
+        self._tail_ended.set()
         self._active_turn_id = None
         self._tts_stop = None
         self._reset_quiet()
 
     @_session_state
-    def notify_drained(self, turn_id: Optional[str] = None) -> None:
-        """Client hook (``{"type":"drained"}``): ends the playback tail for the matching turn (or
-        the current tail when no id is given)."""
+    def playback_ended(self, turn_id: Optional[str] = None) -> None:
+        """Client hook (its ``state`` left ``speaking``): ends the playback tail for the matching
+        turn (or the current tail when no id is given)."""
         if self._tail_active and (turn_id is None or turn_id == self._tail_turn_id):
             self.end_playback_tail()
 
     async def wait_for_playback_tail(self) -> None:
         if self._tail_active:
             remaining = max(0, self._tail_deadline - time.monotonic())
-            await asyncio.get_running_loop().run_in_executor(None, self._tail_drained.wait, remaining)
+            await asyncio.get_running_loop().run_in_executor(None, self._tail_ended.wait, remaining)
             if self._tail_active:
                 self.end_playback_tail("disconnected" if self._stop.is_set() else "timeout")
 
@@ -888,10 +898,11 @@ class ConverseSession:
             if self.stream.committed:
                 # Reached the commit marker (maybe while draining audio after Smart Turn): keep what
                 # has arrived and end without waiting for more audio or asking Smart Turn.
-                frames.extend(self.stream.ready_blocks(self._block))
+                frames.extend(self._level.apply(b, learn=False) for b in self.stream.ready_blocks(self._block))
                 reason = "client_commit"
                 break
             data, _ = self.stream.read(self._block, no_data_seconds=self._capture_no_data_seconds)
+            data = self._level.apply(data, learn=False)
             if self.stream.no_data_return or self._stop.is_set():
                 reason = "no_data" if self.stream.no_data_return else "stopped"
                 break
@@ -920,7 +931,7 @@ class ConverseSession:
                 # Speech that arrived while the model ran belongs to this turn: keep listening.
                 spoken = speech_blocks
                 for data in self.stream.ready_blocks(self._block):
-                    take(data)
+                    take(self._level.apply(data, learn=False))
                 complete = speech_blocks == spoken
             if phase is not None:
                 phase.event("endpoint.decision", **{
@@ -1382,7 +1393,7 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
         await d.send_json({"type": "transcript", "message_id": turn.assistant_id, "role": "assistant",
                            "turn_id": turn.turn_id, "text": ""})
     tt.set(**{"turn.attached": not d.gone()})  # a device was there when the reply was ready
-    # Arm before turn_done so an immediate drained acknowledgement cannot be lost.
+    # Arm before turn_done so an immediate state report cannot be lost.
     if session.finish_turn(turn.turn_id, d.tail_fallback if turn.pcm_chunks else 0):
         next_action = "listen"
     # One line per turn that says which turn it was and why it was (or was not) heard. Lengths
