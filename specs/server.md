@@ -12,7 +12,8 @@ independent of agent generation and outgoing TTS.
 
 Separate three decisions: VAD detects sustained user speech; endpointing decides
 when an utterance is complete; turn control cancels obsolete output and admits
-completed user utterances. A wake word opens an activation, not an utterance
+completed user utterances. How the input's level reaches each of them is in
+[audio.md](audio.md). A wake word opens an activation, not an utterance
 boundary. A pause after the wake word must not require another wake word.
 
 ### Input and reply ownership

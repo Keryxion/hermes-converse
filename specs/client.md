@@ -260,7 +260,8 @@ interrupts the old reply, preserves the new utterance, and transcribes it as a
 continuation in the same conversation. The original request remains context.
 Do not require another wake word or make the user repeat the interruption.
 Playback echo rejection remains the server's responsibility; clients should
-provide clean microphone audio without suppressing user speech.
+provide clean microphone audio without suppressing user speech. What that audio
+must be, and what the server does with its level, is in [audio.md](audio.md).
 
 ### Barge-in and cancellation
 
