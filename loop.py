@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Iterator, Optional
 
 from . import speech, vad
+from .level import InputLevel
 from .speech_detector import DEFAULT_VAD_MODEL, SpeechDetector
 from .settings import (
     DEFAULT_CAPTURE_NO_DATA_SECONDS, DEFAULT_ENDPOINT_MAX_SILENCE_MS,
@@ -371,6 +372,7 @@ class ConverseSession:
         self.transcripts: queue.Queue = queue.Queue()
         self._block = int(self._input_rate * vad.BLOCK_MS / 1000)
         self._detector = SpeechDetector(np, model=vad_model, input_rate=self._input_rate, mult=barge_multiplier)
+        self._level = InputLevel(np)  # specs/audio.md: one gain for this device, held through turns
         self._pre_roll: deque = deque(maxlen=max(1, vad.PRE_ROLL_MS // vad.BLOCK_MS))
         self._endpoint_blocks = max(1, math.ceil(endpoint_silence_ms / vad.BLOCK_MS))
         self._max_silence_blocks = max(self._endpoint_blocks, math.ceil(endpoint_max_silence_ms / vad.BLOCK_MS))
@@ -502,6 +504,10 @@ class ConverseSession:
         wakes a capture that is waiting for audio."""
         self.stream.feed(self._np.zeros(self._block, dtype=self._np.int16).tobytes(), commit=True)
 
+    def attach_device(self, device_name: Optional[str]) -> None:
+        """The device this session's microphone belongs to: its input gain starts from what was learned before."""
+        self._level.attach(device_name)
+
     @_session_state
     def note_wake(self, claim_id: Optional[str] = None) -> None:
         """A wake was granted: the next capture waits through a pause after the wake word."""
@@ -534,6 +540,7 @@ class ConverseSession:
                         self.stream.resumed = False
                         self._reset_quiet()
                     busy = self._turn_active.is_set() or self._pending_turn.is_set() or self._tail_active
+                    data = self._level.apply(data, learn=not busy and not self.playing())
                     # A pending approval whose question has played out listens for its answer as
                     # ordinary listening: the open turn is not playback, and a short "yes" counts.
                     answering = (self.answer_hook is not None
@@ -541,10 +548,12 @@ class ConverseSession:
                     playing = (self.playing() or self._tail_active) and not answering
                     phase = self._detector.feed(data, playing, interrupting=busy and not answering)
                     if self._barge is not None:
+                        gain = self._level.gain  # traces carry levels as received (level.py)
+                        lv, th = getattr(self._detector, "level", None), getattr(self._detector, "threshold", None)
                         self._barge.add(self._block * 1000 / self._input_rate,
-                                        getattr(self._detector, "level", None),
+                                        None if lv is None else lv / gain,
                                         getattr(self._detector, "probability", None),
-                                        getattr(self._detector, "threshold", None))
+                                        None if th is None else th / gain)
                     if phase is not None:
                         reply_phase = ("answer" if answering
                                        else "drain" if self._tail_active else "speaking" if playing
@@ -555,7 +564,7 @@ class ConverseSession:
                                     getattr(self._detector, 'probability', None))
                         if reply_phase in ("thinking", "speaking", "drain"):
                             interrupt = begin_speech_interrupt(self._trace_of_active_turn(), reply_phase,
-                                                               self._detector)
+                                                               self._detector, self._level.gain)
                     # Onset filtering rejects echo/noise; accepted speech always owns a capture.
                     self._pre_roll.append(data.copy())
                     if phase is None:
@@ -585,7 +594,8 @@ class ConverseSession:
                         self._trigger_barge_in()
                     capture_generation = self._generation
                     recorder = PhaseRecorder(input_rate=self._input_rate, session_mode=self._quiet_interval > 0,
-                                             **{"session.id": self.session_id, "input.continuation": busy})
+                                             **{"session.id": self.session_id, "input.continuation": busy,
+                                                "input.gain_db": round(self._level.gain_db, 1)})
                 try:
                     transcript, _volume = self._capture_and_transcribe(recorder, wake=wake)
                 except BaseException:
@@ -888,10 +898,11 @@ class ConverseSession:
             if self.stream.committed:
                 # Reached the commit marker (maybe while draining audio after Smart Turn): keep what
                 # has arrived and end without waiting for more audio or asking Smart Turn.
-                frames.extend(self.stream.ready_blocks(self._block))
+                frames.extend(self._level.apply(b, learn=False) for b in self.stream.ready_blocks(self._block))
                 reason = "client_commit"
                 break
             data, _ = self.stream.read(self._block, no_data_seconds=self._capture_no_data_seconds)
+            data = self._level.apply(data, learn=False)
             if self.stream.no_data_return or self._stop.is_set():
                 reason = "no_data" if self.stream.no_data_return else "stopped"
                 break
@@ -920,7 +931,7 @@ class ConverseSession:
                 # Speech that arrived while the model ran belongs to this turn: keep listening.
                 spoken = speech_blocks
                 for data in self.stream.ready_blocks(self._block):
-                    take(data)
+                    take(self._level.apply(data, learn=False))
                 complete = speech_blocks == spoken
             if phase is not None:
                 phase.event("endpoint.decision", **{

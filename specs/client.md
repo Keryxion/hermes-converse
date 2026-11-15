@@ -262,7 +262,11 @@ interrupts the old reply, preserves the new utterance, and transcribes it as a
 continuation in the same conversation. The original request remains context.
 Do not require another wake word or make the user repeat the interruption.
 Playback echo rejection remains the server's responsibility; clients should
-provide clean microphone audio without suppressing user speech.
+provide clean microphone audio without suppressing user speech. Send it at the
+level it was captured: no automatic gain control and no fixed digital gain on
+the upstream path. Echo cancellation, lossless format conversion and analog
+preamp settings are allowed; a wake word engine that needs another level changes
+only its own copy. The server handles level ([audio.md](audio.md)).
 
 ### Barge-in and cancellation
 
