@@ -45,7 +45,7 @@ async def test_idle_output_without_mic_wake_or_model_and_reconnect(monkeypatch):
         response = await publish(client, cid)
         assert response.status == 202
         frames, pcm = await _collect_turn(ws)
-        assert pcm and [f['type'] for f in frames] == ['thinking', 'speaking', 'turn_done']
+        assert pcm and [f['type'] for f in frames] == ['state', 'thinking', 'state', 'speaking', 'turn_done']
         assert frames[-1]['next_action'] == 'standby'
         assert not fake.turns  # no synthetic transcript or second LLM call
         duplicate = await publish(client, cid)
@@ -110,6 +110,7 @@ async def test_cancel_thinking_stale_id_ignored_and_run_stopped(monkeypatch):
             await ws.send_bytes(frame)
         transcript = await ws.receive_json(timeout=2)
         assert transcript['type'] == 'transcript'
+        assert (await ws.receive_json(timeout=2))['state'] == 'thinking'
         assert (await ws.receive_json(timeout=2))['type'] == 'thinking'
         await ws.send_json({'type': 'cancel', 'turn_id': 'stale'})
         with pytest.raises(TimeoutError):
@@ -141,9 +142,11 @@ async def test_voice_continuation_restarts_in_same_conversation(monkeypatch, pha
         for frame in _speech_then_silence_pcm():
             await ws.send_bytes(frame)
         assert (await ws.receive_json(timeout=2))['type'] == 'transcript'
+        assert (await ws.receive_json(timeout=2))['state'] == 'thinking'
         assert (await ws.receive_json(timeout=2))['type'] == 'thinking'
         if phase == 'speaking':
             assert (await ws.receive_json(timeout=2))['type'] == 'transcript'  # ahead of its audio
+            assert (await ws.receive_json(timeout=2))['state'] == 'speaking'
             assert (await ws.receive_json(timeout=2))['type'] == 'speaking'
             await ws.receive_bytes(timeout=2)
         for frame in _speech_then_silence_pcm():
@@ -152,7 +155,8 @@ async def test_voice_continuation_restarts_in_same_conversation(monkeypatch, pha
         # A reply cut off while speaking also reports what was said.
         assert [f['type'] for f in frames if f['type'] != 'transcript'] == ['interrupted', 'turn_done']
         following, pcm = await _collect_turn(ws, timeout=3)
-        assert [f['type'] for f in following] == ['transcript', 'thinking', 'transcript', 'speaking', 'turn_done']
+        assert [f['type'] for f in following] == ['transcript', 'state', 'thinking', 'transcript', 'state', 'speaking',
+                                                  'turn_done']
         assert pcm and len(fake.turns) == 2 and seen['n'] == 2 and fake.stopped == [fake.turns[0]]
         assert len({turn['chat_id'] for turn in fake.turns}) == 1
         assert following[0]['text'] == 'and the continuation'
@@ -264,6 +268,7 @@ async def test_spoken_cancellation_is_distinct_from_continuation(monkeypatch, qu
         for frame in _speech_then_silence_pcm():
             await ws.send_bytes(frame)
         assert (await ws.receive_json(timeout=2))['type'] == 'transcript'
+        assert (await ws.receive_json(timeout=2))['state'] == 'thinking'
         assert (await ws.receive_json(timeout=2))['type'] == 'thinking'
         for frame in _speech_then_silence_pcm():
             await ws.send_bytes(frame)

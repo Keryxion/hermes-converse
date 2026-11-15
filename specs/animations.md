@@ -74,13 +74,12 @@ stateDiagram-v2
     arbitrating --> standby: timeout / abandon
     wake_denied --> standby: 1.5 s, if no newer event
     standby --> listening: manual Talk
-    listening --> thinking: thinking
+    listening --> thinking: state thinking
     listening --> standby: quiet / no request
-    thinking --> speaking: speaking / reply audio
+    thinking --> speaking: state speaking
     speaking --> listening: drained + next_action listen
     speaking --> standby: drained + next_action standby
-    speaking --> listening: drained, approval pending
-    listening --> thinking: approval_resolved
+    speaking --> listening: drained, state listening
     thinking --> listening: interrupted, queued audio discarded
     speaking --> listening: interrupted, queued audio discarded
     standby --> speaking: outbound reply
@@ -99,14 +98,13 @@ The frames named here are defined in [client.md](client.md).
 - Stay in speaking until local playback has drained, even after `turn_done`.
   Apply `next_action` after the drain; do not show green while reply audio is
   still queued.
-- Stay in listening after the user stops speaking, until `thinking` arrives. No
-  frame marks the end of speech.
-- A repeated `thinking` frame keeps thinking alive. It does not restart the
-  animation or replace speaking.
-- While an approval is pending, show listening once the spoken question has
-  drained: the assistant is waiting for the person's answer. `thinking` frames
-  do not replace it. A spoken re-ask shows speaking, then listening again. On
-  `approval_resolved`, return to thinking; the turn carries on.
+- During a turn, show the state the server sends in its `state` frame. One that
+  arrives while reply audio is still playing applies once that audio has
+  drained. So an approval shows speaking while its question plays, listening
+  while the server waits for the answer, and thinking once it is answered.
+- Stay in listening after the user stops speaking, until a `state` of
+  `thinking` arrives. No frame marks the end of speech.
+- A `thinking` frame keeps thinking alive. It never changes the state.
 - `interrupted` discards queued audio and returns to listening. It is not an
   error.
 - A new state replaces the old one immediately and cancels its timers,
