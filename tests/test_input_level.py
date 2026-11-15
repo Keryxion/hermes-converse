@@ -122,3 +122,18 @@ def test_a_devices_floor_carries_over_to_its_next_session(monkeypatch, tmp_path)
     other = InputLevel(np)
     other.attach("Kitchen")
     assert other.gain == 1.0
+
+
+def test_a_sentence_nobody_detected_yet_does_not_lower_the_gain():
+    """Blocks are learned until an onset; a far voice's 6 s sentence must not raise the floor with it
+    (sakura, 2026-11-15: the gain fell from +18 to +1.6 dB during one and the speech went unheard)."""
+    lv = InputLevel(np)
+    for i in range(100):
+        lv.apply(block(4, i), learn=True)
+    before = lv.gain_db
+    for i in range(200):                                   # 6 s of speech-loud blocks, still "idle"
+        lv.apply(block(40, 1000 + i), learn=True)
+    assert before - lv.gain_db < 6.5, (before, lv.gain_db)
+    for i in range(100):                                   # the room again: back at once
+        lv.apply(block(4, 2000 + i), learn=True)
+    assert abs(lv.gain_db - before) < 1.0

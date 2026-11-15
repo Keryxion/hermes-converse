@@ -40,8 +40,14 @@ logger = logging.getLogger(__name__)
 # low-gain one, 50-300 on most) keeps its level and only a quieter one is lifted.
 TARGET_FLOOR = vad.MIN_QUIET_FLOOR
 MAX_GAIN = 100.0              # +40 dB: the Echo's -83 dBFS floor (RMS 2-3) comes up to about -59 dBFS
-FLOOR_PERCENTILE = 20.0       # the quiet end of the window: speech fills the rest, the floor its gaps
-WINDOW_BLOCKS = 200           # 6 s of idle blocks
+# The floor falls at once and rises slowly. Blocks are learned until an onset starts a capture, so
+# speech the detector does not hear yet is in the window too: with a 6 s window at its 20th
+# percentile, a far voice's sentence raised the floor from 4.9 to 33 RMS and the gain from +18 to
+# +1.6 dB within it, and the speech went unheard (sakura, 2026-11-15). A long window's low end and a
+# rise limit keep a sentence from moving it; a TV left on is followed, at 1 dB a second.
+FLOOR_PERCENTILE = 10.0
+WINDOW_BLOCKS = 600           # 18 s of idle blocks: a sentence is a third of it at most
+RISE_DB_PER_S = 1.0
 MIN_BLOCKS = 10               # 300 ms before the gain leaves 1
 LOG_STEP_DB = 3.0             # a change this large is logged
 DIGITAL_SILENCE = 1.0         # blocks under this RMS are not the room
@@ -98,6 +104,7 @@ class InputLevel:
         self._logged_db = 0.0
         self._device: Optional[str] = None
         self._saved: Optional[float] = None
+        self._floor: Optional[float] = None
 
     def attach(self, device: Optional[str]) -> None:
         """The session's device: start from its room's floor as last learned, and keep learning it."""
@@ -108,6 +115,7 @@ class InputLevel:
         self._device, self._saved = device, floor
         if floor is not None and not self._idle:
             self._idle.extend([floor] * MIN_BLOCKS)
+            self._floor = floor
             self.gain = min(MAX_GAIN, max(1.0, TARGET_FLOOR / max(floor, TARGET_FLOOR / MAX_GAIN)))
             self._logged_db = self.gain_db
             logger.info("converse input: %s starts from its room floor %.1f RMS, gain %+.1f dB", device, floor, self.gain_db)
@@ -136,6 +144,9 @@ class InputLevel:
             self._idle.append(rms)
             if len(self._idle) >= MIN_BLOCKS:
                 floor = max(float(np.percentile(self._idle, FLOOR_PERCENTILE)), TARGET_FLOOR / MAX_GAIN)
+                if self._floor is not None and floor > self._floor:     # rises slowly, falls at once
+                    floor = min(floor, self._floor * 10 ** (RISE_DB_PER_S * vad.BLOCK_MS / 1000 / 20))
+                self._floor = floor
                 self.gain = min(MAX_GAIN, max(1.0, TARGET_FLOOR / floor))
                 self._remember(floor)
                 if abs(self.gain_db - self._logged_db) >= LOG_STEP_DB:
