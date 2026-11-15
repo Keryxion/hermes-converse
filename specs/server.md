@@ -450,8 +450,11 @@ device sends no `drained` for it.
 
 ### `standby`
 
-The agent calls `standby` when the exchange is over, for example after
-"thanks, that's all". The tool, the `next_action` value, and the device state
+The agent calls `standby` when the person has said they are done, for example
+"thanks, that's all". Finishing a request is not that: after "turn on the
+lights" the person may add "and the kitchen too". Without the call, the device
+keeps listening and returns to standby by itself after a few seconds of
+silence. The tool, the `next_action` value, and the device state
 share the one name. Standby is not mute: the device still hears its wake word.
 The server does not look for a sign-off phrase in the reply. A turn that does
 not call `standby` ends with `next_action: "listen"`.

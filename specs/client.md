@@ -444,7 +444,7 @@ return `listen` for ordinary activation turns; a partial or failed reply cannot
 put the client in standby. Countdown tones restore the prior idle/listening state
 after drain (section 10).
 A normal reply also returns `listen`, even when it does not ask a question.
-The server requests `standby` when the assistant decides the exchange is over.
+The server requests `standby` when the person has said they are done.
 
 The server decides the action. Clients must not inspect reply text or
 interpret whether the agent expects a follow-up.
