@@ -64,8 +64,11 @@ CONVERSE_ENDPOINT_FLOOR_MULT = 1.3
 CALIBRATION_MS = 450
 GRACE_MS = 500
 PRE_ROLL_MS = 1200
-# Hard cap on one capture, so "listening" can never run to half a minute in a pathological room.
-MAX_UTTERANCE_MS = 12_000
+# Hard cap on one capture. It is a memory backstop for a pathological room, not an endpoint: a
+# person explaining something for twenty seconds is normal speech, and cutting the audio there
+# silently truncates the request. The endpointer decides when a turn ended; this only stops an
+# unbounded capture.
+MAX_UTTERANCE_MS = 60_000
 
 
 def rms(np: Any, data: Any) -> float:
