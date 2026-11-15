@@ -121,9 +121,10 @@ All are JSON text frames:
 | `{"type": "approval_response", "approval_id": "...", "choice": "once"}` | Answer a pending approval from a screen with one of its `choices`; see "Approvals" in section 4. |
 
 **`cancel` vs `stop`:** `stop` tears down the session; `cancel` only kills the
-current turn. Use `cancel` when the user hits the action button, says the
-wake word again mid-turn, or says the `cancel` wake word, and you want to keep
-the conversation going.
+current turn. Use `cancel` when the user hits the action button or says the
+`cancel` wake word, and you want to keep the conversation going. The
+assistant's own wake word is never a `cancel` (section 4, "Barge-in and
+cancellation").
 
 ### Commands
 
@@ -270,6 +271,13 @@ the user may add “and make it warm white” while the reply is thinking. Expec
 `interrupted` and `turn_done` with `next_action: "listen"` for the old turn,
 then a new reply turn for the additional instruction (and a `transcript` if enabled). The
 new turn uses the same conversation and includes the original request as context.
+
+The assistant's wake word heard during an activation, such as "Hey Arya,
+actually make it the kitchen" while the reply plays, is barge-in like any other
+speech. Do not send `cancel` and do not send another `wake`: the device is
+already streaming, and the server hears the words, interrupts the reply, and
+answers what follows. A wake word that cancelled the turn would throw that
+request away and make the person say the wake word twice.
 
 Explicit `cancel` stops the matching turn without submitting a user message:
 
