@@ -114,7 +114,7 @@ may already have happened.
 |---|---|
 | `4409 attachment_replaced` | Another connection with the same names replaced this one. Stop sending on it. |
 | `4404 conversation_unavailable` | The conversation could not be opened. Show the failure rather than claiming restored context. |
-| `4410 conversation_changed` | The device's conversation is a different one now, for example after `/new`. Reconnect at once; `ready` then says whether the cursor still applies ("Catching up", section 4). |
+| `4410 conversation_changed` | The device's conversation is a different one now, for example after the `new` command. Reconnect at once; `ready` then says whether the cursor still applies ("Catching up", section 4). |
 | `conversation_busy` error before `ready` | Earlier work is still stopping. Retry later. |
 
 ## 3. Client control frames (send anytime)
@@ -128,7 +128,7 @@ All are JSON text frames:
 | `{"type": "cancel", "turn_id": "..."}` | Cancels the **current** turn — stops TTS and the agent — but keeps the socket, session, and history alive. |
 | `{"type": "wake", "claim_id": "...", "wake_word": "Hey Arya"}` | request an advisory wake decision while buffering the new activation locally; see section 8. |
 | `{"type": "drained", "turn_id": "..."}` | Tells the server the reply's last audio has left the speaker, so the server won't transcribe its own echo as a new turn. |
-| `{"type": "command", "text": "/new"}` | Run a slash command for this device's conversation, such as starting a fresh one; see "Commands" below. |
+| `{"type": "command", "name": "new"}` | Run a Hermes command for this device's conversation, such as starting a fresh one; see "Commands" below. |
 | `{"type": "say", "text": "..."}` | Speaks the given text (trimmed, at most 400 characters) as a reply of its own: `thinking`, `speaking` + PCM, then `turn_done` with `next_action: "standby"`. No agent turn runs and nothing is added to the conversation. For fixed device prompts such as a spoken help reminder. Empty or non-string text is ignored. |
 | `{"type": "approval_response", "approval_id": "...", "choice": "once"}` | Answer a pending approval from a screen with one of its `choices`; see "Approvals" in section 4. |
 
@@ -139,41 +139,48 @@ the conversation going.
 
 ### Commands
 
-A chat user types slash commands. An app gives the person the same reach with a
-control, such as a "New conversation" button, that sends one:
+A chat user types commands such as `/new`. An app gives the person the same
+reach with a control, such as a "New conversation" button, that names one:
 
 ```json
-{"type":"command","text":"/new"}
+{"type":"command","name":"new"}
+```
+
+`name` is the command without its slash. `args`, when the command takes any, is
+the rest of what a chat user would type after it:
+
+```json
+{"type":"command","name":"compress","args":"keep the plan"}
 ```
 
 The server ends any turn in flight, runs the command for the device's
 conversation, and answers with the same frame plus the command's own reply:
 
 ```json
-{"type":"command","text":"/new","reply":"Started a new conversation."}
+{"type":"command","name":"new","reply":"Started a new conversation."}
 ```
 
-`reply` is text to show, not to speak. Any slash command the server's Hermes
-knows can be sent.
+`reply` is text to show, not to speak. Any command the server's Hermes knows
+can be named.
 
-A command that starts a new conversation, `/new`, needs nothing special from the
+A command that starts a new conversation, `new`, needs nothing special from the
 app. After answering, the server closes the connection with
 `4410 conversation_changed`. The app reconnects as it would after any drop, and
 `ready` comes back with `after_found: false`, which is where it clears its view
 ("Catching up", section 4). The earlier conversation is not deleted; it stays
-in Hermes's history. Other commands, such as `/compress`, leave the connection
+in Hermes's history. Other commands, such as `compress`, leave the connection
 open.
 
 A command that did not run is answered with `error` in place of `reply`, and
 nothing changes:
 
 ```json
-{"type":"command","text":"new","error":"bad_command"}
+{"type":"command","name":"/new","error":"bad_command"}
 ```
 
 | `error` | Meaning |
 |---|---|
-| `bad_command` | `text` is missing or does not start with `/`. |
+| `bad_command` | `name` is missing or is not lowercase letters, digits, `-` and `_` (at most 40), or `args` is not a string. |
 | `failed` | The server did not accept the command, or it did not finish. |
 
 An unknown command is not an error here: Hermes answers it, and its answer

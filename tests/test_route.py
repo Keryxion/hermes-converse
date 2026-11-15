@@ -244,14 +244,17 @@ async def test_command_frame_runs_the_command_and_new_closes_the_socket(monkeypa
         ws = await client.ws_connect("/v1/audio/converse", protocols=(VOICE_PROTOCOL, _key_protocol()))
         await ws.send_str(_start_msg())
         assert (await ws.receive_json())["type"] == "ready"
-        await ws.send_json({"type": "command", "text": "nope"})
-        assert await ws.receive_json() == {"type": "command", "text": "nope", "error": "bad_command"}
-        await ws.send_json({"type": "command", "text": "/new"})
+        await ws.send_json({"type": "command", "name": "/new"})
+        assert await ws.receive_json() == {"type": "command", "name": "/new", "error": "bad_command"}
+        await ws.send_json({"type": "command", "name": "compress", "args": "keep it short"})
         frame = await ws.receive_json()
-        assert frame["type"] == "command" and frame["text"] == "/new" and "reply" in frame
+        assert frame["name"] == "compress" and frame["args"] == "keep it short" and "reply" in frame
+        await ws.send_json({"type": "command", "name": "new"})
+        frame = await ws.receive_json()
+        assert frame["type"] == "command" and frame["name"] == "new" and "reply" in frame
         await ws.receive()
         assert ws.close_code == 4410
-    assert [turn["text"] for turn in fake.turns] == ["/new"]  # the fake gateway has no /new of its own
+    assert [turn["text"] for turn in fake.turns] == ["/compress keep it short", "/new"]  # the fake gateway has no commands of its own
 
 
 @pytest.mark.asyncio
