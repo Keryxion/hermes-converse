@@ -63,25 +63,11 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 | `after` | The `message_id` of the last transcript this client has shown, to catch up on what it missed. Only with `transcripts: true`. See "Catching up" in section 4. |
 | `assistant_name` | What you call the assistant, normally `Arya`, without “Hey”. Used in the voice system prompt; separate from the device label, such as `Den Echo`. |
 
-**Client profile selection is removed.**
-
-`start.profile` is not part of the supported protocol. All clients must omit the
-field entirely. Do not send it as `null`, an empty string, or `"default"`. Remove profile
-selectors from client settings and remove the corresponding per-server saved
-configuration; discard legacy saved values instead of sending them on reconnect.
-This applies to every client, including macOS, iOS, Echo, and ESP32 clients.
-
-The connection uses the Hermes profile that owns the configured server listener.
-Clients select a server URL and authenticate to it; the `start` frame does not
-select or switch Hermes profiles. `assistant_name` only sets the assistant's spoken identity
-and does not select a profile either. There is no supported profile-prefixed
-converse route in this contract; do not construct `/p/<profile>/` URLs to replace
-the removed field.
-
-Some deployed servers still parse the legacy field and can reject it with
-`profile_unsupported` (close code 4400). Clients must remove the field regardless
-of whether their server accepts legacy values. The legacy server parser remains
-in the current implementation; this update changes the client contract.
+`assistant_name` and `device_name` are both required. `start` has no `profile`,
+`name`, `conversation`, or `conversation_id` field. A `start` missing either name,
+or carrying one of those fields, closes with `4400 bad_start`. The connection
+uses the Hermes profile that owns the server listener; `start` does not select
+a profile, and there is no profile-prefixed route.
 
 For a wake-word client, detect the wake word locally, buffer microphone
 PCM while awaiting arbitration for up to **1000 ms**, and start streaming
