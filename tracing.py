@@ -41,7 +41,7 @@ _ATTRIBUTE_KEYS = frozenset({
     "wake.heard_at", "claim.arrival", "claim.outcome", "decision.sent",
     # barge-in: the interrupt event, then the per-turn summary
     "interrupt.cause", "interrupt.phase", "interrupt.result", "interrupt.next_turn_id",
-    "vad.probability", "vad.level", "vad.threshold",
+    "vad.probability", "vad.level", "vad.threshold", "input.gain_db",
     "barge.mic_ms", "barge.rejected_quiet_ms", "barge.peak_probability", "barge.peak_level",
     "barge.threshold",
 })

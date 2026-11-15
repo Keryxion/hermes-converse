@@ -137,8 +137,9 @@ For `speech`, also record what the detector saw when it accepted the onset:
 |---|---|
 | `vad.model` | The detector in effect, `silero` or `energy`. |
 | `vad.probability` | The speech probability at the onset, when the detector gives one. |
-| `vad.level` | The input level at the onset. |
-| `vad.threshold` | The level it had to exceed, with the barge-in multiplier applied. |
+| `vad.level` | The input level at the onset, as received. |
+| `vad.threshold` | The level it had to exceed, with the barge-in multiplier applied, in the same units. |
+| `input.gain_db` | The session's input gain ([audio.md](audio.md)); also on each capture. |
 
 An `empty` result is a false trigger: something was loud and speech-like enough
 to stop the reply, and it was not speech.

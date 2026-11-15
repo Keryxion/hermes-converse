@@ -1,0 +1,104 @@
+"""The session's input gain (level.py, specs/audio.md): a quiet device's speech is heard, a normal one
+is left alone, and the gain holds still while a turn is under way."""
+import threading
+import wave
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from hermes_converse import level, speech
+from hermes_converse.level import InputLevel
+from hermes_converse.loop import ConverseSession
+from hermes_converse.silero_vad import load_silero_session as real_silero  # before conftest stubs it
+
+JFK = Path(__file__).parent / "fixtures" / "jfk-4s.wav"
+
+
+def noise(rms, n, seed=1):
+    return np.random.default_rng(seed).normal(0, rms, n)
+
+
+def block(rms, seed=1):
+    return np.clip(np.round(noise(rms, 480, seed)), -32768, 32767).astype(np.int16)
+
+
+def test_quiet_floor_is_brought_up_and_a_normal_one_left_alone():
+    quiet = InputLevel(np)
+    for i in range(40):
+        quiet.apply(block(3, i), learn=True)
+    assert 11 <= quiet.gain <= 16  # TARGET_FLOOR 40 over a floor near 3: about +22 dB
+    normal = InputLevel(np)
+    for i in range(40):
+        normal.apply(block(120, i), learn=True)
+    assert normal.gain == 1.0
+
+
+def test_gain_is_capped_and_waits_for_enough_blocks():
+    lv = InputLevel(np)
+    faint = np.array([1, -1] * 240, dtype=np.int16)      # RMS 1: the quietest real floor
+    for _ in range(level.MIN_BLOCKS - 1):
+        lv.apply(faint, learn=True)
+    assert lv.gain == 1.0
+    lv.apply(faint, learn=True)
+    assert lv.gain == pytest.approx(min(level.MAX_GAIN, level.TARGET_FLOOR))
+
+
+def test_digital_silence_does_not_teach_the_gain():
+    lv = InputLevel(np)
+    for _ in range(100):
+        lv.apply(np.zeros(480, dtype=np.int16), learn=True)
+    assert lv.gain == 1.0
+
+
+def test_gain_holds_while_not_learning_and_clips():
+    lv = InputLevel(np)
+    for i in range(40):
+        lv.apply(block(3, i), learn=True)
+    g = lv.gain
+    loud = np.full(480, 20000, dtype=np.int16)
+    for _ in range(50):
+        out = lv.apply(loud, learn=False)  # a turn: speech and playback do not move it
+    assert lv.gain == g
+    assert out.dtype == np.int16 and out.max() == 32767
+
+
+def _jfk():
+    with wave.open(str(JFK)) as w:
+        assert w.getframerate() == 16000
+        return np.frombuffer(w.readframes(w.getnframes()), np.int16).astype(np.float64)
+
+
+@pytest.mark.parametrize("attenuation_db", [0, 30, 40, 50])
+@pytest.mark.parametrize("gain", [True, False])
+def test_quiet_speech_is_heard_on_an_echo_floor(monkeypatch, attenuation_db, gain):
+    """specs/audio.md acceptance: the request is captured at its own level and 30, 40 and 50 dB lower,
+    over an Echo Dot 2's floor (RMS 3). Without the gain the 50 dB one (an Echo's close speech, about
+    -65 dBFS, 16 dB over its floor) is missed, as on the Echo."""
+    session_loader = lambda: real_silero()  # noqa: E731
+    monkeypatch.setattr("hermes_converse.speech_detector.load_silero_session", session_loader)
+    monkeypatch.setattr("hermes_converse.silero_vad.load_silero_session", session_loader)
+    if real_silero()[0] is None:
+        pytest.skip("Silero model not available")
+    if not gain:
+        monkeypatch.setattr(InputLevel, "apply", lambda self, b, learn: b)
+    monkeypatch.setattr(speech, "spawn_context_thread",
+                        lambda target, **kw: threading.Thread(target=target, daemon=True))
+    session = ConverseSession(np, vad_model="silero", transcribe=lambda path: "heard")
+    assert session._detector.name == "silero"
+    speech_pcm = _jfk() * 10 ** (-attenuation_db / 20)
+    pcm = np.concatenate([noise(3, 32000, 1), speech_pcm + noise(3, len(speech_pcm), 2), noise(3, 48000, 3)])
+    session.start()
+    try:
+        session.stream.feed(np.clip(np.round(pcm), -32768, 32767).astype(np.int16).tobytes())
+        try:
+            heard = session.transcripts.get(timeout=8)
+        except Exception:
+            heard = None
+    finally:
+        session.stop()
+        session._worker.join(timeout=2)
+    if gain or attenuation_db < 50:
+        assert heard == "heard", f"speech {attenuation_db} dB down over the Echo's floor was not captured"
+    else:
+        assert heard is None, "expected the ungained Echo level to be missed (the bug this fixes)"
