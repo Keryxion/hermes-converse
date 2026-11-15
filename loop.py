@@ -54,6 +54,10 @@ STREAM_RESUME_GAP_SECONDS = 1.0
 MAX_AUDIO_LEAD_SECONDS = 1.5
 # Pacing waits in short steps so an interruption stops sending promptly.
 AUDIO_PACE_STEP_SECONDS = 0.05
+# After the approval question's paced audio ends, how long its echo may still reach the microphone.
+APPROVAL_LISTEN_GRACE_SECONDS = 0.5
+# How often a turn checks whether it is waiting on the person, for its `state` frames.
+STATE_POLL_SECONDS = 0.1
 # Reply speech: poll for deltas every 0.5 s; after 4 empty polls (~2 s) speak the buffered tail.
 IDLE_POLL_SECONDS = 0.5
 IDLE_POLLS_TO_FLUSH = 4
@@ -346,6 +350,8 @@ class ConverseSession:
         self._tail_deadline = 0.0
         self._stop = threading.Event()
         self._playing = threading.Event()
+        # Monotonic time the client's queued reply audio ends, from the sender's pacing.
+        self.playback_until = 0.0
         self._tts_stop: Optional[threading.Event] = None
         self._interrupted = threading.Event()
         # Cancel: set by ``cancel()`` to abort an in-progress capture (its transcript is discarded,
@@ -385,6 +391,14 @@ class ConverseSession:
         # While an approval is pending: takes captured speech (returns True when it is the answer),
         # and speech does not interrupt the waiting turn.
         self.answer_hook: Optional[Callable[[str], bool]] = None
+        # Set when captured speech was taken as the answer; the next question clears it.
+        self.answer_taken = False
+
+    def awaiting_answer(self) -> bool:
+        """The turn is waiting on the person: an approval's question has played out and no answer
+        has been taken yet."""
+        return (self.answer_hook is not None and not self.answer_taken
+                and time.monotonic() >= self.playback_until + APPROVAL_LISTEN_GRACE_SECONDS)
 
     # ── playback / barge-in coordination ──
     def playing(self) -> bool:
@@ -520,15 +534,20 @@ class ConverseSession:
                         self.stream.resumed = False
                         self._reset_quiet()
                     busy = self._turn_active.is_set() or self._pending_turn.is_set() or self._tail_active
-                    playing = self.playing() or self._tail_active
-                    phase = self._detector.feed(data, playing, interrupting=busy)
+                    # A pending approval whose question has played out listens for its answer as
+                    # ordinary listening: the open turn is not playback, and a short "yes" counts.
+                    answering = (self.answer_hook is not None
+                                 and time.monotonic() >= self.playback_until + APPROVAL_LISTEN_GRACE_SECONDS)
+                    playing = (self.playing() or self._tail_active) and not answering
+                    phase = self._detector.feed(data, playing, interrupting=busy and not answering)
                     if self._barge is not None:
                         self._barge.add(self._block * 1000 / self._input_rate,
                                         getattr(self._detector, "level", None),
                                         getattr(self._detector, "probability", None),
                                         getattr(self._detector, "threshold", None))
                     if phase is not None:
-                        reply_phase = ("drain" if self._tail_active else "speaking" if playing
+                        reply_phase = ("answer" if answering
+                                       else "drain" if self._tail_active else "speaking" if playing
                                        else "thinking" if self._turn_active.is_set()
                                        else "pending" if busy else "idle")
                         logger.info("converse onset: session=%s turn=%s detector=%s reply_phase=%s probability=%s",
@@ -619,7 +638,10 @@ class ConverseSession:
         if hook is None:
             return False
         try:
-            return bool(hook(transcript))
+            taken = bool(hook(transcript))
+            if taken:
+                self.answer_taken = True
+            return taken
         except Exception:
             logger.debug("converse approval answer hook failed", exc_info=True)
             return False
@@ -1082,6 +1104,7 @@ class _Turn:
         self.user_frame: Optional[asyncio.Future] = None  # sends the user transcript once it has an id
         self.user_id: Optional[str] = None
         self.assistant_id: Optional[str] = None
+        self.state: Optional[str] = None  # the last `state` frame sent: thinking, speaking, listening
 
     def on_delta(self, delta: str) -> None:
         # Called from run_turn's execution context (loop coroutine or a worker thread); thread-safe.
@@ -1293,6 +1316,7 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
     progress_task = None
     try:
         if not turn.tts_stop.is_set():
+            await _send_state(d, turn, "thinking")
             await d.send_json(_thinking_frame(d, turn))
         # The producer carries the request's credential/profile context.
         speech.spawn_context_thread(_produce_speech, name="converse-tts", args=(d, turn)).start()
@@ -1389,13 +1413,30 @@ def _thinking_frame(d: _Driver, turn: _Turn) -> dict[str, Any]:
     return {"type": "thinking", "tool_calls": count, "reasoning_tokens": reasoning, **turn.meta}
 
 
+async def _send_state(d: _Driver, turn: _Turn, state: str) -> None:
+    """Tell the client which state to show, when it changes."""
+    if turn.state != state:
+        turn.state = state
+        await d.send_json({"type": "state", "state": state, **turn.meta})
+
+
 async def _report_thinking(d: _Driver, turn: _Turn) -> None:
-    """Repeat turn liveness and measured progress, including while streaming speech."""
+    """Repeat turn liveness and measured progress, including while streaming speech, and say when
+    the turn starts and stops waiting on the person."""
+    awaiting_answer = getattr(d.session, "awaiting_answer", None)
+    next_frame = time.monotonic() + THINKING_FRAME_INTERVAL
     while True:
-        await asyncio.sleep(THINKING_FRAME_INTERVAL)
+        await asyncio.sleep(max(0.0, min(STATE_POLL_SECONDS, next_frame - time.monotonic())))
         if turn.tts_stop.is_set() or d.gone():
             return
-        await d.send_json(_thinking_frame(d, turn))
+        waiting = bool(awaiting_answer()) if awaiting_answer is not None else False
+        if waiting and turn.state != "listening":
+            await _send_state(d, turn, "listening")
+        elif not waiting and turn.state == "listening":
+            await _send_state(d, turn, "thinking")
+        if time.monotonic() >= next_frame:
+            next_frame += THINKING_FRAME_INTERVAL
+            await d.send_json(_thinking_frame(d, turn))
 
 
 async def _run_agent(d: _Driver, turn: _Turn, interrupted: bool) -> None:
@@ -1529,8 +1570,11 @@ async def _stream_reply(d: _Driver, turn: _Turn, turn_task: asyncio.Future) -> N
             if turn.tts_stop.is_set():
                 d.session.set_playing(False)
                 break
+            await _send_state(d, turn, "speaking")
             await d.send_json({"type": "speaking", **turn.meta})
             speaking = True
+        elif turn.state != "speaking":
+            await _send_state(d, turn, "speaking")  # speech again after waiting on the person
         if turn.tts_stop.is_set():
             break
         if rate:
@@ -1543,6 +1587,9 @@ async def _stream_reply(d: _Driver, turn: _Turn, turn_task: asyncio.Future) -> N
             if turn.tts_stop.is_set():
                 break
             play_end = max(play_end, d.loop.time()) + len(chunk) / 2 / rate
+            d.session.playback_until = play_end - d.loop.time() + time.monotonic()
+        else:
+            d.session.playback_until = math.inf
         turn.pcm_chunks += 1
         await d.send_bytes(chunk)
     turn.ns["pcm_done"] = time.time_ns()

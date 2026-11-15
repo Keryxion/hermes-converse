@@ -141,10 +141,15 @@ was not offered changes nothing.
 
 While a request is pending, speech from the device is an answer to it, not a new
 request and not an interruption of the waiting turn. The spoken summary itself
-must not be taken as the answer. Do not speak secrets. When the action did not
+must not be taken as the answer. Once the question's audio has played out, listen
+as in ordinary listening, not as for a barge-in over playback: no echo gate and
+no interruption threshold, so a single quiet "yes" is heard, and send `state`
+`listening`. The turn being open does not mean anything is playing. When the
+answer is taken, send `state` `thinking`. Do not speak secrets. When the action did not
 run, the agent's reply says so.
 
 Verify each allowed choice by voice and by screen; a plain yes answering `once`;
+a single short "yes" heard the first time it is said;
 a choice that was not offered; an unclear reply once and
 twice, a failed summary call, Hermes's timeout, a stale or repeated response,
 cancellation, a disconnect and reconnect while pending, a prompt that arrives with
@@ -177,7 +182,11 @@ Do not claim a VAD or endpoint model can eliminate every premature endpoint:
 continued speech after endpoint must still be handled as continuation.
 
 Emit `thinking`, optional `speaking` and PCM, then the turn's terminal
-frames in order. Interrupted, failed, or superseded replies return `listen`.
+frames in order. Send `state` each time the turn's state changes, so the client
+shows it without inferring it from other frames: `thinking` before the turn's
+first `thinking` frame and whenever the agent resumes after waiting on the
+person; `speaking` before the first PCM of each stretch of speech; `listening`
+when the turn waits on the person and their speech is being listened for. Interrupted, failed, or superseded replies return `listen`.
 
 Pace reply PCM against the playback it implies so the server, not the client,
 holds the backlog. Track where the client's queued audio ends; before sending a

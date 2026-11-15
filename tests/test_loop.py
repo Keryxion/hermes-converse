@@ -610,10 +610,12 @@ def test_drive_converse_turns_control_frame_ordering():
     history: list = []
     sent = _run_driver(session, history, ["Hi back."], transcripts=True)
     # The assistant's text goes out ahead of the audio that speaks it.
-    assert _types(sent) == ["transcript", "thinking", "transcript", "speaking", "bytes", "turn_done"]
+    assert _types(sent) == ["transcript", "state", "thinking", "transcript", "state", "speaking", "bytes",
+                           "turn_done"]
     assert sent[0]["role"] == "user" and sent[0]["text"] == "hello there."
-    assert sent[4] == ("bytes", b"Hi back.")
-    assert sent[2]["role"] == "assistant" and sent[2]["text"] == "Hi back."
+    assert sent[6] == ("bytes", b"Hi back.")
+    assert sent[3]["role"] == "assistant" and sent[3]["text"] == "Hi back."
+    assert [f["state"] for f in sent if isinstance(f, dict) and f["type"] == "state"] == ["thinking", "speaking"]
     turn_ids = {f["turn_id"] for f in sent if isinstance(f, dict) and "turn_id" in f}
     assert len(turn_ids) == 1 and sent[0]["turn_id"] == sent[-1]["turn_id"]
     thinking = next(f for f in sent if isinstance(f, dict) and f.get("type") == "thinking")
@@ -1196,7 +1198,7 @@ def test_timing_line_counts_a_final_only_reply_without_speaking_it(caplog):
     assert "outcome=completed" in line and "final_chars=12" in line
     assert "deltas=0" in line and "reply_chars=0" in line
     assert "spoken_chars=0" in line and "pcm_chunks=0" in line
-    assert _types(sent) == ["thinking", "turn_done"]
+    assert _types(sent) == ["state", "thinking", "turn_done"]
     assert history[-1] == {"role": "assistant", "content": "Final reply."}
 
 
@@ -1247,7 +1249,7 @@ def _pace_driver(sent, *, turn_timeout=0.0, rate=8000):
 
 def _pace_turn():
     return types.SimpleNamespace(pcm_q=asyncio.Queue(), tts_stop=threading.Event(), meta={}, pcm_chunks=0,
-                                 ns={}, timed_out=False, result={})
+                                 ns={}, timed_out=False, result={}, state=None)
 
 
 def _chunk(seconds, rate=8000):
@@ -1331,3 +1333,71 @@ def test_pacing_waits_do_not_count_toward_the_turn_timeout(monkeypatch):
 
     turn, sent = asyncio.run(main())
     assert not turn.timed_out and len(sent) == 8
+
+
+@pytest.mark.parametrize('question_playing', [True, False])
+def test_pending_approval_listens_normally_once_its_question_has_played(question_playing):
+    """While an approval waits, the open turn is not playback: after the question's audio has
+    played out, a short "yes" is detected as in ordinary listening (no echo gate, no barge-in
+    threshold). While the question is still playing, echo rejection still applies."""
+    session = ConverseSession(np)
+    session.begin_turn('waiting', tts_stop=threading.Event())
+    session.set_playing(True)
+    session.answer_hook = lambda text: True
+    session.playback_until = cl.time.monotonic() + (60 if question_playing else -1)
+    seen = []
+    feed = session._detector.feed
+    def spy(block, playing, *, interrupting=False):
+        seen.append((playing, interrupting))
+        return feed(block, playing, interrupting=interrupting)
+    session._detector.feed = spy
+    session.start()
+    try:
+        session.stream.feed(silence(0.3).tobytes())
+        deadline = cl.time.monotonic() + 3
+        while not seen and cl.time.monotonic() < deadline:
+            cl.time.sleep(0.01)
+    finally:
+        session.stop()
+    assert seen
+    assert all(args == ((True, True) if question_playing else (False, False)) for args in seen)
+
+
+def test_turn_state_follows_an_approval_wait(monkeypatch):
+    """The server says when the turn waits on the person: `listening` once the question has played
+    and no answer is taken, `thinking` again once it is, `speaking` when speech plays again."""
+    monkeypatch.setattr(cl, "STATE_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(cl, "THINKING_FRAME_INTERVAL", 60.0)
+
+    async def main():
+        sent = []
+        waiting = {"now": False}
+
+        async def send_json(obj):
+            sent.append(obj)
+
+        d = types.SimpleNamespace(session=types.SimpleNamespace(awaiting_answer=lambda: waiting["now"]),
+                                  send_json=send_json, gone=lambda: False)
+        turn = types.SimpleNamespace(tts_stop=threading.Event(), meta={"turn_id": "t"}, state="speaking")
+        task = asyncio.create_task(cl._report_thinking(d, turn))
+        await asyncio.sleep(0.05)
+        waiting["now"] = True
+        await asyncio.sleep(0.05)
+        waiting["now"] = False
+        await asyncio.sleep(0.05)
+        turn.tts_stop.set()
+        await task
+        return [f["state"] for f in sent if f["type"] == "state"]
+
+    assert asyncio.run(main()) == ["listening", "thinking"]
+
+
+def test_answer_taken_ends_the_wait_before_it_is_settled():
+    session = ConverseSession(np)
+    session.answer_hook = lambda text: True
+    session.playback_until = 0.0
+    assert session.awaiting_answer()
+    assert session._answers_approval("yes")
+    assert not session.awaiting_answer()
+    session.answer_hook = None
+    assert not session.awaiting_answer()

@@ -210,6 +210,7 @@ Countdowns are unaffected by a command.
 | `ready` | `input` and `output` rates, `session_id`, clock-skew timestamps; see section 2 |
 | `wake_grant` | recommends this client handle the wake activation; echoes its `claim_id` and `wake_word`. |
 | `wake_deny` | recommends this client stand down for the activation; echoes its `claim_id` and `wake_word`. |
+| `state` | the state to show during a turn: `thinking`, `speaking`, or `listening`; see "The turn's state" below |
 | `transcript` | user input or assistant reply text, identified by `role` and `turn_id`; see below |
 | `thinking` | starts a turn, then repeats every 5 seconds with `tool_calls` and `reasoning_tokens`; refresh inactivity without resetting speaking/playback |
 | `approval_request`, `approval_resolved` | the assistant needs permission before it acts, and when that is settled; see "Approvals" below |
@@ -302,6 +303,31 @@ turn, replacing its pending standby action. A continuation receives its own
 turn ID. Send `drained` only for the old playback; it must not discard the
 continuation. A bounded playback-tail timeout handles a missing `drained`.
 
+### The turn's state
+
+During a turn the server says which state to show, each time it changes:
+
+```json
+{"type":"state","turn_id":"turn-42","state":"listening"}
+```
+
+| `state` | Sent when |
+|---|---|
+| `thinking` | The turn starts, and again when the assistant goes back to work after waiting on the person, such as after an approval is answered. |
+| `speaking` | Speech is about to play: the reply, or a spoken approval question. |
+| `listening` | The turn is waiting on the person and the server is listening for them, such as for an approval answer once its question has played. |
+
+Show the latest `state` of the active turn. A state that arrives while reply
+audio is still playing takes effect when that audio has drained. A `state` for a
+new `turn_id` starts that turn, as `thinking` or `speaking` would; ignore one for
+a completed, cancelled, or stale turn.
+
+Nothing else changes the state during a turn: `thinking` frames carry liveness
+and counters, approval frames open and close the on-screen box, and `speaking`
+marks where the audio begins. After `turn_done`, `next_action` decides between
+listening and standby, as below. States the device knows by itself, such as
+connecting, arbitrating, or muted, are the device's own (`animations.md`).
+
 ### Handling `thinking`
 
 The server sends `thinking` at turn start, then approximately every **5 seconds**
@@ -328,7 +354,7 @@ No tool names, arguments, results, or reasoning text are included. When tracing
 is active, frames also carry the turn's `traceparent`.
 
 The first `thinking` starts the turn even without a preceding user `transcript`.
-Mark the turn active and show thinking. Repeated frames with the same active
+Mark the turn active. Repeated frames with the same active
 `turn_id` update the count and refresh the inactivity timer; preserve any existing
 speaking/playback state. Do not treat them as new turns or restart playback.
 Ignore late frames for completed/cancelled turns and stale IDs. An unfamiliar ID
@@ -368,11 +394,11 @@ plays the `approval` tone, asks out loud with a short summary, and also sends:
 device; the client does nothing special for that, since it already sends
 microphone audio during a turn.
 
-Once the spoken question has played, show listening until `approval_resolved`,
-even as `thinking` frames arrive: the assistant is waiting for the person, and
-listening is how the person knows it is their turn to talk. If the question is
-asked again, it plays as speaking, then listening resumes. After
-`approval_resolved`, show thinking until the turn's reply.
+The `state` frames tell the person when to talk: `speaking` while the
+question plays, `listening` once the server is listening for the answer, and
+`thinking` as soon as the answer is taken. A question asked again is `speaking`
+then `listening` again. `thinking` frames during the wait do not change the
+state.
 
 A device with a screen also shows a box with `summary`, `command`, and one
 button for each entry in `choices`:
