@@ -556,6 +556,8 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
         if getattr(hub, "countdowns", None) is not None:
             hub.countdowns.attached(attachment, getattr(client, "_source", None),
                                     settings.countdown_ring_timeout_seconds, loop)
+    if attachment is not None and getattr(hub, "gateway", None) is not None:
+        hub.gateway.approvals.attached(attachment)  # a request still pending asks again
     default_model = (settings.model, settings.provider)
     selected_model = default_model
     wake_tasks: set[asyncio.Task] = set()
@@ -601,6 +603,10 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                         session.notify_drained(frame.get("turn_id"))
                         if getattr(hub, "countdowns", None) is not None and attachment is not None:
                             hub.countdowns.drained(attachment.conversation_id, frame.get("turn_id"))
+                    if frame.get("type") == "approval_response" and attachment is not None:
+                        gateway = getattr(hub, "gateway", None)
+                        if gateway is not None:
+                            gateway.approvals.respond(attachment, frame)
                     if frame.get("type") == "cancel":
                         session.cancel(frame.get("turn_id"))
                         if adopted is not None:  # a turn carried over from the previous connection

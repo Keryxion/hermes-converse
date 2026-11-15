@@ -36,6 +36,8 @@ from .server_turn import ServerTurn
 from .catchup import History
 from . import command_catalog
 
+from .approvals import Approvals
+
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +76,8 @@ class _VoiceTurn:
     tool_calls: int = 0
     reasoning_tokens: Optional[int] = None
     progress_at: float = 0.0  # monotonic time the agent last did anything
+    detached: bool = False  # held on a pending approval after its device left; its speech is published
+    held_text: str = ""
 
 
 @dataclass
@@ -102,6 +106,7 @@ class ConverseAdapter(BasePlatformAdapter):
         # Voice turns the device gave up on that the gateway has not finished: message id -> turn.
         self._abandoned: dict[str, _VoiceTurn] = {}
         self._session_chats: dict[str, str] = {}  # session_id -> chat_id
+        self.approvals = Approvals(self)
 
     # ── lifecycle ──
     async def connect(self, *, is_reconnect: bool = False) -> bool:
@@ -242,6 +247,9 @@ class ConverseAdapter(BasePlatformAdapter):
         else:
             turn.outcome = outcome
             turn.done.set()
+            if turn.detached and turn.held_text.strip():
+                self._hub.publish(chat_id, turn.held_text.strip(), f"held:{uuid.uuid4().hex}",
+                                  expires_at=time.time() + OUTPUT_TTL)
             self._abandoned.pop(str(event.message_id or ""), None)
 
     # ── outbound ──
@@ -300,6 +308,9 @@ class ConverseAdapter(BasePlatformAdapter):
         from tools.approval import resolve_gateway_approval
 
         choice = self._approval_choice()
+        if choice == "ask":
+            await self.approvals.begin(prompt)
+            return SendResult(success=True, message_id=uuid.uuid4().hex)
         resolved = resolve_gateway_approval(prompt.session_key, choice, request_id=prompt.request_id)
         if not resolved and choice != "deny":
             resolve_gateway_approval(prompt.session_key, "deny", request_id=prompt.request_id)
@@ -494,6 +505,11 @@ class GatewayTurns:
         """Interrupt the turn in flight (barge-in, socket close) and wait — bounded — for it to settle."""
         turn = self._turn
         if turn is None or turn.done.is_set():
+            return
+        if self._adapter.approvals.on_stop(self._chat_id):
+            # The device left with an approval pending: the turn keeps waiting for it.
+            turn.detached = True
+            turn.on_delta = lambda text, _t=turn: setattr(_t, "held_text", _t.held_text + text)
             return
         turn.stopped = True
         if turn.started:
