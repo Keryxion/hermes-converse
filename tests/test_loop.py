@@ -1332,3 +1332,31 @@ def test_pacing_waits_do_not_count_toward_the_turn_timeout(monkeypatch):
 
     turn, sent = asyncio.run(main())
     assert not turn.timed_out and len(sent) == 8
+
+
+@pytest.mark.parametrize('question_playing', [True, False])
+def test_pending_approval_listens_normally_once_its_question_has_played(question_playing):
+    """While an approval waits, the open turn is not playback: after the question's audio has
+    played out, a short "yes" is detected as in ordinary listening (no echo gate, no barge-in
+    threshold). While the question is still playing, echo rejection still applies."""
+    session = ConverseSession(np)
+    session.begin_turn('waiting', tts_stop=threading.Event())
+    session.set_playing(True)
+    session.answer_hook = lambda text: True
+    session.playback_until = cl.time.monotonic() + (60 if question_playing else -1)
+    seen = []
+    feed = session._detector.feed
+    def spy(block, playing, *, interrupting=False):
+        seen.append((playing, interrupting))
+        return feed(block, playing, interrupting=interrupting)
+    session._detector.feed = spy
+    session.start()
+    try:
+        session.stream.feed(silence(0.3).tobytes())
+        deadline = cl.time.monotonic() + 3
+        while not seen and cl.time.monotonic() < deadline:
+            cl.time.sleep(0.01)
+    finally:
+        session.stop()
+    assert seen
+    assert all(args == ((True, True) if question_playing else (False, False)) for args in seen)

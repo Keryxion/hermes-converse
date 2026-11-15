@@ -54,6 +54,8 @@ STREAM_RESUME_GAP_SECONDS = 1.0
 MAX_AUDIO_LEAD_SECONDS = 1.5
 # Pacing waits in short steps so an interruption stops sending promptly.
 AUDIO_PACE_STEP_SECONDS = 0.05
+# After the approval question's paced audio ends, how long its echo may still reach the microphone.
+APPROVAL_LISTEN_GRACE_SECONDS = 0.5
 # Reply speech: poll for deltas every 0.5 s; after 4 empty polls (~2 s) speak the buffered tail.
 IDLE_POLL_SECONDS = 0.5
 IDLE_POLLS_TO_FLUSH = 4
@@ -346,6 +348,8 @@ class ConverseSession:
         self._tail_deadline = 0.0
         self._stop = threading.Event()
         self._playing = threading.Event()
+        # Monotonic time the client's queued reply audio ends, from the sender's pacing.
+        self.playback_until = 0.0
         self._tts_stop: Optional[threading.Event] = None
         self._interrupted = threading.Event()
         # Cancel: set by ``cancel()`` to abort an in-progress capture (its transcript is discarded,
@@ -520,15 +524,20 @@ class ConverseSession:
                         self.stream.resumed = False
                         self._reset_quiet()
                     busy = self._turn_active.is_set() or self._pending_turn.is_set() or self._tail_active
-                    playing = self.playing() or self._tail_active
-                    phase = self._detector.feed(data, playing, interrupting=busy)
+                    # A pending approval whose question has played out listens for its answer as
+                    # ordinary listening: the open turn is not playback, and a short "yes" counts.
+                    answering = (self.answer_hook is not None
+                                 and time.monotonic() >= self.playback_until + APPROVAL_LISTEN_GRACE_SECONDS)
+                    playing = (self.playing() or self._tail_active) and not answering
+                    phase = self._detector.feed(data, playing, interrupting=busy and not answering)
                     if self._barge is not None:
                         self._barge.add(self._block * 1000 / self._input_rate,
                                         getattr(self._detector, "level", None),
                                         getattr(self._detector, "probability", None),
                                         getattr(self._detector, "threshold", None))
                     if phase is not None:
-                        reply_phase = ("drain" if self._tail_active else "speaking" if playing
+                        reply_phase = ("answer" if answering
+                                       else "drain" if self._tail_active else "speaking" if playing
                                        else "thinking" if self._turn_active.is_set()
                                        else "pending" if busy else "idle")
                         logger.info("converse onset: session=%s turn=%s detector=%s reply_phase=%s probability=%s",
@@ -1546,6 +1555,9 @@ async def _stream_reply(d: _Driver, turn: _Turn, turn_task: asyncio.Future) -> N
             if turn.tts_stop.is_set():
                 break
             play_end = max(play_end, d.loop.time()) + len(chunk) / 2 / rate
+            d.session.playback_until = play_end - d.loop.time() + time.monotonic()
+        else:
+            d.session.playback_until = math.inf
         turn.pcm_chunks += 1
         await d.send_bytes(chunk)
     turn.ns["pcm_done"] = time.time_ns()
