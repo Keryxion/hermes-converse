@@ -93,7 +93,9 @@ With `ask`, the person is asked in two ways at once, and the first answer wins:
   command, and the choices Hermes allows for this request, for a device that
   can show a box.
 
-The turn keeps waiting with `thinking` frames.
+The turn keeps waiting with `thinking` frames. Waiting on the approval counts as
+progress, so `turn_timeout_seconds` does not end the turn; Hermes's
+`approvals.timeout` (default 300 seconds) does.
 
 #### The summary
 

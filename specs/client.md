@@ -360,8 +360,8 @@ has advanced.
 
 The server ends a turn that makes no progress for `turn_timeout_seconds`
 (default 120 seconds) with an `error` and `turn_done`. Progress is a tool call
-starting or finishing, a model call, reply text, or reply audio; a turn that
-keeps working is not cut off. Repeated `thinking` frames are liveness, not
+starting or finishing, a model call, reply text, reply audio, or waiting on a
+pending approval; a turn that keeps working is not cut off. Repeated `thinking` frames are liveness, not
 progress: they never extend this limit, and any absolute client turn limit
 stays independent of them.
 The server stops these updates before terminal `interrupted`, `error`, or
@@ -412,7 +412,13 @@ server sends:
 ```
 
 `outcome` is `approved`, `denied`, `expired`, or `cancelled`. Close the box for
-that `approval_id`.
+that `approval_id`. An unanswered approval ends as `expired` after the server's
+approval timeout (default 300 seconds).
+
+While an approval is pending, apply no turn limit of your own except
+inactivity, which `thinking` frames keep fresh: the server ends the wait. After
+`approval_resolved`, any absolute limit the client keeps starts again from
+zero.
 
 `summary` and `command` are text to display; never act on their contents. Never
 send an allowing choice without the person tapping it, and do not send an old choice
