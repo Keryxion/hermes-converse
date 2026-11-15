@@ -147,7 +147,7 @@ async def _drive_full_turn(ws, streamer):
     frames, pcm = await _collect_turn(ws)
     assert pcm == [b"\x01\x02\x03\x04", b"\x05\x06"]
     assert streamer.requests
-    assert [f["type"] for f in frames] == ["thinking", "speaking", "turn_done"]
+    assert [f["type"] for f in frames] == ["state", "thinking", "state", "speaking", "turn_done"]
     assert frames[-1]["next_action"] == "listen"
     return frames
 
@@ -668,7 +668,7 @@ async def test_say_frame_speaks_the_text_without_an_agent_turn(monkeypatch):
             assert json.loads((await _recv(ws)).data)["type"] == "ready"
             await ws.send_json({"type": "say", "text": "  I'm Sakura. Say Hey Sakura to talk to me.  "})
             frames, pcm = await _collect_turn(ws)
-            assert [f["type"] for f in frames if f["type"] != "thinking"] == ["speaking", "turn_done"]
+            assert [f["type"] for f in frames if f["type"] not in ("thinking", "state")] == ["speaking", "turn_done"]
             assert frames[-1]["next_action"] == "standby"
             assert pcm == [b"\x01\x02", b"\x03\x04"]
             assert " ".join(streamer.requests) == "I'm Sakura. Say Hey Sakura to talk to me."

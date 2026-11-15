@@ -32,7 +32,7 @@ async def test_voice_turn_runs_in_the_gateway_conversation(tmp_path, monkeypatch
         assert ready["type"] == "ready" and ready["device_name"] == "Den Echo" and ready["recipient_id"]
         frames, pcm = await _say(ws)
         kinds = [f["type"] for f in frames]
-        assert kinds[:2] == ["transcript", "thinking"] and "speaking" in kinds and kinds[-1] == "turn_done"
+        assert kinds[:3] == ["transcript", "state", "thinking"] and "speaking" in kinds and kinds[-1] == "turn_done"
         assert pcm
         spoken = next(f for f in frames if f["type"] == "transcript" and f["role"] == "assistant")
         assert spoken["text"] == "Hello."

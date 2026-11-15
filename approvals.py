@@ -7,6 +7,7 @@ by an ``approval_request`` frame, and answers Hermes once with ``resolve_gateway
 from __future__ import annotations
 
 import asyncio
+import math
 import logging
 import time
 import uuid
@@ -137,7 +138,11 @@ class Approvals:
             p.device = None
             return  # held: nobody can answer; Hermes's timeout ends it
         p.device = attachment
-        attachment.session.answer_hook = lambda text, _p=p, _a=attachment: self._spoken(_p, _a, text)
+        session = attachment.session
+        # Not waiting on the person until this question has played: its audio moves this forward.
+        session.playback_until = math.inf
+        session.answer_taken = False
+        session.answer_hook = lambda text, _p=p, _a=attachment: self._spoken(_p, _a, text)
         if speech is None:
             self._send(attachment, {
                 "type": "approval_request",

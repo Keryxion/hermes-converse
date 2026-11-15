@@ -6,8 +6,8 @@ in [animations.md](animations.md).
 
 | Tone | When | Sound |
 |---|---|---|
-| Listening | Every time the device enters listening: a matching `wake_grant`, manual Talk, or a return to listening after a reply | Rising pair: 523 Hz then 784 Hz, 70 ms each |
-| Thinking | Each `thinking` frame before the reply starts, including the five-second repeats, and `approval_resolved` | One soft 280 ms pulse at 330 Hz |
+| Listening | Every time the device enters listening: a matching `wake_grant`, manual Talk, a `state` of `listening`, or a return to listening after a reply | Rising pair: 523 Hz then 784 Hz, 70 ms each |
+| Thinking | Entering thinking (a `state` of `thinking`), then each repeated `thinking` frame while thinking lasts | One soft 280 ms pulse at 330 Hz |
 | Listening ended | Listening ends in silence with no request (a `quiet` frame), and the device returns to standby | Falling pair: 784 Hz then 523 Hz, 70 ms each |
 | Confirm | A `tone` frame naming `confirm`: the assistant did what was asked and has nothing to say | One note: 1047 Hz, 70 ms |
 | Error | A `tone` frame naming `error`: the assistant could not do it | Two low notes: 262 Hz, 70 ms each, 70 ms apart |
