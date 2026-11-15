@@ -6,7 +6,6 @@ endpointing, capture and the client/driver pipeline run for real."""
 from __future__ import annotations
 
 import asyncio
-import functools
 import json
 import tempfile
 import wave
@@ -596,10 +595,11 @@ async def test_barge_in_stops_the_live_turn(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_closing_the_socket_mid_turn_stops_the_turn(monkeypatch):
+async def test_closing_the_socket_mid_turn_keeps_the_gateway_turn_running(monkeypatch):
     fake = FakeHermes(API_KEY, deltas=("Thinking out loud. ",), hang=True)
     _patch_speech(monkeypatch, _FakeStreamer([b"\x01\x02"]), transcript="go")
-    async with Harness(fake) as client:
+    harness = Harness(fake)
+    async with harness as client:
         ws = await client.ws_connect("/v1/audio/converse", protocols=(VOICE_PROTOCOL, _key_protocol()))
         await ws.send_str(_start_msg())
         assert (await ws.receive_json())["type"] == "ready"
@@ -610,11 +610,17 @@ async def test_closing_the_socket_mid_turn_stops_the_turn(monkeypatch):
             if msg.type == web.WSMsgType.BINARY:
                 break
         await ws.close()
-        for _ in range(100):  # while the server is still up: the close itself must stop the turn
-            if fake.stopped:
+        for _ in range(100):
+            if harness.route.hub.detached:
                 break
-            await asyncio.sleep(0.05)
-        assert fake.stopped == fake.turns and len(fake.turns) == 1
+            await asyncio.sleep(0.01)
+        assert harness.route.hub.detached and not fake.stopped
+        fake.hang = False
+        for _ in range(100):
+            if fake.turns[0]["status"] == "completed":
+                break
+            await asyncio.sleep(0.01)
+        assert fake.turns[0]["status"] == "completed"
 
 
 @pytest.mark.asyncio

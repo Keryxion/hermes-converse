@@ -3,6 +3,29 @@
 Server responsibilities behind the [client contract](client.md).
 What the server records is defined in [server tracing](server_tracing.md).
 
+## Audio transport
+
+Apply `start.audio_format` to both directions as defined in the client spec.
+For Opus, use [libopus](https://opus-codec.org/docs/html_api/group__encoderctls.html)
+with `OPUS_APPLICATION_VOIP`, 24000 bit/s, 20 ms mono
+frames, `OPUS_SET_DTX(1)`, and `OPUS_SET_COMPLEXITY(5)`. Keep microphone codec
+state per socket and reset reply codec state for each turn, separate from the
+conversation. Decode input to PCM16 before the
+existing level, VAD, endpointing and STT pipeline; encode reply PCM after TTS
+resampling to `output_rate`.
+
+Count decoded samples, including DTX silence, for input timing and reply
+pacing; compressed byte lengths do not measure audio duration. Decode tiny
+DTX-only packets as digital silence so comfort noise does not teach the input
+gain. Flush remaining speech and encoder delay
+before `turn_done`; cancellation discards unsent audio. A replacement socket
+gets fresh codecs in its selected format, including for the rest of a live turn.
+
+Verify PCM defaults, Opus opt-in and rates, packet boundaries, a final partial
+frame, DTX silence endpointing and `quiet`, wake pre-roll, concurrent playback
+and barge-in, cancellation followed by another reply, and reconnect during a
+turn with a different format. Repeat the audio acceptance scenarios with Opus.
+
 ## Voice lifecycle
 
 The server receives microphone PCM continuously throughout a granted activation,

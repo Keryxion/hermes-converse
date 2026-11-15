@@ -7,9 +7,9 @@ GET /v1/audio/converse
 ```
 
 Each Arya has a name and uses an existing Hermes conversation, titled
-`<assistant_name>: <device_name>` by default. A WebSocket carries microphone PCM to the server,
+`<assistant_name>: <device_name>` by default. A WebSocket carries microphone audio to the server,
 which handles voice activity detection, endpointing, speech-to-text, and the
-agent turn, then streams reply PCM back. Conversation history persists across
+agent turn, then streams reply audio back. Conversation history persists across
 turns and reconnects; closing the socket does not end the Hermes conversation.
 If the conversation is deleted in Hermes, the next turn reuses a compatible
 conversation with the same title or starts a fresh one, on the open socket or
@@ -54,8 +54,9 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 |---|---|
 | `type` | always `"start"` |
 | `key` | API key (required unless you used the subprotocol) |
-| `input_rate` | sample rate of the PCM you'll send (8000–48000, default 16000) |
-| `output_rate` | sample rate of PCM the server sends back (default 24000) |
+| `audio_format` | `"pcm16"` (default) or `"opus"`, for both directions for this socket. |
+| `input_rate` | microphone sample rate (8000–48000 for PCM16, default 16000) |
+| `output_rate` | reply sample rate (default 24000) |
 | `quiet_interval` | session mode: seconds of silence between turns (0 = off) |
 | `device_name` | The configured device label, such as `Den Echo` or `Kitchen`. Each device keeps its own conversation, titled `<assistant_name>: <device_name>`. |
 | `models` | Boolean; only `true` includes the model catalog in `ready`. Defaults to `false`. See section 11. |
@@ -72,8 +73,9 @@ a profile, and there is no profile-prefixed route.
 For a wake-word client, detect the wake word locally, buffer microphone
 PCM while awaiting arbitration for up to **1000 ms**, and start streaming
 only on a matching grant. Send the buffered audio first, in capture order,
-then live binary PCM16 mono at `input_rate` without a gap or duplication.
-30 ms blocks are ideal (e.g. 480 samples at 16 kHz). Keep streaming throughout
+then live mono audio at `input_rate` without a gap or duplication.
+For PCM16, send little-endian samples; 30 ms blocks are ideal (e.g. 480 samples
+at 16 kHz). For Opus, use the 20 ms packets defined below. Keep streaming throughout
 the granted activation, including thinking and playback (sections 4 and 8).
 A client that does not use wake detection may start streaming after `ready`.
 
@@ -88,9 +90,55 @@ The server replies with `ready`:
 ```
 
 `input.sample_rate` and `output.sample_rate` are the rates in use; play reply
-PCM at `output.sample_rate`. The two timestamps are for clock-skew estimation.
+audio at `output.sample_rate`, decoding Opus first when selected. The two
+timestamps are for clock-skew estimation.
 `session_id` identifies the socket for diagnostics and `recipient_id` identifies
 the device. Treat both as opaque.
+
+### Opt in to Opus
+
+Send `"audio_format": "opus"` in `start` to use Opus in both directions:
+
+```json
+{"type": "start", "key": "<API_SERVER_KEY>", "assistant_name": "Arya",
+ "device_name": "Den Echo", "audio_format": "opus", "input_rate": 16000,
+ "output_rate": 24000}
+```
+
+The corresponding `ready` has these `input` and `output` objects; its other
+fields are unchanged:
+
+```json
+{"input": {"sample_rate": 16000, "format": "opus", "block_ms": 20},
+ "output": {"sample_rate": 24000, "format": "opus", "block_ms": 20}}
+```
+
+Omitting `audio_format` keeps PCM16. Opus accepts rates 8000, 12000, 16000,
+24000 and 48000 in either direction, with the same defaults as PCM16. An unknown
+format or invalid Opus rate closes with `4400 bad_start`; there is no silent
+fallback. The format stays fixed until reconnect.
+
+Each binary WebSocket message is exactly one raw Opus packet containing 20 ms
+of mono audio: 320 samples at 16 kHz, or 480 at 24 kHz. No Ogg, RTP, or additional
+header. Configure each encoder with libopus `OPUS_APPLICATION_VOIP`, a target
+bitrate of 24000 bit/s, DTX enabled, and complexity 5. Packet sizes vary; bitrate
+is a target, not a packet length.
+
+Feed captured samples to the encoder without changing their level. Keep encoding
+and sending every 20 ms of captured audio during an activation, including the
+tiny DTX packets for silence. Do not omit packets: each advances the received
+audio timeline by 20 ms, so endpointing and `quiet` keep working. Flush wake
+pre-roll in capture order as Opus packets before live audio.
+
+Keep microphone codec state across turns and activation gaps on the socket.
+For replies, start fresh encoder/decoder state at the first `speaking` for each
+`turn_id`; further speech in the same turn keeps its state. Reconnect creates
+fresh state in both directions, including for a turn already running. Final
+partial frames are zero-padded; flush encoder delay so the last speech samples
+arrive before `turn_done`. A malformed, non-mono, or non-20-ms input packet
+closes with `4400 bad_audio`. Playback, barge-in, mute, and standby
+follow the same rules for both formats. References to PCM below describe the
+samples before encoding or after decoding; binary messages use `ready`'s format.
 
 Reconnect with the same API key and names to continue the device's conversation.
 Do not automatically resend an utterance whose outcome is unknown: its actions
@@ -216,7 +264,7 @@ Countdowns are unaffected by a command.
 | `transcript` | user input or assistant reply text, identified by `role` and `turn_id`; see below |
 | `thinking` | starts a turn, then repeats every 5 seconds with `tool_calls` and `reasoning_tokens`; refresh inactivity without resetting speaking/playback |
 | `approval_request`, `approval_resolved` | the assistant needs permission before it acts, and when that is settled; see "Approvals" below |
-| `speaking` + binary frames | the reply as PCM16 at `output_rate` |
+| `speaking` + binary frames | mono reply audio in `ready.output.format` at `output_rate` |
 | `interrupted` | the turn was cancelled (you barged in or sent `cancel`); stop playing |
 | `turn_done` | the reply is fully sent; `next_action` tells the client to listen or enter standby after drain |
 | `quiet` | session mode: the stream has been silent for another `quiet_interval` seconds |
@@ -301,6 +349,13 @@ Local echo cancellation may clean the signal, but must preserve user speech.
 Do not replace microphone audio with synthetic silence during playback.
 On unmute, resume live audio only if the activation is still open; never
 replay audio accumulated while muted.
+
+Muting while listening commits what was already said: stop microphone capture,
+send all audio already captured in order, then send `{"commit": true}` before
+stopping upstream audio. This ends the utterance without waiting for more
+silence. With Opus, finish the partial packet and flush encoder delay before
+`commit`. The server ignores a commit with nothing said. Backgrounding and
+muting in standby or during a reply do not send `commit`.
 
 On `interrupted`, stop and discard queued reply audio for that turn, then report
 the state you move to. `turn_done` means the server finished sending, not that

@@ -73,21 +73,28 @@ async def test_scheduled_reply_is_spoken_on_the_attached_device(tmp_path, monkey
         assert not gone.success
 
 
-async def test_closing_the_socket_stops_the_turn_in_flight(tmp_path, monkeypatch):
+async def test_closing_the_socket_keeps_the_turn_in_the_gateway(tmp_path, monkeypatch):
     fake = _patch(monkeypatch)
     fake.hang = True
-    async with Harness(fake, device_store=DeviceStore(tmp_path / "devices.db")) as client:
+    harness = Harness(fake, device_store=DeviceStore(tmp_path / "devices.db"))
+    async with harness as client:
         ws, _ = await _connect(client)
         for chunk in _speech_then_silence_pcm():
             await ws.send_bytes(chunk)
         while not fake.turns:
             await asyncio.sleep(0.01)
         await ws.close()
-        for _ in range(500):
-            if fake.stopped:
+        for _ in range(100):
+            if harness.route.hub.detached:
                 break
             await asyncio.sleep(0.01)
-    assert len(fake.stopped) == 1
+        assert harness.route.hub.detached and not fake.stopped
+        fake.hang = False
+        for _ in range(100):
+            if fake.turns[0]["status"] == "completed":
+                break
+            await asyncio.sleep(0.01)
+        assert fake.turns[0]["status"] == "completed"
 
 
 async def test_a_socket_cannot_name_its_own_conversation(tmp_path, monkeypatch):

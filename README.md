@@ -25,6 +25,9 @@ Requirements: the `api_server` platform enabled with an `API_SERVER_KEY`, an STT
 through the one-shot path, a provider with a chunked API such as ElevenLabs or OpenAI gives the
 lowest latency). The plugin declares `numpy` and `av` (PyAV); Hermes installs them when you enable it.
 
+Opus sessions also require the system libopus shared library (`apt install libopus0`
+on Debian/Ubuntu, `brew install opus` on macOS). PCM sessions do not load it.
+
 ## Talk to it
 
 Dial `ws://<host>:<port>/v1/audio/converse` and send one `start` frame first:
@@ -50,6 +53,13 @@ selection remain available.
 
 Wait for `ready` before streaming audio. It returns `assistant_name`, `device_name`, and
 `recipient_id` directly.
+
+Add `"audio_format": "opus"` to `start` to opt in for both microphone and reply
+audio; omitting it keeps PCM16. Opus uses one raw 20 ms mono packet per binary
+WebSocket message, VOIP, 24 kbps, DTX, and complexity 5. Send silence packets too
+so endpointing and `quiet` retain their audio timing. `ready.input.format` and
+`ready.output.format` confirm the selection. See [the client spec](specs/client.md#opt-in-to-opus)
+for sample rates and codec state across turns.
 
 For wake-word clients, detect the wake word locally, send `wake`, and buffer all microphone
 PCM while awaiting arbitration for up to **1000 ms**. Only a matching grant starts streaming:
