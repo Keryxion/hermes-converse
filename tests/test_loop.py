@@ -227,6 +227,42 @@ def test_client_commit_ends_capture_even_when_smart_turn_would_hold(wake):
     assert _captured_blocks(session, wav_path) == 4
 
 
+def test_push_to_talk_ignores_silence_and_smart_turn_until_commit():
+    """The talk control ends the utterance, not the audio: 40 blocks of silence — far past
+    ``max_silence_blocks`` — must not endpoint, and Smart Turn is never consulted."""
+    det = _ScriptedDetector([0.99])  # would commit on the first ask
+    session = _adaptive_session(det, endpoint_blocks=2, max_silence_blocks=4)
+    session._push_to_talk = True
+    _feed_speech(session, 5)
+    _feed_silence(session, 40)
+    session.commit()
+    wav_path, _volume = asyncio.run(session._capture())
+    assert det.calls == 0
+    assert _captured_blocks(session, wav_path) == 5 + 40 + 1  # the commit marker
+
+
+def test_without_push_to_talk_the_same_silence_endpoints():
+    """Control for the test above: the fixed/smart endpointer still ends a non-PTT capture."""
+    det = _ScriptedDetector([0.0])
+    session = _adaptive_session(det, endpoint_blocks=2, max_silence_blocks=4)
+    _feed_speech(session, 5)
+    _feed_silence(session, 40)
+    wav_path, _volume = asyncio.run(session._capture())
+    assert _captured_blocks(session, wav_path) == 5 + 4
+
+
+def test_push_to_talk_uses_the_same_utterance_cap():
+    """The talk control changes the endpoint, not the capture's memory backstop."""
+    assert ConverseSession(np, push_to_talk=True)._max_blocks == vad.MAX_UTTERANCE_MS // 30
+
+
+def test_push_to_talk_start_flag_requires_literal_true():
+    assert cl.parse_push_to_talk({"push_to_talk": True}) is True
+    for raw in (False, "true", 1, "yes", None):
+        assert cl.parse_push_to_talk({"push_to_talk": raw}) is False
+    assert cl.parse_push_to_talk({}) is False
+
+
 @pytest.mark.asyncio
 async def test_commit_queued_with_speech_before_onset_still_transcribes():
     """PCM and commit can both reach the stream before the worker detects onset."""

@@ -416,8 +416,12 @@ class ConverseSession:
         endpoint_max_silence_ms: int = DEFAULT_ENDPOINT_MAX_SILENCE_MS,
         vad_model: str = DEFAULT_VAD_MODEL,
         capture_no_data_seconds: float = DEFAULT_CAPTURE_NO_DATA_SECONDS,
+        push_to_talk: bool = False,
     ) -> None:
         self._np = np
+        # Push to talk: the client's talk control delimits the utterance, so silence and Smart Turn
+        # never end a capture — only the client's ``commit`` does.
+        self._push_to_talk = bool(push_to_talk)
         self._state_lock = threading.RLock()
         self.session_id = uuid.uuid4().hex  # echoed in `ready`, joinable across client/server traces
         self.device_name: Optional[str] = None  # trace only; set by the route
@@ -985,7 +989,8 @@ class ConverseSession:
         generation = self._generation
         recorder = recorder or PhaseRecorder()
         with recorder.phase("voice.capture", **{
-                "endpoint.mode": "smart_turn" if self._turn_detector is not None else "fixed",
+                "endpoint.mode": ("push_to_talk" if self._push_to_talk
+                                  else "smart_turn" if self._turn_detector is not None else "fixed"),
                 "endpoint.silence_ms": self._blocks_ms(self._endpoint_blocks),
                 "endpoint.max_silence_ms": self._blocks_ms(self._max_silence_blocks),
                 "endpoint.wake": wake,
@@ -1020,6 +1025,7 @@ class ConverseSession:
         for that maximum, so the user may pause after the wake word. Client ``commit`` ends it at once.
         A capture that reaches ``MAX_UTTERANCE_MS`` ends at its last pause of ``PAUSE_MS``, and what
         followed that pause goes back to the stream to begin the next capture.
+        In push-to-talk mode neither silence nor Smart Turn ends it: only ``commit`` does.
 
         The blocks are heard on the audio thread, as many as have arrived at a time; those after
         the block that decides go back to the stream.
@@ -1119,7 +1125,9 @@ class ConverseSession:
                     c.split = len(c.frames) - 1 - c.quiet // 2  # the middle of that pause
                 c.quiet, c.next_check = 0, self._endpoint_blocks
                 c.speech_blocks += 1
-            if not decide:
+            if not decide or self._push_to_talk:
+                # The talk control, not the audio, ends a push-to-talk utterance: `commit` is the
+                # only natural endpoint. The utterance cap still applies above.
                 continue
             if c.quiet >= self._max_silence_blocks:
                 return i + 1, "max_silence"
@@ -1187,6 +1195,11 @@ def parse_quiet_interval(raw: Any) -> float:
     except (TypeError, ValueError):
         return 0.0
     return 0.0 if val <= 0 else min(val, QUIET_INTERVAL_MAX)
+
+
+def parse_push_to_talk(frame: dict[str, Any]) -> bool:
+    """The push-to-talk opt-in from the ``start`` frame. Only a literal ``true`` enables it."""
+    return frame.get("push_to_talk") is True
 
 
 def parse_start_config(frame: dict[str, Any]) -> tuple[int, int, float]:
