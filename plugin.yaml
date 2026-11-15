@@ -72,9 +72,9 @@ config_schema:
     description: "Drop a partial capture after this many seconds without incoming audio; 0 disables. Received silence and idle quiet accounting are unaffected."
   approval_choice:
     type: str
-    choices: [deny, once]
+    choices: [deny, once, ask]
     default: deny
-    description: "What a voice turn answers when the agent asks for a command approval."
+    description: "What a voice turn answers when the agent asks for a command approval; ask asks the person."
   api_base_url:
     type: str
     default: ""
