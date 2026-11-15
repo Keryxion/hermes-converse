@@ -1027,7 +1027,9 @@ def test_continuation_and_later_fresh_input_are_both_preserved(monkeypatch):
     session.begin_turn('busy', tts_stop=threading.Event(), on_interrupt=tripped.set)
     session.start()
     try:
-        for pcm in (calibration(), speech_like(5000, seed=4)):
+        # A thinking turn is cancelled at the transcript, not at the onset (wake phrase/echo must not
+        # kill it), so the capture has to end for the cancel to land.
+        for pcm in (calibration(), speech_like(5000, seed=4), silence(1.8)):
             session.stream.feed(pcm.tobytes())
         assert tripped.wait(3)
         session.end_turn()
@@ -1402,3 +1404,37 @@ def test_answer_taken_ends_the_wait_before_it_is_settled():
     assert not session.awaiting_answer()
     session.answer_hook = None
     assert not session.awaiting_answer()
+
+
+# ── a wake word is not a cancel (issue 135) ──
+
+def test_onset_while_thinking_does_not_cancel_the_turn():
+    """Nothing is playing during thinking, so an onset has nothing to cut: the running turn must
+    survive its own wake word / trailing audio and finish instead of dying before its first delta."""
+    session = ConverseSession(np)
+    session.begin_turn("t1", tts_stop=threading.Event())
+    assert session._turn_active.is_set()
+    assert session._cancels_on_onset("thinking", wake=False) is False
+    assert session._cancels_on_onset("thinking", wake=True) is False
+
+
+def test_onset_during_playback_still_barges_in():
+    session = ConverseSession(np)
+    session.begin_turn("t1", tts_stop=threading.Event())
+    session.set_playing(True, tts_stop=threading.Event())
+    assert session._cancels_on_onset("speaking", wake=False) is True
+
+
+def test_wake_only_capture_does_not_cancel_playback():
+    """The wake phrase alone is not a request. The utterance path cancels once a transcript exists."""
+    session = ConverseSession(np)
+    session.begin_turn("t1", tts_stop=threading.Event())
+    session.set_playing(True, tts_stop=threading.Event())
+    assert session._cancels_on_onset("speaking", wake=True) is False
+    assert session._interrupted.is_set() is False
+
+
+def test_onset_with_no_active_turn_never_cancels():
+    session = ConverseSession(np)
+    assert session._cancels_on_onset("speaking", wake=False) is False
+    assert session._cancels_on_onset("idle", wake=False) is False

@@ -540,16 +540,16 @@ class ConverseSession:
                                  and time.monotonic() >= self.playback_until + APPROVAL_LISTEN_GRACE_SECONDS)
                     playing = (self.playing() or self._tail_active) and not answering
                     phase = self._detector.feed(data, playing, interrupting=busy and not answering)
+                    reply_phase = ("answer" if answering
+                                   else "drain" if self._tail_active else "speaking" if playing
+                                   else "thinking" if self._turn_active.is_set()
+                                   else "pending" if busy else "idle")
                     if self._barge is not None:
                         self._barge.add(self._block * 1000 / self._input_rate,
                                         getattr(self._detector, "level", None),
                                         getattr(self._detector, "probability", None),
                                         getattr(self._detector, "threshold", None))
                     if phase is not None:
-                        reply_phase = ("answer" if answering
-                                       else "drain" if self._tail_active else "speaking" if playing
-                                       else "thinking" if self._turn_active.is_set()
-                                       else "pending" if busy else "idle")
                         logger.info("converse onset: session=%s turn=%s detector=%s reply_phase=%s probability=%s",
                                     self.session_id, self._active_turn_id, self._detector.name, reply_phase,
                                     getattr(self._detector, 'probability', None))
@@ -578,11 +578,14 @@ class ConverseSession:
                         self._pending_turn.set()
                     self._cancelled.clear()
                     # Latch capture ownership BEFORE cancellation can finalize the old turn.
+                    defer_cancel = False
                     if self._tail_active:
                         self._interrupt_tail()
                         self.end_playback_tail("interrupted")
-                    elif self._turn_active.is_set() and self.answer_hook is None:
+                    elif self._cancels_on_onset(reply_phase, wake):
                         self._trigger_barge_in()
+                    else:
+                        defer_cancel = self._defers_cancel_until_transcript(reply_phase, wake)
                     capture_generation = self._generation
                     recorder = PhaseRecorder(input_rate=self._input_rate, session_mode=self._quiet_interval > 0,
                                              **{"session.id": self.session_id, "input.continuation": busy})
@@ -612,6 +615,9 @@ class ConverseSession:
                         if interrupt is not None:
                             interrupt.resolve("empty")
                     elif transcript:
+                        if defer_cancel:
+                            # Real words arrived: the turn they landed in is superseded, so cut it now.
+                            self._trigger_barge_in()
                         if self._managed:
                             self._pending_turn.set()
                         utterance = Utterance(transcript, recorder)
@@ -803,6 +809,29 @@ class ConverseSession:
         turn_trace = self._trace_of_active_turn()
         if turn_trace is not None:
             turn_trace.event("interrupt", **{"interrupt.cause": "cancel", "interrupt.phase": phase})
+
+    def _cancels_on_onset(self, reply_phase: str, wake: bool) -> bool:
+        """Cancel immediately on this onset?
+
+        Only reply audio that is actually playing can be interrupted, and a granted wake-word
+        capture is never a request by itself — treating the wake word as a cancel killed turns
+        before their first delta.
+        """
+        if wake or self.answer_hook is not None:
+            return False
+        return self._turn_active.is_set() and reply_phase == "speaking"
+
+    def _defers_cancel_until_transcript(self, reply_phase: str, wake: bool) -> bool:
+        """Hold the cancel until the capture transcribes to something.
+
+        A thinking turn has no audio to cut, and the wake phrase alone is not a request, so neither
+        may kill the turn on the onset. If real words arrive, the turn is cancelled once they are in
+        hand: superseded work is gone either way, the difference is whether a trailing fragment or
+        the wake word alone can destroy a reply nobody has heard yet.
+        """
+        if self.answer_hook is not None or not self._turn_active.is_set():
+            return False
+        return wake or reply_phase == "thinking"
 
     @_session_state
     def _trigger_barge_in(self) -> None:
