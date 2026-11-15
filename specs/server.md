@@ -203,6 +203,10 @@ bypassing Smart Turn and the wake pause. The utterance limit still applies.
 The utterance limit (60 s) is a memory backstop, not an endpoint. It must never
 be short enough to cut ordinary speech: a person explaining something for twenty
 seconds is one request, and truncating it silently drops half the sentence.
+A capture that reaches the limit ends at its last pause, a quiet stretch of
+300 ms or more that the person spoke through. What followed that pause begins
+the next capture, so no word is cut or lost. With no pause to end at, it ends at
+the limit. Either way the reason is `max_utterance`.
 Capture traces record the endpoint mode, windows, wake flag, end reason, final
 pause, and longest pause spoken through. A failed/empty STT result starts no
 run and releases capture ownership. Continue listening within an open activation.

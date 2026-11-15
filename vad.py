@@ -69,6 +69,8 @@ PRE_ROLL_MS = 1200
 # silently truncates the request. The endpointer decides when a turn ended; this only stops an
 # unbounded capture.
 MAX_UTTERANCE_MS = 60_000
+# Quiet this long is a pause. A capture that reaches the cap ends at its last one, not mid-word.
+PAUSE_MS = 300
 
 
 def rms(np: Any, data: Any) -> float:

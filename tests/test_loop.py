@@ -136,6 +136,30 @@ def test_fixed_endpoint_ends_at_first_candidate_pause():
     assert _captured_blocks(session, wav_path) == 3 + session._endpoint_blocks
 
 
+def test_a_capture_at_the_cap_ends_at_its_last_pause_and_the_rest_is_heard_again():
+    session = _adaptive_session(_ScriptedDetector([0.0]), endpoint_blocks=24, max_silence_blocks=100, max_blocks=60)
+    pause = session._pause_blocks + 2
+    _feed_speech(session, 30)
+    _feed_silence(session, pause)
+    _feed_speech(session, 40)
+    wav_path, _volume = session._capture()
+    assert _captured_blocks(session, wav_path) == 30 + pause // 2  # ends in the middle of the pause
+    rest = session.stream.ready_blocks(session._block)
+    assert len(rest) == pause - pause // 2 + 40  # nothing lost, nothing heard twice
+    assert not np.any(rest[0]) and np.any(rest[pause - pause // 2])
+
+
+def test_a_capture_at_the_cap_with_no_pause_ends_at_the_cap():
+    session = _adaptive_session(_ScriptedDetector([0.0]), endpoint_blocks=24, max_silence_blocks=100, max_blocks=60)
+    short = session._pause_blocks - 1
+    _feed_speech(session, 30)
+    _feed_silence(session, short)  # too short to be a pause
+    _feed_speech(session, 40)
+    wav_path, _volume = session._capture()
+    assert _captured_blocks(session, wav_path) == 60
+    assert len(session.stream.ready_blocks(session._block)) == 30 + short + 40 - 60
+
+
 @pytest.mark.parametrize("smart_turn", [False, True])
 def test_wake_pause_waits_for_the_request(smart_turn):
     det = _ScriptedDetector([0.9]) if smart_turn else None
@@ -997,6 +1021,32 @@ def test_accepted_barge_in_is_captured_in_every_phase(monkeypatch, phase):
         assert len(calls) == 1
         if phase != 'tail':
             assert stop.is_set()
+    finally:
+        session.stop()
+
+
+def test_talk_past_the_cap_is_split_at_a_pause_with_nothing_lost():
+    lengths = []
+
+    def transcribe(path):
+        with wave.open(path, 'rb') as wav:
+            lengths.append(wav.getnframes() / wav.getframerate())
+        return 'part'
+
+    session = ConverseSession(np, transcribe=transcribe)
+    session._max_blocks = 10_000 // vad.BLOCK_MS  # a 10 s cap keeps the test short
+    session.start()
+    try:
+        for pcm in (calibration(), speech_like(5000, seconds=8, seed=31), silence(0.45),
+                    speech_like(5000, seconds=8, seed=32), silence(1.8)):
+            session.stream.feed(pcm.tobytes())
+        assert session.transcripts.get(timeout=5) == 'part'
+        assert session.transcripts.get(timeout=5) == 'part'
+        with pytest.raises(_queue.Empty):
+            session.transcripts.get(timeout=1)
+        first, second = lengths
+        assert 8 < first < 9.9  # ended at the pause after the first 8 s, not at the cap
+        assert first + second >= 16.4  # both stretches of speech and the pause between them
     finally:
         session.stop()
 
