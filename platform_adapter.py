@@ -26,6 +26,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from functools import wraps
 from typing import Any, Callable, Optional
 
 from gateway.config import Platform, PlatformConfig
@@ -127,6 +128,37 @@ class ConverseAdapter(BasePlatformAdapter):
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         return None  # the socket's own ``thinking`` frames report progress
 
+    def set_message_handler(self, handler) -> None:
+        @wraps(handler)
+        async def handle(event):
+            turn = self._own(event)
+            # Idle turns already have an adapter lifecycle. Hermes's shared busy
+            # observer calls the handler without one, then sends the result itself.
+            if turn is None or turn.started:
+                return await handler(event)
+            outcome = ProcessingOutcome.FAILURE
+            try:
+                response = await handler(event)
+                if not turn.done.is_set() and not turn.stopped:
+                    text, _ttl = self._unwrap_ephemeral(response)
+                    self._finish_text(turn, text or "")
+                outcome = ProcessingOutcome.SUCCESS
+                # The voice callback consumed the final. Do not also publish it as
+                # proactive output behind the voice turn that was waiting for it.
+                return None
+            except asyncio.CancelledError:
+                outcome = ProcessingOutcome.CANCELLED
+                raise
+            finally:
+                if not turn.done.is_set():
+                    self._complete_voice_turn(turn, outcome)
+
+        # BasePlatformAdapter recognizes the runner's session authority through
+        # the bound handler. Preserve that identity so busy inputs still use its
+        # durable queue rather than the legacy pending-message slot.
+        handle.__self__ = getattr(handler, "__self__", None)
+        super().set_message_handler(handle)
+
     # ── conversation identity ──
     def source_for(self, *, chat_id: str, title: str, recipient_id: str, device_name: str):
         return self.build_source(chat_id=chat_id, chat_name=title, chat_type="dm",
@@ -198,10 +230,8 @@ class ConverseAdapter(BasePlatformAdapter):
             if turn.event is event or (event.message_id and event.message_id in (
                     turn.event.message_id, turn.admitted_id)):
                 return turn
-            # A turn submitted while the chat was still busy (our own /model command, say) waits in
-            # the gateway's durable queue, which replays it as a new event whose id is the
-            # admission id. Adopt that replay, or its reply is dropped and the device waits out the
-            # turn timeout.
+            # Some Hermes queue paths reconstruct the event with an admission id.
+            # Keep ownership of a matching replay until it completes or is abandoned.
             if (not turn.started and not turn.admitted_id and event.message_id
                     and not event.get_command() and event.text == turn.event.text):
                 turn.admitted_id = str(event.message_id)
@@ -253,13 +283,16 @@ class ConverseAdapter(BasePlatformAdapter):
         if turn is None:
             self._server_turns.pop(chat_id, None)
         else:
-            turn.outcome = outcome
-            turn.done.set()
-            if turn.detached and turn.held_text.strip():
-                self._hub.publish(chat_id, turn.held_text.strip(), f"held:{uuid.uuid4().hex}",
-                                  expires_at=time.time() + OUTPUT_TTL)
-            for key in (str(turn.event.message_id or ""), turn.admitted_id):
-                self._abandoned.pop(key, None)
+            self._complete_voice_turn(turn, outcome)
+
+    def _complete_voice_turn(self, turn: _VoiceTurn, outcome: ProcessingOutcome) -> None:
+        turn.outcome = outcome
+        turn.done.set()
+        if turn.detached and turn.held_text.strip():
+            self._hub.publish(turn.event.source.chat_id, turn.held_text.strip(), f"held:{uuid.uuid4().hex}",
+                              expires_at=time.time() + OUTPUT_TTL)
+        for key in (str(turn.event.message_id or ""), turn.admitted_id):
+            self._abandoned.pop(key, None)
 
     # ── outbound ──
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,

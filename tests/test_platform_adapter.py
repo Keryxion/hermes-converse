@@ -98,6 +98,29 @@ async def test_unstreamed_final_is_spoken(rig):
     assert spoken == ["Four."] and result.reply == "Four."
 
 
+async def test_handler_failure_without_processing_hooks_settles_the_voice_turn(rig, monkeypatch):
+    """The busy observer reports errors without calling on_processing_complete."""
+    turns, _ = await _turns(rig)
+
+    async def handler(event):
+        raise RuntimeError("gateway failed")
+
+    async def observer(event, session_key):
+        try:
+            await rig.adapter._message_handler(event)
+        except RuntimeError:
+            pass  # the real busy observer logs/notifies the handler error
+        finally:
+            rig.adapter._active_sessions.pop(session_key, None)
+
+    rig.adapter.set_message_handler(handler)
+    monkeypatch.setattr(rig.adapter, "_process_message_background", observer)
+    spoken = []
+    result = await asyncio.wait_for(turns.run_turn(text="2+2", on_delta=spoken.append), 2)
+    assert result.status == "failed" and result.error == "agent run failed"
+    assert not spoken and turns.settled and not rig.adapter._abandoned
+
+
 async def test_turn_replayed_by_the_busy_queue_is_still_spoken(rig, monkeypatch):
     """A turn that reaches a still-busy chat (right after our own /model command) waits in the
     gateway's durable queue, which replays it as a new event whose id is the admission id."""
