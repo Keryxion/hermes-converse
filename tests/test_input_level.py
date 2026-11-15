@@ -102,3 +102,23 @@ def test_quiet_speech_is_heard_on_an_echo_floor(monkeypatch, attenuation_db, gai
         assert heard == "heard", f"speech {attenuation_db} dB down over the Echo's floor was not captured"
     else:
         assert heard is None, "expected the ungained Echo level to be missed (the bug this fixes)"
+
+
+def test_a_devices_floor_carries_over_to_its_next_session(monkeypatch, tmp_path):
+    """An Echo reconnects on every server restart: its next session starts from the floor it had."""
+    store = tmp_path / "input-levels.json"
+    monkeypatch.setattr(level, "_store_path", lambda: store)
+    monkeypatch.setattr(level, "_floors", None)
+    first = InputLevel(np)
+    first.attach("Den Echo")
+    for i in range(40):
+        first.apply(block(3, i), learn=True)
+    learned = first.gain
+    assert learned > 5 and store.is_file()
+    monkeypatch.setattr(level, "_floors", None)            # a server restart: read back from the file
+    second = InputLevel(np)
+    second.attach("Den Echo")
+    assert second.gain == pytest.approx(learned, rel=0.2)
+    other = InputLevel(np)
+    other.attach("Kitchen")
+    assert other.gain == 1.0

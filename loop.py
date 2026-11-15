@@ -504,6 +504,10 @@ class ConverseSession:
         wakes a capture that is waiting for audio."""
         self.stream.feed(self._np.zeros(self._block, dtype=self._np.int16).tobytes(), commit=True)
 
+    def attach_device(self, device_name: Optional[str]) -> None:
+        """The device this session's microphone belongs to: its input gain starts from what was learned before."""
+        self._level.attach(device_name)
+
     @_session_state
     def note_wake(self, claim_id: Optional[str] = None) -> None:
         """A wake was granted: the next capture waits through a pause after the wake word."""

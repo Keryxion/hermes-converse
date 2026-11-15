@@ -35,9 +35,11 @@ Streaming, buffering on a wake word, and mute are in
 The server brings the session's input to the level its speech detection,
 endpointing and transcription expect, on its own copy:
 
-- One gain per session, learned from the quiet end of the room's level while
-  the session is idle. A microphone whose room floor is already at a normal
-  level keeps it; a quieter one is raised, up to +40 dB.
+- One gain per device, learned from the quiet end of the room's level while
+  its session is idle. A microphone whose room floor is already at a normal
+  level keeps it; a quieter one is raised, up to +40 dB. The server keeps what
+  it learned per `device_name`, across reconnects and its own restarts, so a
+  device's first request after either is heard at its usual level.
 - The gain is held while a capture, a turn, or a reply is under way. A voice
   raised over a reply stays louder than the reply's echo by as much as it was
   at the microphone, and a word is not louder at its end than at its start.

@@ -369,6 +369,8 @@ class ConverseRoute:
             adopted.relay.attach(ws)
         device_name = named[0].device_name if named is not None else name
         session.device_name = device_name
+        if hasattr(session, "attach_device"):
+            session.attach_device(device_name)
         connection_trace = _connection_trace(ws)
         if connection_trace is not None:
             connection_trace.set(**{"session.id": session.session_id, "device_name": device_name})
