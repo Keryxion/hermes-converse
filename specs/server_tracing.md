@@ -59,7 +59,7 @@ carries:
 
 | Attribute | Value |
 |---|---|
-| `drain.end` | How it ended: `drained` (the device reported it), `timeout` (no report within `playback_tail_timeout_seconds`), `interrupted`, or `disconnected`. |
+| `drain.end` | How it ended: `reported` (the device's `state` left `speaking`), `timeout` (no report within `playback_tail_timeout_seconds`), `interrupted`, or `disconnected`. |
 | `drain.wait_ms` | How long the device took to report, from the last PCM sent. |
 
 A `timeout` means the device never said it finished.
@@ -147,7 +147,7 @@ to stop the reply, and it was not speech.
 
 A sound that does not interrupt leaves no event, so record a summary on every
 `voice.turn` that sent reply audio, covering the time from the first PCM sent to
-`drained`:
+the device leaving `speaking`:
 
 | Attribute | Value |
 |---|---|
@@ -183,7 +183,7 @@ audio.
    history.
 6. A turn produces `voice.turn` with its five phases at their measured times,
    carrying its device, session, and turn.
-7. A reply played to the end records `voice.drain` ending `drained`; a device
+7. A reply played to the end records `voice.drain` ending `reported`; a device
    that never reports records `timeout`.
 8. Four devices claim one phrase, none of them exporting: one election span with
    four claim events naming the four devices, one `granted`, three `denied`, and

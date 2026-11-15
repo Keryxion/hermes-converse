@@ -51,7 +51,7 @@ baseline. A brief click, room noise, or soft incidental speech must not repeated
 cancel a reply. Model failure falls back to the energy detector without ending the
 socket. Onset acceptance is separate from the decision to capture its words.
 
-Once capture owns input, old completion, cancellation, `drained`, and tail timeout
+Once capture owns input, old completion, cancellation, the client's state report, and tail timeout
 must not clear its audio, pre-roll, or pending transcript. An old `standby` call must not
 put a client into standby over an accepted continuation. Fence discarded or
 superseded output: it must not send more PCM or create another agent run. Settle
@@ -193,7 +193,8 @@ holds the backlog. Track where the client's queued audio ends; before sending a
 chunk, wait until that is at most 1.5 s ahead of now. If it is already in the
 past (TTS was slower than real time), restart from now. Send the first chunks
 without delay, stop waiting as soon as the turn is interrupted, and do not count
-pacing waits toward the turn timeout. `drained` remains the end of playback.
+pacing waits toward the turn timeout. The client leaving `speaking` remains the
+end of playback.
 
 `thinking` progress is measured, never estimated. `tool_calls` counts the turn's
 tool calls as each starts. `reasoning_tokens` sums the provider-reported count of
@@ -206,13 +207,14 @@ each piece of reply text when it is submitted for speech, before the PCM that
 speaks it, and never hold PCM back for it. After the last piece, send a closing frame with empty
 text and the message's `message_id`. Distinguish generated text,
 PCM sent, and client playback drain. `turn_done`
-means sending finished. `drained` means playback finished or was discarded; it
-cannot prove the user heard the response. An interruption records that a reply
+means sending finished. The client's `state` leaving `speaking` means playback
+finished or was discarded; it cannot prove the user heard the response. An interruption records that a reply
 was cut short, not that a device acknowledged failed delivery. Agent-facing
 context must not describe a generated or transmitted response as heard.
 
-After `turn_done`, retain playback protection until matching `drained` or the
-bounded fallback timeout. A tail interruption updates the same turn to `listen`;
+After `turn_done`, retain playback protection until the client reports a state
+other than `speaking` for that turn, or the bounded fallback timeout. Ignore a
+report for another turn. A tail interruption updates the same turn to `listen`;
 it does not create another reply for that turn. Quiet advisories count received
 idle silence, never wall time or time occupied by a reply/capture. Restart the
 count on speech onset, turn start and end, playback drain, and when received
@@ -456,7 +458,7 @@ Send `{"type":"tone","tone":"confirm"}` to the device. The agent's tool plays `c
 and `error`; the third tone, `approval`, is sent by the server itself when it
 asks for an approval. A tone plays before any
 speech from the same turn. It is not a reply: it has no `turn_id`, and the
-device sends no `drained` for it.
+device reports no state for it.
 
 ### `standby`
 
@@ -509,32 +511,39 @@ nothing for that.
 nobody ends it. Send it in each `countdown` frame as `ring_seconds`; the device
 enforces it.
 
-Keep a countdown until its device sends `drained` for it, or until its deadline
-plus the ring timeout has passed. Send a device its countdowns again after
+Keep a countdown until its device sends `countdown` with `ended` for it, or
+until its deadline plus the ring timeout has passed. A device's `countdown` with
+`ringing` says it is ringing there (client spec, section 10); it started at its
+deadline. Send a device its countdowns again after
 `ready`, so one that reconnects or restarts shows them. The server does not ring
 anything itself and does not send a frame at the deadline.
 
 ### Still ringing
 
-While a countdown rings and the device has not sent `drained`, start a turn in
-that device's conversation at 1, 2, 4, 8 minutes after the deadline, doubling,
-until the alarm ends. With the default timeout that is four turns. Each says
-which countdown is ringing and for how long, so the agent can do more each time:
-say something in the room, tell another room, or tell the owner elsewhere.
+Once a device reports a countdown ringing, start a turn in that device's
+conversation at 1, 2, 4, 8 minutes after its deadline, doubling, until it
+ends. With the default timeout that is four turns. Each says which countdowns
+are ringing and for how long, so the agent can do more each time: say something
+in the room, tell another room, or tell the owner elsewhere.
+
+When several ring on one device, run one sequence for the device, timed from the
+earliest deadline among them, and name every ringing countdown in each turn. When that one ends, time the sequence from the next. No turn starts once
+none is ringing.
 
 The turn is an ordinary message submitted to the gateway session. Its reply is
 spoken on the device like any other, or not at all when the agent calls
-`speak_this` with `""`. No turn starts after `drained`. A snooze starts the sequence again
-from the new deadline.
+`speak_this` with `""`. A snooze starts the sequence again once the countdown
+rings again.
 
 ### Stopping by voice
 
-A ringing alarm is ended on the device, by its `cancel` wake word (client spec,
-section 10). The server does not listen for a stop phrase and sends nothing to
-end an alarm by voice; it learns the alarm ended from `drained`.
+A ringing countdown is ended on the device, by its `cancel` wake word (client
+spec, section 10). The server does not listen for a stop phrase and sends
+nothing to end a countdown by voice; it learns the countdown ended from the
+device's `countdown` with `ended`.
 
-The assistant's wake word followed by a request is an ordinary turn. The alarm
-keeps its place: the agent ends it with `cancel` or `snooze`, or leaves it
+The assistant's wake word followed by a request is an ordinary turn. The
+countdown keeps its place: the agent ends it with `cancel` or `snooze`, or leaves it
 ringing.
 
 Acceptance scenarios: a countdown set in the Kitchen counts down and rings only in
@@ -543,4 +552,6 @@ not attached, a reconnect before the deadline, a device that is off at the
 deadline, local dismissal, the `cancel` wake word, other speech while ringing, a
 reply and a wake word while ringing, snooze while pending and while ringing,
 cancel while ringing, still-ringing turns at 1, 2, 4 and 8 minutes and none
-after `drained`, and the ring timeout from the setting.
+after `ended`, two countdowns ringing at once (one turn naming both, a
+dismissal ending both, one cancelled while the other rings), a reconnect while
+ringing, and the ring timeout from the setting.

@@ -30,7 +30,7 @@ DEFAULT_ARBITRATE_WAKE_WINDOW_SECONDS = DEFAULT_WAKE_WINDOW
 # turn_done, and returns to listening. A turn that keeps working is never cut off by it.
 DEFAULT_TURN_TIMEOUT = 120.0
 # How long the server keeps the "playback tail" state — turn_done sent, waiting for the client's
-# `drained` — before resuming quiet/VAD on its own. Only a backstop for a client that never sends it.
+# state to leave `speaking` — before resuming quiet/VAD on its own. Only a backstop for a client that never sends it.
 DEFAULT_TAIL_FALLBACK = 45.0
 # Safety cap on how much of ONE reply is ever synthesized, so a runaway reply (a model ignoring the
 # brevity prompt, a tool result read aloud) can't play for minutes.

@@ -113,7 +113,8 @@ All are JSON text frames:
 | `{"commit": true}` | Ends the current utterance now, with the audio already sent (runs a turn on it). |
 | `{"type": "cancel", "turn_id": "..."}` | Cancels the **current** turn — stops TTS and the agent — but keeps the socket, session, and history alive. |
 | `{"type": "wake", "claim_id": "...", "wake_word": "Hey Arya"}` | request an advisory wake decision while buffering the new activation locally; see section 8. |
-| `{"type": "drained", "turn_id": "..."}` | Tells the server the reply's last audio has left the speaker, so the server won't transcribe its own echo as a new turn. |
+| `{"type": "state", "turn_id": "...", "state": "listening"}` | The state the device now shows; see "The turn's state" in section 4. |
+| `{"type": "countdown", "countdown_id": "...", "ringing": true}` | A countdown is ringing, or with `ended` has ended; see section 10. |
 | `{"type": "commands"}` | Ask which commands the server runs; see "Commands" below. |
 | `{"type": "command", "name": "new"}` | Run a Hermes command for this device's conversation, such as starting a fresh one; see "Commands" below. |
 | `{"type": "say", "text": "..."}` | Speaks the given text (trimmed, at most 400 characters) as a reply of its own: `thinking`, `speaking` + PCM, then `turn_done` with `next_action: "standby"`. No agent turn runs and nothing is added to the conversation. For fixed device prompts such as a spoken help reminder. Empty or non-string text is ignored. |
@@ -219,7 +220,7 @@ Countdowns are unaffected by a command.
 | `turn_done` | the reply is fully sent; `next_action` tells the client to listen or enter standby after drain |
 | `quiet` | session mode: the stream has been silent for another `quiet_interval` seconds |
 | `error` | the turn failed (spoken-safe text) |
-| `{"type":"tone","tone":"confirm"}` | Play the named tone (see `tones.md`): `confirm` or `error` when the assistant chooses to, `approval` just before the server asks for an approval. It is not a reply: no `turn_id`, no `drained`. |
+| `{"type":"tone","tone":"confirm"}` | Play the named tone (see `tones.md`): `confirm` or `error` when the assistant chooses to, `approval` just before the server asks for an approval. It is not a reply: no `turn_id`, and the device reports no state for it. |
 | `countdown`, `countdown_cancel` | Start, extend, or cancel a countdown that ends with a tone (section 10). |
 
 These are the only server frames, apart from `model_changed` and `model_error`
@@ -287,11 +288,10 @@ Do not replace microphone audio with synthetic silence during playback.
 On unmute, resume live audio only if the activation is still open; never
 replay audio accumulated while muted.
 
-On `interrupted`, stop and discard queued reply audio for that turn. Send
-`drained` after its audio has actually left the speaker or been discarded.
-`turn_done` means the server finished sending, not that playback drained.
-`drained` acknowledges playback completion or discard, not that a person heard
-the reply.
+On `interrupted`, stop and discard queued reply audio for that turn, then report
+the state you move to. `turn_done` means the server finished sending, not that
+playback drained. Leaving `speaking` says playback finished or was discarded,
+not that a person heard the reply.
 For `next_action = "standby"` or a local decision to end the activation, finish
 playback/drain handling and then stop upstream audio and return to wake
 detection; do not cut off barge-in monitoring during the playback tail.
@@ -300,12 +300,14 @@ The server binds interruption to the old turn before announcing `thinking`.
 If accepted speech interrupts playback after `turn_done`, expect `interrupted`
 followed by an updated `turn_done` with `next_action: "listen"` for the same
 turn, replacing its pending standby action. A continuation receives its own
-turn ID. Send `drained` only for the old playback; it must not discard the
-continuation. A bounded playback-tail timeout handles a missing `drained`.
+turn ID. Report the state for the old turn's playback only; it must not
+discard the continuation. A bounded playback-tail timeout handles a missing
+report.
 
 ### The turn's state
 
-During a turn the server says which state to show, each time it changes:
+The `state` frame goes both ways. During a turn the server says which state to
+show, each time it changes:
 
 ```json
 {"type":"state","turn_id":"turn-42","state":"listening"}
@@ -327,6 +329,20 @@ and counters, approval frames open and close the on-screen box, and `speaking`
 marks where the audio begins. After `turn_done`, `next_action` decides between
 listening and standby, as below. States the device knows by itself, such as
 connecting, arbitrating, or muted, are the device's own (`animations.md`).
+
+The device sends `state` back each time the state it shows changes, with the
+same shape:
+
+```json
+{"type":"state","turn_id":"turn-42","state":"listening"}
+```
+
+`state` is one of the states in `animations.md` that the device has entered.
+Give the `turn_id` of the turn the change belongs to, and omit it for a change
+outside a turn, such as returning to standby after a quiet period. Leaving
+`speaking` is how the server knows the turn's audio has played or been
+discarded: until then it keeps rejecting the reply's echo, and it holds the
+next server-started reply.
 
 ### Handling `thinking`
 
@@ -455,8 +471,8 @@ Every `turn_done` includes an explicit client action:
 | `standby` | Stop upstream PCM and return to local wake detection (or the non-wake client's idle UI). Keep the socket/session open for outbound events. |
 
 Continue interruption/control monitoring until queued playback has actually
-finished or been discarded. Send `drained` for that turn, then apply its
-pending action. Do not apply a late completion/action from an abandoned
+finished or been discarded. Then apply the turn's pending action and report the
+state it leads to. Do not apply a late completion/action from an abandoned
 turn to a newer activation. Cancellation, interruption, errors, and timeouts
 return `listen` for ordinary activation turns; a partial or failed reply cannot
 put the client in standby. Countdown tones restore the prior idle/listening state
@@ -600,7 +616,7 @@ listening or return to standby after playback drain.
    `endpoint_max_silence_ms` (default 3 s) without the request being split.
 4. Keep sending live PCM during thinking, `speaking` + reply PCM, and queued
    playback. The server captures accepted interruptions as continuations.
-5. Receive `turn_done`; send `drained` after actual speaker drain/discard.
+5. Receive `turn_done`; when the speaker has drained or the audio was discarded, report the new `state`.
 6. If the activation remains open, keep streaming for a follow-up request.
    Otherwise stop upstream audio and return to local wake detection.
 
@@ -612,8 +628,8 @@ the client must enter the active-turn state even without a preceding
 
 Every turn gets a `turn_id`. It appears on `transcript`, `thinking`,
 `speaking`, `interrupted`, `error`, and `turn_done` frames of that turn, so
-you can match frames to a turn. `cancel` and `drained` accept an optional
-`turn_id` to target a specific turn.
+you can match frames to a turn. `cancel` and the client's `state` accept an
+optional `turn_id` to target a specific turn.
 
 
 ## 8. Cooperative wake selection
@@ -773,7 +789,7 @@ stream and restore local wake detection unless an activation is now open.
 Serialize outbound audio on each socket: never interleave the untagged
 binary PCM of two turns. Output waits behind an active turn and its playback
 drain; stale output is discarded instead of played late. Ordinary barge-in,
-`cancel`, and `drained` apply equally to these turns. Output goes to the one
+`cancel`, and state reports apply equally to these turns. Output goes to the one
 device attached to that conversation. It is never broadcast and never runs a
 wake election.
 
@@ -821,12 +837,37 @@ The alarm keeps ringing until the first of:
 - a new `countdown` for it, which starts it counting again;
 - `ring_seconds` of ringing.
 
-When the alarm has ended, send `drained` with the `countdown_id` as its
-`turn_id`. Do not send it for a snooze.
+The device tells the server about its ringing countdowns with the same
+`countdown` frame type. Send it when the countdown starts ringing, and again
+after each `ready` while it still rings:
 
 ```json
-{"type":"drained","turn_id":"countdown-9"}
+{"type":"countdown","countdown_id":"countdown-9","ringing":true}
 ```
+
+When it ends, other than by a snooze, send it once more with `ended`:
+
+```json
+{"type":"countdown","countdown_id":"countdown-9","ended":true}
+```
+
+The frames carry no time. A countdown rings at its `deadline_unix_ms` and is
+never rung late, so the server already knows when it started ringing. Ringing
+does not change the device's voice state; a ringing countdown is shown
+alongside it (`animations.md`).
+
+### Several at once
+
+Two countdowns can ring at the same time, and the person cannot tell by ear.
+The device rings them as one: a single sound, never two mixed, the `sound` of
+the countdown that started ringing first among those still ringing. When that
+one ends and another still rings, play the other's sound. A screen lists each
+ringing countdown with its label and how long it has rung.
+
+A local dismissal ends every ringing countdown, since the person cannot tell
+which one they are stopping. `countdown_cancel`, a snooze, and `ring_seconds`
+end one; the sound continues while another rings. Each countdown that ends gets
+its own `countdown` frame with `ended`.
 
 ### The `cancel` wake word
 
@@ -835,7 +876,7 @@ the assistant's. It is detected on the device and needs no election:
 
 | Heard | The device |
 |---|---|
-| `cancel` while an alarm rings | Ends the alarm, as a local dismissal. |
+| `cancel` while a countdown rings | Ends every ringing countdown, as a local dismissal. |
 | `cancel` while the assistant is thinking or speaking | Sends `cancel` for the turn and stops playback. |
 | `cancel` at any other time | Does nothing. |
 

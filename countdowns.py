@@ -1,9 +1,11 @@
 """Countdowns: the ``countdown`` agent tool, the device's countdown list, and still-ringing turns.
 
 The device keeps the time and rings. The server records each device's countdowns (in memory only,
-so a server restart forgets them), relays them, resends them after ``ready``, and while one rings
-with no ``drained`` starts a turn in the device's conversation at 1, 2, 4 and 8 minutes after the
-deadline. It sends no frame at the deadline and listens for no stop phrase.
+so a server restart forgets them), relays them, and resends them after ``ready``. The device reports
+each countdown that rings, and each that ends, with its own ``countdown`` frame. While any rings, the
+server starts one turn in the device's conversation at 1, 2, 4 and 8 minutes after the earliest deadline
+among them, naming every one ringing. It sends no frame at the deadline and listens for no stop
+phrase.
 """
 
 from __future__ import annotations
@@ -53,8 +55,9 @@ class _Countdown:
     deadline: float  # unix seconds
     sound: str
     label: Optional[str]
-    generation: int = 0  # bumped by snooze so older still-ringing timers do nothing
+    generation: int = 0  # bumped by snooze so older expiry timers do nothing
     timers: list = field(default_factory=list)
+    ringing_since: Optional[float] = None  # its deadline, once the device reports it ringing
 
 
 @dataclass
@@ -62,6 +65,8 @@ class _Device:
     source: Any = None
     loop: Optional[asyncio.AbstractEventLoop] = None
     countdowns: dict = field(default_factory=dict)
+    ring_timers: list = field(default_factory=list)  # one still-ringing sequence for the device
+    ring_generation: int = 0
 
 
 def _deadline(args: dict, now: float) -> Optional[float]:
@@ -102,12 +107,23 @@ class Countdowns:
             for item in device.countdowns.values():
                 self._send_countdown(attachment, item)
 
-    def drained(self, conversation_id: str, countdown_id: Any) -> None:
-        """The device sent ``drained``: the alarm with this id has ended."""
+    def reported(self, conversation_id: str, frame: dict) -> None:
+        """The device sent ``countdown``: one of its countdowns is ringing, or has ended."""
+        countdown_id = frame.get("countdown_id")
+        if not isinstance(countdown_id, str):
+            return
         with self._lock:
             device = self._devices.get(conversation_id)
-            if device is not None and isinstance(countdown_id, str):
+            if device is None:
+                return
+            if frame.get("ended") is True:
                 self._remove(device, countdown_id)
+            else:
+                item = device.countdowns.get(countdown_id)
+                if item is None or frame.get("ringing") is not True:
+                    return
+                item.ringing_since = item.deadline  # it rings at its deadline, never late
+            self._schedule_ringing(conversation_id, device)
 
     # ── tool ──
     def handle(self, args: dict, **kw: Any) -> str:
@@ -150,6 +166,7 @@ class Countdowns:
                 return _result("unknown_countdown")
             if action == "cancel":
                 self._remove(device, item.countdown_id)
+                self._schedule_ringing(conversation_id, device)
                 attachment.send({"type": "countdown_cancel", "countdown_id": item.countdown_id})
                 return _result("ok")
             deadline = _deadline(args, time.time())
@@ -158,8 +175,10 @@ class Countdowns:
             self._clear_timers(item)
             item.deadline = deadline
             item.generation += 1
+            item.ringing_since = None  # counting again; the device reports when it next rings
             self._send_countdown(attachment, item)
             self._schedule(conversation_id, item)
+            self._schedule_ringing(conversation_id, device)
             return json.dumps({"result": "ok", "countdown_id": item.countdown_id,
                                "deadline_unix_ms": int(deadline * 1000)})
 
@@ -191,22 +210,34 @@ class Countdowns:
             self._clear_timers(item)
 
     def _schedule(self, conversation_id: str, item: _Countdown) -> None:
-        """Timers for the still-ringing turns, and for dropping the countdown after the ring timeout."""
+        """A timer for dropping the countdown after the ring timeout."""
         generation = item.generation
-        now = time.time()
+        self._timer(item.timers, item.deadline + self.ring_seconds - time.time(),
+                    lambda: self._expire(conversation_id, item, generation))
+
+    def _schedule_ringing(self, conversation_id: str, device: _Device) -> None:
+        """One still-ringing sequence for the device, timed from the earliest deadline among the
+        countdowns it reports ringing. Called whenever what rings changes."""
+        for timer in device.ring_timers:
+            timer.cancel()
+        device.ring_timers = []
+        device.ring_generation += 1
+        starts = [c.ringing_since for c in device.countdowns.values() if c.ringing_since is not None]
+        if not starts:
+            return
+        first, generation, now = min(starts), device.ring_generation, time.time()
         for offset in STILL_RINGING_SECONDS:
             if offset >= self.ring_seconds:
                 break
-            self._timer(item, item.deadline + offset - now,
-                        lambda offset=offset: self._still_ringing(conversation_id, item, generation, offset))
-        self._timer(item, item.deadline + self.ring_seconds - now,
-                    lambda: self._expire(conversation_id, item, generation))
+            if first + offset > now:
+                self._timer(device.ring_timers, first + offset - now,
+                            lambda: self._still_ringing(conversation_id, generation))
 
     @staticmethod
-    def _timer(item: _Countdown, delay: float, fn: Any) -> None:
+    def _timer(timers: list, delay: float, fn: Any) -> None:
         timer = threading.Timer(max(0.0, delay), fn)
         timer.daemon = True
-        item.timers.append(timer)
+        timers.append(timer)
         timer.start()
 
     def _expire(self, conversation_id: str, item: _Countdown, generation: int) -> None:
@@ -215,24 +246,35 @@ class Countdowns:
             if device is not None and device.countdowns.get(item.countdown_id) is item \
                     and item.generation == generation:
                 self._remove(device, item.countdown_id)
+                self._schedule_ringing(conversation_id, device)
 
-    def _still_ringing(self, conversation_id: str, item: _Countdown, generation: int, offset: int) -> None:
+    def _still_ringing(self, conversation_id: str, generation: int) -> None:
         with self._lock:
             device = self._devices.get(conversation_id)
-            if device is None or device.countdowns.get(item.countdown_id) is not item \
-                    or item.generation != generation:
+            if device is None or device.ring_generation != generation:
                 return
+            now = time.time()
+            ringing = sorted((c for c in device.countdowns.values() if c.ringing_since is not None),
+                             key=lambda c: c.ringing_since)
             source, loop = device.source, device.loop
-            label = f' "{item.label}"' if item.label else ""
         adapter = self._hub.gateway
-        if source is None or loop is None or adapter is None or self._hub.attachment(conversation_id) is None:
-            return  # no device to speak on
+        if not ringing or source is None or loop is None or adapter is None \
+                or self._hub.attachment(conversation_id) is None:
+            return  # nothing ringing, or no device to speak on
         from gateway.platforms.event import MessageEvent, MessageType
 
-        minutes = offset // 60
-        text = (f"[Countdown {item.countdown_id}{label} on this device has been ringing for "
-                f"{minutes} minute{'s' if minutes != 1 else ''} and nobody has ended it. "
-                "End it with the countdown tool (cancel or snooze), or leave it ringing.]")
+        def ringing_for(item: _Countdown) -> str:
+            minutes = int(now - item.ringing_since) // 60
+            label = f' "{item.label}"' if item.label else ""
+            return f"{item.countdown_id}{label} for {minutes} minute{'s' if minutes != 1 else ''}"
+
+        if len(ringing) == 1:
+            text = (f"[Countdown {ringing_for(ringing[0])} has been ringing on this device and nobody "
+                    "has ended it. End it with the countdown tool (cancel or snooze), or leave it ringing.]")
+        else:
+            text = ("[Countdowns ringing on this device that nobody has ended: "
+                    + "; ".join(ringing_for(c) for c in ringing)
+                    + ". End each with the countdown tool (cancel or snooze), or leave them ringing.]")
         event = MessageEvent(text=text, message_type=MessageType.TEXT, source=source,
                              message_id=f"countdown-ring-{uuid.uuid4().hex}")
         future = asyncio.run_coroutine_threadsafe(adapter.handle_message(event), loop)
