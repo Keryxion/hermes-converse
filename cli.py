@@ -111,7 +111,7 @@ def doctor() -> int:
         else:
             _ok("Smart Turn endpointer", f"enabled (threshold {settings.endpoint_threshold:g})")
     else:
-        _ok("endpointer", "fixed silence (set endpoint_model to enable Smart Turn)")
+        _ok("endpointer", "fixed silence (endpoint_model is off)")
     print(f"\n  WebSocket URL: ws://{host}:{port}/v1/audio/converse")
     print("  First frame:   {\"type\":\"start\",\"key\":\"<API_SERVER_KEY>\",\"input_rate\":16000,\"output_rate\":24000}")
     return 1 if failures else 0

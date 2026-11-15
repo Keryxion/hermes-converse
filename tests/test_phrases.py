@@ -8,7 +8,7 @@ class TestSettings:
         s = load_settings(lambda key, default=None: default)
         assert s.model is None and s.provider is None
         assert s.turn_timeout == 120.0 and s.tail_fallback == 45.0 and s.max_tts_chars == 1500
-        assert s.endpoint_model is False and s.endpoint_threshold == 0.5
+        assert s.endpoint_model is True and s.endpoint_threshold == 0.5
         assert s.endpoint_silence_ms == 700 and s.endpoint_max_silence_ms == 3000
         assert s.approval_choice == "deny" and s.api_base_url == ""
 

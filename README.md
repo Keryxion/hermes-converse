@@ -145,7 +145,7 @@ plugin settings form):
 | `playback_tail_timeout_seconds` | `45` | how long to wait for the client's `drained` frame |
 | `max_tts_chars_per_turn` | `1500` | safety cap on how much of one reply is spoken |
 | `vad_model` | `silero` | speech detection with automatic energy fallback; set `energy` to use RMS detection only |
-| `endpoint_model`, `endpoint_threshold` | off, `0.5` | Smart Turn v3 semantic endpointer (see below) |
+| `endpoint_model`, `endpoint_threshold` | `smart-turn-v3`, `0.5` | Smart Turn v3 semantic endpointer (see below); `off` uses the fixed silence endpoint |
 | `endpoint_silence_ms` | `700` | silence that ends an utterance; with Smart Turn, the first completion check |
 | `endpoint_max_silence_ms` | `3000` | longest pause allowed after the wake word or, with Smart Turn, inside an unfinished request |
 | `approval_choice` | `deny` | what a voice turn answers when the agent asks for a command approval |
@@ -224,25 +224,23 @@ judges it unfinished; then it keeps listening, rechecking each window, for up to
 lasts at most 60 s; one that gets there ends at its last pause, and what followed
 begins the next capture.
 
-**Smart Turn v3** (optional): with `endpoint_model: smart-turn-v3` the fixed silence endpoint
-becomes adaptive — on each candidate pause the model estimates whether the utterance sounds
-finished and keeps listening when you trailed off. The plugin declares `onnxruntime`,
-`transformers` and `huggingface_hub` as runtime dependencies, so Hermes installs them alongside
-`numpy` and `av` even when Smart Turn is off. Model loading stays opt-in and uses the NumPy
-feature-extraction path without requiring PyTorch. ONNX Runtime is omitted on Intel macOS and
-Android, which have no current wheels; those hosts keep fixed silence endpointing.
+**Smart Turn v3** is on by default: on each candidate pause the model estimates whether the
+utterance sounds finished and keeps listening when you trailed off. The plugin declares
+`onnxruntime`, `transformers` and `huggingface_hub` as runtime dependencies, so Hermes installs
+them alongside `numpy` and `av`. Model loading uses the NumPy feature-extraction path without
+requiring PyTorch. ONNX Runtime is omitted on Intel macOS and Android, which have no current
+wheels; those hosts keep fixed silence endpointing.
 
 For an existing install, update/reinstall hermes-converse through Hermes's plugin manager so it
-installs the new manifest dependencies. Set the following under
-`plugins.entries.hermes-converse.settings` in `config.yaml`, then run `hermes converse doctor`
-and restart the gateway:
+installs the manifest dependencies, then run `hermes converse doctor` and restart the gateway.
+To use the fixed silence endpoint instead, set the following under
+`plugins.entries.hermes-converse.settings` in `config.yaml`:
 
 ```yaml
-endpoint_model: smart-turn-v3
-endpoint_threshold: 0.5
+endpoint_model: off
 ```
 
-With Smart Turn enabled, doctor checks the dependencies **and loads the model**, returning a
+With Smart Turn on, doctor checks the dependencies **and loads the model**, returning a
 failure if either is unavailable. The first load downloads `smart-turn-v3.2-cpu.onnx` from
 `pipecat-ai/smart-turn-v3` on Hugging Face into its normal Hub cache. For offline use, populate
 that cache first, then set `HF_HUB_OFFLINE=1`. Missing packages, incompatible runtimes, and

@@ -60,8 +60,8 @@ config_schema:
     description: "Safety cap on how much of one reply is spoken aloud."
   endpoint_model:
     type: str
-    default: ""
-    description: "Smart Turn v3 semantic endpointer: any value enables it (needs onnxruntime, transformers, huggingface_hub)."
+    default: "smart-turn-v3"
+    description: "Smart Turn v3 semantic endpointer (needs onnxruntime, transformers, huggingface_hub). Set to off for the fixed silence endpoint."
   endpoint_threshold:
     type: float
     default: 0.5

@@ -9,7 +9,7 @@ Model: ``pipecat-ai/smart-turn-v3`` (BSD-2), ~8.7 MB int8 ONNX — Whisper-tiny 
 endpointing head. Runs on CPU via onnxruntime; ``transformers.WhisperFeatureExtractor`` provides the
 log-mel front end (numpy path, no torch) and ``huggingface_hub`` fetches the weights.
 
-The plugin declares these dependencies; model loading is opt-in through ``endpoint_model``.
+The plugin declares these dependencies; the model loads unless ``endpoint_model`` is off.
 ONNX Runtime is omitted on Intel macOS and Android, where no current wheels are available.
 If dependencies or model weights cannot load, :func:`load_turn_detector` returns ``None``
 (logged once) and the loop keeps the fixed silence endpoint. ``hermes converse doctor``

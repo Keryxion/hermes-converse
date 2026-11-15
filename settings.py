@@ -55,7 +55,7 @@ class Settings:
     turn_timeout: float = DEFAULT_TURN_TIMEOUT
     tail_fallback: float = DEFAULT_TAIL_FALLBACK
     max_tts_chars: int = DEFAULT_MAX_TTS_CHARS
-    endpoint_model: bool = False
+    endpoint_model: bool = True
     endpoint_threshold: float = DEFAULT_ENDPOINT_THRESHOLD
     endpoint_silence_ms: int = DEFAULT_ENDPOINT_SILENCE_MS
     endpoint_max_silence_ms: int = DEFAULT_ENDPOINT_MAX_SILENCE_MS
@@ -84,7 +84,7 @@ def _text(raw: Any) -> Optional[str]:
 
 
 def _model_enabled(raw: Any) -> bool:
-    """``endpoint_model``: any value that is not empty / none / false / off enables Smart Turn."""
+    """``endpoint_model``: Smart Turn is on unless the value is empty / none / false / off."""
     return bool(raw) and str(raw).strip().lower() not in ("", "none", "false", "off", "0")
 
 
@@ -121,7 +121,7 @@ def load_settings(get: Getter) -> Settings:
         turn_timeout=_number(get("turn_timeout_seconds", DEFAULT_TURN_TIMEOUT), DEFAULT_TURN_TIMEOUT),
         tail_fallback=_number(get("playback_tail_timeout_seconds", DEFAULT_TAIL_FALLBACK), DEFAULT_TAIL_FALLBACK),
         max_tts_chars=int(_number(get("max_tts_chars_per_turn", DEFAULT_MAX_TTS_CHARS), DEFAULT_MAX_TTS_CHARS)),
-        endpoint_model=_model_enabled(get("endpoint_model", "")),
+        endpoint_model=_model_enabled(get("endpoint_model", "smart-turn-v3")),
         vad_model="energy" if str(get("vad_model", DEFAULT_VAD_MODEL)).strip().lower() == "energy" else "silero",
         endpoint_threshold=min(1.0, max(0.0, _number(get("endpoint_threshold", DEFAULT_ENDPOINT_THRESHOLD),
                                                        DEFAULT_ENDPOINT_THRESHOLD))),
