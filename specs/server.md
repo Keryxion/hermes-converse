@@ -93,7 +93,9 @@ With `ask`, the person is asked in two ways at once, and the first answer wins:
   command, and the choices Hermes allows for this request, for a device that
   can show a box.
 
-The turn keeps waiting with `thinking` frames.
+The turn keeps waiting with `thinking` frames. Waiting on the approval counts as
+progress, so `turn_timeout_seconds` does not end the turn; Hermes's
+`approvals.timeout` (default 300 seconds) does.
 
 #### The summary
 
@@ -210,8 +212,8 @@ it does not create another reply for that turn. Quiet advisories count received
 idle silence, never wall time or time occupied by a reply/capture. Restart the
 count on speech onset, turn start and end, playback drain, and when received
 audio resumes after a gap of at least 1 s, so silence from an earlier listening
-phase never shortens the next one. Working frames
-are sent every 15 seconds and stop with their owning turn.
+phase never shortens the next one. `thinking` frames
+repeat every 5 seconds and stop with their owning turn.
 
 On disconnect, stop capture and settle the attachment. A turn already running
 is not stopped: it finishes in the conversation like a turn on any other gateway
@@ -249,15 +251,15 @@ The device name identifies a destination, not a separate security principal;
 clients sharing a server API key share its access boundary.
 The device's conversation title is `<assistant_name>: <device_name>`.
 There is no client conversation override, selection protocol, or separate
-conversation extension. Reject a supplied `start.conversation` as an invalid
-field rather than silently accepting it.
+conversation extension.
 
 The device's conversation is a gateway session, described under Gateway
 conversation. The gateway creates it, keeps its history, and continues it through
 compaction. Preserve the device's routing identity. Do not build a parallel
 conversation store or expose Hermes session mechanics to clients.
 
-Reject empty names and a combined title over 100 characters with
+Reject a missing or empty name; a `profile`, `name`, `conversation`, or
+`conversation_id` field; and a combined title over 100 characters with
 `4400 bad_start`. A replacement connection for the same names closes the old one
 with `4409 attachment_replaced`. A turn in flight carries on, and its remaining
 frames go to the new connection. Supply trusted source-device context to the agent/tools; transcript
@@ -302,10 +304,9 @@ and API-key authentication stay on the API server.
 | `command` from the client | the gateway command named in `name`, with `args`, after stopping any turn in flight; its reply is not spoken and goes back to the client in a `command` frame |
 | Model selection | the gateway `/model` command, sent only when the choice differs from the session's; its confirmation is not spoken |
 
-For a named device the chat is the device's conversation: chat name
-`<assistant_name>: <device_name>`, user `recipient_id`, user name `device_name`. A
-socket that sends no names gets a chat whose id is its `conversation_id`; sending
-that id in a later `start` reattaches to it, and an unknown id is refused. Hermes owns the session, its history,
+The chat is the device's conversation: chat name
+`<assistant_name>: <device_name>`, user `recipient_id`, user name `device_name`.
+Hermes owns the session, its history,
 compaction, and its place in the web UI. Every event comes from a socket that
 presented the API key, so the platform is registered as trusted inbound and needs no
 user allowlist or pairing.
