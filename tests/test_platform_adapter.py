@@ -7,6 +7,7 @@ admitted event to, and what returns the turn's final reply.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import time
 from types import SimpleNamespace
 
@@ -95,6 +96,51 @@ async def test_unstreamed_final_is_spoken(rig):
     spoken = []
     result = await turns.run_turn(text="2+2", on_delta=spoken.append)
     assert spoken == ["Four."] and result.reply == "Four."
+
+
+async def test_turn_replayed_by_the_busy_queue_is_still_spoken(rig, monkeypatch):
+    """A turn that reaches a still-busy chat (right after our own /model command) waits in the
+    gateway's durable queue, which replays it as a new event whose id is the admission id."""
+    turns, key = await _turns(rig)
+    handle = rig.adapter.handle_message
+
+    async def replay(event):
+        await handle(dataclasses.replace(event, message_id="admission-1"))
+
+    monkeypatch.setattr(rig.adapter, "handle_message", replay)
+
+    async def handler(event):
+        assert event.message_id == "admission-1"
+        sid = rig.store.peek_session_id(key)
+        rig.adapter.on_stream_start(session_id=sid)
+        rig.adapter.on_stream_delta(delta="Nick is ", session_id=sid)
+        return "Nick is at home."
+
+    rig.adapter.set_message_handler(handler)
+    spoken = []
+    result = await asyncio.wait_for(turns.run_turn(text="where's Nick?", on_delta=spoken.append), 5)
+    assert spoken == ["Nick is ", "at home."]
+    assert (result.reply, result.status) == ("Nick is at home.", "completed") and turns.settled
+
+
+async def test_replay_of_different_text_is_not_adopted(rig, monkeypatch):
+    turns, _ = await _turns(rig)
+    handle = rig.adapter.handle_message
+
+    async def replay(event):
+        await handle(dataclasses.replace(event, message_id="admission-2", text="something else"))
+
+    monkeypatch.setattr(rig.adapter, "handle_message", replay)
+
+    async def handler(event):
+        return "Not yours."
+
+    rig.adapter.set_message_handler(handler)
+    spoken = []
+    turns._settle_timeout = 0.2
+    with pytest.raises(TimeoutError):  # the voice turn never sees a reply that is not its own
+        await asyncio.wait_for(turns.run_turn(text="where's Nick?", on_delta=spoken.append), 0.5)
+    assert spoken == []
 
 
 async def test_final_speaks_only_what_the_stream_missed(rig):

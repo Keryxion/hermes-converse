@@ -78,6 +78,7 @@ class _VoiceTurn:
     progress_at: float = 0.0  # monotonic time the agent last did anything
     detached: bool = False  # held on a pending approval after its device left; its speech is published
     held_text: str = ""
+    admitted_id: str = ""  # the gateway's id for this input when its busy queue replayed it
 
 
 @dataclass
@@ -193,9 +194,18 @@ class ConverseAdapter(BasePlatformAdapter):
     def _own(self, event: MessageEvent) -> Optional[_VoiceTurn]:
         source = getattr(event, "source", None)
         turn = self._turns.get(getattr(source, "chat_id", "") or "")
-        if turn is not None and (turn.event is event or (
-                event.message_id and event.message_id == turn.event.message_id)):
-            return turn
+        if turn is not None:
+            if turn.event is event or (event.message_id and event.message_id in (
+                    turn.event.message_id, turn.admitted_id)):
+                return turn
+            # A turn submitted while the chat was still busy (our own /model command, say) waits in
+            # the gateway's durable queue, which replays it as a new event whose id is the
+            # admission id. Adopt that replay, or its reply is dropped and the device waits out the
+            # turn timeout.
+            if (not turn.started and not turn.admitted_id and event.message_id
+                    and not event.get_command() and event.text == turn.event.text):
+                turn.admitted_id = str(event.message_id)
+                return turn
         return self._abandoned.get(event.message_id or "")
 
     def abandon(self, turn: _VoiceTurn) -> None:
@@ -203,6 +213,8 @@ class ConverseAdapter(BasePlatformAdapter):
         if turn.done.is_set():
             return
         self._abandoned[str(turn.event.message_id)] = turn
+        if turn.admitted_id:
+            self._abandoned[turn.admitted_id] = turn
         while len(self._abandoned) > 256:
             self._abandoned.pop(next(iter(self._abandoned)))
 
@@ -246,7 +258,8 @@ class ConverseAdapter(BasePlatformAdapter):
             if turn.detached and turn.held_text.strip():
                 self._hub.publish(chat_id, turn.held_text.strip(), f"held:{uuid.uuid4().hex}",
                                   expires_at=time.time() + OUTPUT_TTL)
-            self._abandoned.pop(str(event.message_id or ""), None)
+            for key in (str(turn.event.message_id or ""), turn.admitted_id):
+                self._abandoned.pop(key, None)
 
     # ── outbound ──
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
