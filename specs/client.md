@@ -121,9 +121,10 @@ All are JSON text frames:
 | `{"type": "approval_response", "approval_id": "...", "choice": "once"}` | Answer a pending approval from a screen with one of its `choices`; see "Approvals" in section 4. |
 
 **`cancel` vs `stop`:** `stop` tears down the session; `cancel` only kills the
-current turn. Use `cancel` when the user hits the action button, says the
-wake word again mid-turn, or says the `cancel` wake word, and you want to keep
-the conversation going.
+current turn. Use `cancel` when the user hits the action button and you want
+to keep the conversation going. Nothing heard is a `cancel`: neither the
+assistant's wake word nor the `cancel` wake word cancels a turn (section 4,
+"Barge-in and cancellation").
 
 ### Commands
 
@@ -270,6 +271,15 @@ the user may add “and make it warm white” while the reply is thinking. Expec
 `interrupted` and `turn_done` with `next_action: "listen"` for the old turn,
 then a new reply turn for the additional instruction (and a `transcript` if enabled). The
 new turn uses the same conversation and includes the original request as context.
+
+The assistant's wake word heard during an activation, such as "Hey Arya,
+actually make it the kitchen" while the reply plays, is barge-in like any other
+speech. Do not send `cancel` and do not send another `wake`: the device is
+already streaming, and the server hears the words, interrupts the reply, and
+answers what follows. A wake word that cancelled the turn would throw that
+request away and make the person say the wake word twice. The same goes for
+"cancel", "stop", or "never mind" said during a turn: they are speech to the
+server, and the assistant stops.
 
 Explicit `cancel` stops the matching turn without submitting a user message:
 
@@ -877,8 +887,7 @@ the assistant's. It is detected on the device and needs no election:
 | Heard | The device |
 |---|---|
 | `cancel` while a countdown rings | Ends every ringing countdown, as a local dismissal. |
-| `cancel` while the assistant is thinking or speaking | Sends `cancel` for the turn and stops playback. |
-| `cancel` at any other time | Does nothing. |
+| `cancel` at any other time | Does nothing. During a turn the server hears it as speech. |
 
 A device without the `cancel` wake word ends an alarm with its button or tap,
 or by asking the assistant.
