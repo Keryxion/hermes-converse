@@ -47,6 +47,10 @@ endpointing and transcription expect, on its own copy:
 - Speech detection therefore does not depend on the input's absolute level. A
   device whose speech arrives 30 dB or more below a typical USB or ESP32
   microphone gets the same onset, endpoint and transcript.
+- Speech to text gets a copy of each captured utterance high-passed at 100 Hz
+  and raised by one gain for the whole utterance, so its loudest part sits near
+  -3 dBFS (never quieter than received, at most +40 dB). The capture itself
+  stays as received.
 - Traces report levels as received, with the session's gain beside them
   (`input.gain_db`).
 - `quiet` counts silence in the received audio. A wake activation's buffered
