@@ -513,21 +513,21 @@ enforces it.
 
 Keep a countdown until its device sends `countdown` with `ended` for it, or
 until its deadline plus the ring timeout has passed. A device's `countdown` with
-`ringing_seconds` says when it started ringing there (client spec, section 10). Send a device its countdowns again after
+`ringing` says it is ringing there (client spec, section 10); it started at its
+deadline. Send a device its countdowns again after
 `ready`, so one that reconnects or restarts shows them. The server does not ring
 anything itself and does not send a frame at the deadline.
 
 ### Still ringing
 
 Once a device reports a countdown ringing, start a turn in that device's
-conversation at 1, 2, 4, 8 minutes after it started ringing, doubling, until it
+conversation at 1, 2, 4, 8 minutes after its deadline, doubling, until it
 ends. With the default timeout that is four turns. Each says which countdowns
 are ringing and for how long, so the agent can do more each time: say something
 in the room, tell another room, or tell the owner elsewhere.
 
 When several ring on one device, run one sequence for the device, timed from the
-countdown that started ringing first, and name every ringing countdown in each
-turn. When that one ends, time the sequence from the next. No turn starts once
+earliest deadline among them, and name every ringing countdown in each turn. When that one ends, time the sequence from the next. No turn starts once
 none is ringing.
 
 The turn is an ordinary message submitted to the gateway session. Its reply is

@@ -114,7 +114,7 @@ All are JSON text frames:
 | `{"type": "cancel", "turn_id": "..."}` | Cancels the **current** turn — stops TTS and the agent — but keeps the socket, session, and history alive. |
 | `{"type": "wake", "claim_id": "...", "wake_word": "Hey Arya"}` | request an advisory wake decision while buffering the new activation locally; see section 8. |
 | `{"type": "state", "turn_id": "...", "state": "listening"}` | The state the device now shows; see "The turn's state" in section 4. |
-| `{"type": "countdown", "countdown_id": "...", "ringing_seconds": 0}` | A countdown started ringing, is still ringing after a reconnect, or ended; see section 10. |
+| `{"type": "countdown", "countdown_id": "...", "ringing": true}` | A countdown is ringing, or with `ended` has ended; see section 10. |
 | `{"type": "commands"}` | Ask which commands the server runs; see "Commands" below. |
 | `{"type": "command", "name": "new"}` | Run a Hermes command for this device's conversation, such as starting a fresh one; see "Commands" below. |
 | `{"type": "say", "text": "..."}` | Speaks the given text (trimmed, at most 400 characters) as a reply of its own: `thinking`, `speaking` + PCM, then `turn_done` with `next_action: "standby"`. No agent turn runs and nothing is added to the conversation. For fixed device prompts such as a spoken help reminder. Empty or non-string text is ignored. |
@@ -839,20 +839,22 @@ The alarm keeps ringing until the first of:
 
 The device tells the server about its ringing countdowns with the same
 `countdown` frame type. Send it when the countdown starts ringing, and again
-after each `ready` while it still rings, with how long it has rung:
+after each `ready` while it still rings:
 
 ```json
-{"type":"countdown","countdown_id":"countdown-9","ringing_seconds":0}
+{"type":"countdown","countdown_id":"countdown-9","ringing":true}
 ```
 
 When it ends, other than by a snooze, send it once more with `ended`:
 
 ```json
-{"type":"countdown","countdown_id":"countdown-9","ringing_seconds":95,"ended":true}
+{"type":"countdown","countdown_id":"countdown-9","ended":true}
 ```
 
-`ringing_seconds` is whole seconds. Ringing does not change the device's voice
-state; a ringing countdown is shown alongside it (`animations.md`).
+The frames carry no time. A countdown rings at its `deadline_unix_ms` and is
+never rung late, so the server already knows when it started ringing. Ringing
+does not change the device's voice state; a ringing countdown is shown
+alongside it (`animations.md`).
 
 ### Several at once
 

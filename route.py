@@ -25,7 +25,7 @@ Protocol:
            ``{"type":"cancel","turn_id":?}`` to cancel the current turn and keep the session,
            ``{"type":"state","turn_id":?,"state":...}`` the state the device now shows (leaving
            ``speaking`` means the reply's audio has played or been discarded), ``{"type":"countdown",
-           "countdown_id":...,"ringing_seconds":...,"ended":?}`` a countdown ringing or ended,
+           "countdown_id":...,"ringing":true}`` or ``..."ended":true}`` a countdown ringing or ended,
            ``{"type":"wake","claim_id":"...","wake_word":"...", ...}`` requests an
            advisory wake recommendation; see ``specs/client.md``. Accepted interruptions are captured as continuations.
   server → ``ready`` (rates, ``session_id``, clock-skew timestamps), ``transcript``, ``thinking``,

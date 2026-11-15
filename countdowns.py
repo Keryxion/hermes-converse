@@ -3,8 +3,8 @@
 The device keeps the time and rings. The server records each device's countdowns (in memory only,
 so a server restart forgets them), relays them, and resends them after ``ready``. The device reports
 each countdown that rings, and each that ends, with its own ``countdown`` frame. While any rings, the
-server starts one turn in the device's conversation at 1, 2, 4 and 8 minutes after the first of them
-started ringing, naming every one ringing. It sends no frame at the deadline and listens for no stop
+server starts one turn in the device's conversation at 1, 2, 4 and 8 minutes after the earliest deadline
+among them, naming every one ringing. It sends no frame at the deadline and listens for no stop
 phrase.
 """
 
@@ -57,7 +57,7 @@ class _Countdown:
     label: Optional[str]
     generation: int = 0  # bumped by snooze so older expiry timers do nothing
     timers: list = field(default_factory=list)
-    ringing_since: Optional[float] = None  # unix seconds, as the device reported it
+    ringing_since: Optional[float] = None  # its deadline, once the device reports it ringing
 
 
 @dataclass
@@ -109,7 +109,7 @@ class Countdowns:
 
     def reported(self, conversation_id: str, frame: dict) -> None:
         """The device sent ``countdown``: one of its countdowns is ringing, or has ended."""
-        countdown_id, seconds = frame.get("countdown_id"), frame.get("ringing_seconds")
+        countdown_id = frame.get("countdown_id")
         if not isinstance(countdown_id, str):
             return
         with self._lock:
@@ -120,10 +120,9 @@ class Countdowns:
                 self._remove(device, countdown_id)
             else:
                 item = device.countdowns.get(countdown_id)
-                if item is None or not isinstance(seconds, (int, float)) or isinstance(seconds, bool) \
-                        or not 0 <= seconds <= self.ring_seconds:
+                if item is None or frame.get("ringing") is not True:
                     return
-                item.ringing_since = time.time() - float(seconds)
+                item.ringing_since = item.deadline  # it rings at its deadline, never late
             self._schedule_ringing(conversation_id, device)
 
     # ── tool ──
@@ -217,8 +216,8 @@ class Countdowns:
                     lambda: self._expire(conversation_id, item, generation))
 
     def _schedule_ringing(self, conversation_id: str, device: _Device) -> None:
-        """One still-ringing sequence for the device, timed from the countdown that started ringing
-        first among those still ringing. Called whenever what rings changes."""
+        """One still-ringing sequence for the device, timed from the earliest deadline among the
+        countdowns it reports ringing. Called whenever what rings changes."""
         for timer in device.ring_timers:
             timer.cancel()
         device.ring_timers = []
