@@ -33,7 +33,7 @@ A device shows one state at a time.
 | `standby` | Connected; waiting for the wake word or manual Talk | Neutral | Small, gently breathing or twinkling mark |
 | `arbitrating` | Wake word heard; waiting for the grant | Orange | Smooth 1 s breath between 35% and 100% brightness |
 | `wake_denied` | Matching `wake_deny` received | Red | Steady for 1.5 s, then standby |
-| `listening` | Wake granted, manual Talk, or follow-up listening | Green | Steady, with a meter driven by the microphone level where the device can show one |
+| `listening` | Wake granted, manual Talk, follow-up listening, or waiting for an approval answer | Green | Steady, with a meter driven by the microphone level where the device can show one |
 | `thinking` | The agent turn has started | Orange | Clearly animated: an orbit on a ring or screen, a breath on a single LED |
 | `speaking` | Reply playing, including its local tail | Speaking blue | Large and prominent, driven by the reply audio level where the device can show it |
 | `error` | Connection, authentication, capture, or playback failure | Fault red | Persistent pulse, with error text or a warning symbol where available |
@@ -79,6 +79,8 @@ stateDiagram-v2
     thinking --> speaking: speaking / reply audio
     speaking --> listening: drained + next_action listen
     speaking --> standby: drained + next_action standby
+    speaking --> listening: drained, approval pending
+    listening --> thinking: approval_resolved
     thinking --> listening: interrupted, queued audio discarded
     speaking --> listening: interrupted, queued audio discarded
     standby --> speaking: outbound reply
@@ -101,6 +103,10 @@ The frames named here are defined in [client.md](client.md).
   frame marks the end of speech.
 - A repeated `thinking` frame keeps thinking alive. It does not restart the
   animation or replace speaking.
+- While an approval is pending, show listening once the spoken question has
+  drained: the assistant is waiting for the person's answer. `thinking` frames
+  do not replace it. A spoken re-ask shows speaking, then listening again. On
+  `approval_resolved`, return to thinking; the turn carries on.
 - `interrupted` discards queued audio and returns to listening. It is not an
   error.
 - A new state replaces the old one immediately and cancels its timers,
