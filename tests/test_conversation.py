@@ -1,5 +1,6 @@
 """Conversation attachment and output delivery over the real authenticated socket route."""
 import asyncio
+import threading
 import time
 
 import pytest
@@ -119,12 +120,13 @@ async def test_cancel_thinking_stale_id_ignored_and_run_stopped(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('phase', ['thinking', 'speaking'])
-async def test_voice_continuation_restarts_in_same_conversation(monkeypatch, phase):
+async def test_voice_continuation_reaches_the_running_turn(monkeypatch, phase):
+    """Barge-in is a message sent mid-run, as on Telegram: the run is not stopped, the words reach
+    it, and the device hears its answer to both."""
     class ContinuationAPI(FakeHermes):
-        def begin(self, turn):
-            if len(self.turns) > 1:
-                self.hang = False
-                self.deltas = ('Updated.',)
+        def redirected(self, turn):
+            self.hang = False
+            self.deltas = ('Updated.',)
     fake = ContinuationAPI(API_KEY, deltas=() if phase == 'thinking' else ('Working on the original request.',), hang=True)
     seen = _patch_speech(monkeypatch, _FakeStreamer([b'\x01\x02']))
     def transcribe(path, **kwargs):
@@ -151,9 +153,11 @@ async def test_voice_continuation_restarts_in_same_conversation(monkeypatch, pha
         following, pcm = await _collect_turn(ws, timeout=3)
         assert [f['type'] for f in following] == ['transcript', 'state', 'thinking', 'transcript', 'state', 'speaking',
                                                   'turn_done']
-        assert pcm and len(fake.turns) == 2 and seen['n'] == 2 and fake.stopped == [fake.turns[0]]
-        assert len({turn['chat_id'] for turn in fake.turns}) == 1
         assert following[0]['text'] == 'and the continuation'
+        assert following[3]['text'] == 'Updated.'
+        assert pcm and seen['n'] == 2 and fake.stopped == []
+        assert [(t['text'], t['redirects'], t['status']) for t in fake.turns] == [
+            ('first request', ['and the continuation'], 'completed')]
         await ws.close()
 
 
@@ -239,15 +243,66 @@ async def test_output_capacity_is_bounded_even_after_dispatcher_defers_it():
     assert hub.publish('c', 'offline', 'offline', expires_at=time.time()+30) == 'not_attached'
 
 
+class _SlowFirstStreamer(_FakeStreamer):
+    """TTS whose first reply takes a while to make its first audio, as one-shot synthesis does."""
+
+    def __init__(self, chunks):
+        super().__init__(chunks)
+        self.gate = threading.Event()
+
+    def stream(self, text):
+        if not self.requests:
+            self.gate.wait(5)
+        yield from super().stream(text)
+
+
+@pytest.mark.asyncio
+async def test_finished_reply_cut_before_any_audio_is_spoken_before_the_next_request(monkeypatch):
+    """The run had answered, but speech arrived before a word of it played. On Telegram that reply
+    would be on screen; here it is spoken, then the new words are answered."""
+    fake = FakeHermes(API_KEY, deltas=('Rinse with plain water.',))
+    streamer = _SlowFirstStreamer([b'\x01\x02'])
+    seen = _patch_speech(monkeypatch, streamer)
+
+    def transcribe(path, **kwargs):
+        seen['n'] += 1
+        return 'my floors look gross' if seen['n'] == 1 else 'can I put the remote somewhere'
+
+    monkeypatch.setattr(speech, 'transcribe_wav', transcribe)
+    async with Harness(fake) as client:
+        ws, _ = await connect(client, transcripts=True)
+        for frame in _speech_then_silence_pcm():
+            await ws.send_bytes(frame)
+        assert (await ws.receive_json(timeout=2))['type'] == 'transcript'
+        assert (await ws.receive_json(timeout=2))['state'] == 'thinking'
+        assert (await ws.receive_json(timeout=2))['type'] == 'thinking'
+        reply = await ws.receive_json(timeout=2)
+        assert (reply['role'], reply['text']) == ('assistant', 'Rinse with plain water.')
+        for frame in _speech_then_silence_pcm():
+            await ws.send_bytes(frame)
+        await asyncio.sleep(.5)  # the speech is heard while synthesis is still making the first audio
+        streamer.gate.set()
+        old, pcm = await _collect_turn(ws, timeout=3)
+        assert [f['type'] for f in old] == ['interrupted', 'turn_done'] and not pcm
+        replay, pcm = await _collect_turn(ws, timeout=3)
+        assert pcm and replay[0]['event_id'].startswith('unheard:')
+        assert [f['text'] for f in replay if f['type'] == 'transcript'] == ['Rinse with plain water.']
+        assert replay[-1]['next_action'] == 'listen'
+        following, _ = await _collect_turn(ws, timeout=3)
+        assert following[0]['text'] == 'can I put the remote somewhere'
+        assert [t['text'] for t in fake.turns] == ['my floors look gross', 'can I put the remote somewhere']
+        assert fake.stopped == []
+        await ws.close()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('quiet_interval', [0, 15])
 @pytest.mark.parametrize('words', ['CANCEL!', 'stop', 'cancel the kitchen timer'])
 async def test_spoken_cancellation_is_distinct_from_continuation(monkeypatch, quiet_interval, words):
     class CorrectedAPI(FakeHermes):
-        def begin(self, turn):
-            if len(self.turns) > 1:
-                self.hang = False
-                self.deltas = ('Updated.',)
+        def redirected(self, turn):
+            self.hang = False
+            self.deltas = ('Updated.',)
 
     fake = CorrectedAPI(API_KEY, deltas=(), hang=True)
     seen = _patch_speech(monkeypatch, _FakeStreamer([b'\x01\x02']))
@@ -270,8 +325,9 @@ async def test_spoken_cancellation_is_distinct_from_continuation(monkeypatch, qu
         assert [f['type'] for f in old] == ['interrupted', 'turn_done']
         following, _ = await _collect_turn(ws)
         assert following[0]['text'] == words
-        assert len(fake.turns) == 2 and fake.turns[1]['text'] == words
-        assert fake.stopped == [fake.turns[0]]
+        # The words are a message to the running turn, which answers them; nothing stops it.
+        assert [(t['text'], t['redirects']) for t in fake.turns] == [('turn on the light', [words])]
+        assert fake.stopped == []
         await ws.close()
 
 

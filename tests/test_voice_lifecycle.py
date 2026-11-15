@@ -16,7 +16,6 @@ from tests.test_loop import _EchoSynth
 def worker(monkeypatch):
     monkeypatch.setattr(speech, 'spawn_context_thread',
                         lambda target, **kw: threading.Thread(target=target, args=kw.get('args', ()), daemon=True))
-    monkeypatch.setattr(speech, 'mark_speech_interrupted', lambda: None)
     sessions = []
 
     def create(**kwargs):

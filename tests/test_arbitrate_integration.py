@@ -53,7 +53,6 @@ def _speech_seams(monkeypatch):
     monkeypatch.setattr(speech, "sentence_chunker", lambda: _Chunker())
     monkeypatch.setattr(speech, "strip_markdown", lambda text: text)
     monkeypatch.setattr(speech, "sentence_boundary_re", lambda: re.compile(r"(?<=[.!?])\s+"))
-    monkeypatch.setattr(speech, "mark_speech_interrupted", lambda: None)
 
 
 async def _connect(client, device_name=DEVICE_NAME):

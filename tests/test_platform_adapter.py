@@ -319,6 +319,106 @@ async def test_turn_that_outlives_its_stop_never_blocks_or_speaks(rig):
     assert rig.adapter._abandoned == {} and rig.hub._attachments["den"].session.outputs == []
 
 
+@pytest.mark.parametrize("heard", [False, True])
+async def test_barged_run_nobody_follows_is_delivered_only_if_unheard(rig, heard):
+    """Barge-in leaves the run going. If the person's words never reach it (the capture was
+    empty), its reply is delivered as a Telegram reply would be, unless some of it was heard."""
+    turns, _ = await _turns(rig)
+    device = Device()
+    rig.hub.attach("den", device)
+    started, finish = asyncio.Event(), asyncio.Event()
+
+    async def handler(event):
+        started.set()
+        await finish.wait()
+        return "Rinse with plain water."
+
+    rig.adapter.set_message_handler(handler)
+    spoken = []
+    task = asyncio.ensure_future(turns.run_turn(text="my floors look gross", on_delta=spoken.append))
+    await started.wait()
+    turns.release(heard)
+    result = await task
+    assert (result.status, result.reply) == ("interrupted", "")
+    finish.set()
+    for _ in range(200):
+        if turns.settled and not rig.adapter._processing:
+            break
+        await asyncio.sleep(0.01)
+    expected = [] if heard else [("Rinse with plain water.", "listen", True)]
+    assert [(o.text, o.next_action, o.unheard) for o in device.outputs] == expected
+    assert spoken == []
+
+
+async def test_words_queued_behind_a_barged_run_hear_its_reply_then_their_own(rig):
+    """With no busy handler the gateway queues words that arrive mid-run (``busy_input_mode:
+    queue``). The turn that follows the barged run speaks its reply, then the answer to the words."""
+    turns, key = await _turns(rig)
+    started, finish = asyncio.Event(), asyncio.Event()
+
+    async def handler(event):
+        sid = rig.store.peek_session_id(key)
+        rig.adapter.on_stream_start(session_id=sid)
+        if event.text == "my floors look gross":
+            started.set()
+            rig.adapter.on_stream_delta(delta="Rinse ", kind="text", session_id=sid)
+            await finish.wait()
+            rig.adapter.on_stream_delta(delta="with plain water.", kind="text", session_id=sid)
+            return "Rinse with plain water."
+        rig.adapter.on_stream_delta(delta="Which remote?", kind="text", session_id=sid)
+        return "Which remote?"
+
+    rig.adapter.set_message_handler(handler)
+    first_spoken, spoken = [], []
+    first = asyncio.ensure_future(turns.run_turn(text="my floors look gross", on_delta=first_spoken.append))
+    await started.wait()
+    turns.release(False)
+    assert (await first).status == "interrupted"
+    second = asyncio.ensure_future(turns.run_turn(text="can I put the remote somewhere", on_delta=spoken.append))
+    await asyncio.sleep(0.05)
+    finish.set()
+    result = await second
+    assert (result.status, result.reply) == ("completed", "Which remote?")
+    assert first_spoken == ["Rinse "]
+    assert spoken == ["Rinse with plain water.", "Which remote?"]
+    assert turns.settled
+
+
+async def test_words_folded_into_a_barged_run_hear_its_next_response(rig):
+    """``busy_input_mode: interrupt`` redirects the running turn: the words become part of it and
+    its next response answers them. The turn that follows speaks that response only."""
+    turns, key = await _turns(rig)
+    started, redirected = asyncio.Event(), asyncio.Event()
+
+    async def busy(event, session_key):
+        redirected.set()
+        return True  # consumed by the running turn
+
+    async def handler(event):
+        sid = rig.store.peek_session_id(key)
+        rig.adapter.on_stream_start(session_id=sid)
+        started.set()
+        rig.adapter.on_stream_delta(delta="Turning on ", kind="text", session_id=sid)
+        await redirected.wait()
+        rig.adapter.on_stream_delta(delta="the lights.", kind="text", session_id=sid)  # the cancelled request
+        rig.adapter.on_stream_start(session_id=sid)  # the request again, with the words appended
+        rig.adapter.on_stream_delta(delta="Kitchen lights on, warm white.", kind="text", session_id=sid)
+        return "Kitchen lights on, warm white."
+
+    rig.adapter.set_message_handler(handler)
+    rig.adapter.set_busy_session_handler(busy)
+    first_spoken, spoken = [], []
+    first = asyncio.ensure_future(turns.run_turn(text="turn on the light", on_delta=first_spoken.append))
+    await started.wait()
+    turns.release(True)
+    assert (await first).status == "interrupted"
+    result = await turns.run_turn(text="the kitchen, warm white", on_delta=spoken.append)
+    assert (result.status, result.reply) == ("completed", "Kitchen lights on, warm white.")
+    assert first_spoken == ["Turning on "]
+    assert spoken == ["Kitchen lights on, warm white."]
+    assert turns.settled
+
+
 async def test_failed_turn_reports_an_error(rig):
     turns, _ = await _turns(rig)
 

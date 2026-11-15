@@ -33,7 +33,6 @@ class FailedModel:
 def test_soft_mumbling_does_not_cancel_but_deliberate_speech_does(monkeypatch, backend, phase):
     monkeypatch.setattr(speech, 'spawn_context_thread',
                         lambda target, **kw: threading.Thread(target=target, daemon=True))
-    monkeypatch.setattr(speech, 'mark_speech_interrupted', lambda: None)
     session = ConverseSession(np, vad_model='energy',
                               transcribe=lambda path: 'deliberate continuation')
     detector = session._detector
@@ -47,7 +46,7 @@ def test_soft_mumbling_does_not_cancel_but_deliberate_speech_does(monkeypatch, b
     if phase == 'pending':
         session._pending_turn.set()
     else:
-        session.begin_turn('reply', tts_stop=stop, on_interrupt=interrupted.set)
+        session.begin_turn('reply', tts_stop=stop, on_interrupt=lambda _stop_run: interrupted.set())
         if phase == 'speaking':
             session.set_playing(True, tts_stop=stop)
         elif phase == 'tail':
