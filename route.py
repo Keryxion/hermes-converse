@@ -349,13 +349,18 @@ class ConverseRoute:
             ready.pop('conversation_id')
             ready.update(recipient_id=device.recipient_id, assistant_name=device.assistant_name,
                          device_name=device.device_name)
+        history = getattr(client, "history", None)
+        rows = None
+        if transcripts and history is not None:
+            rows = await asyncio.to_thread(history.rows)
+            if isinstance(after, str):
+                # True when the client's cursor is not a message of the device's current session.
+                ready["new_session"] = not (after.isdigit() and int(after) in {row["id"] for row in rows or []})
         ready["server_send_unix_ms"] = int(time.time() * 1000)
         await ws.send_json(ready)
         # Catch the client up before anything live, then hand it any turn still running.
         relay, adopted = Relay(ws), None
-        history = getattr(client, "history", None)
-        if transcripts and history is not None:
-            rows = await asyncio.to_thread(history.rows)
+        if rows is not None:
             for replay in replay_frames(rows or [], after if isinstance(after, str) else None):
                 await ws.send_json(replay)
         adopted = self.hub.detached.pop(attachment.conversation_id, None)
@@ -613,6 +618,14 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                             # turn and no history. The client returns to its wake word afterwards.
                             session.transcripts.put(ConversationOutput(
                                 text, f"say-{uuid.uuid4().hex}", next_action="standby"))
+                    if frame.get("type") == "commands":
+                        listing = getattr(client, "commands", None)  # reads config.yaml: off the loop
+                        await ws.send_json({"type": "commands", "commands": await asyncio.to_thread(listing)}
+                                           if listing else {"type": "commands", "error": "failed"})
+                    if frame.get("type") == "command":
+                        task = asyncio.create_task(_command(frame.get("name"), frame.get("args")))
+                        wake_tasks.add(task)
+                        task.add_done_callback(wake_tasks.discard)
                     if frame.get("type") == "set_model":
                         request_id = frame.get("request_id")
                         if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", request_id):
@@ -646,6 +659,37 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
             _mark_closed(ws, "lost", 1006)
             logger.debug("converse client pump ended", exc_info=True)
         session.stop()
+
+    async def _command(name: Any, args: Any) -> None:
+        reply: dict[str, Any] = {"type": "command", "name": name}
+        command: Optional[str] = None
+        if args is not None:
+            reply["args"] = args
+        if (not isinstance(name, str) or not re.fullmatch(r"[a-z0-9_-]{1,40}", name)
+                or (args is not None and not isinstance(args, str))):
+            reply["error"] = "bad_command"
+        elif not hasattr(client, "run_command"):
+            reply["error"] = "failed"
+        elif (command := await asyncio.to_thread(client.canonical_command, name)) is None:
+            reply["error"] = "unknown_command"
+        else:
+            session.cancel()
+            text = f"/{name} {args or ''}".strip()
+            try:
+                result = await client.run_command(text)
+            except Exception:
+                logger.warning("converse: command %r failed", text, exc_info=True)
+                result = None
+            if result is None:
+                reply["error"] = "failed"
+            else:
+                reply["reply"] = result
+        if not ws.closed:
+            await ws.send_json(reply)
+            if "reply" in reply and command == "new":  # or an alias of it, such as reset
+                # The client reconnects and finds the fresh conversation with a normal start.
+                _mark_closed(ws, "server", 4410)
+                await ws.close(code=4410, message=b"conversation_changed")
 
     async def _run_turn(transcript: str, on_delta, *, interrupted: bool) -> tuple[str, Optional[str]]:
         model, provider = selected_model  # Snapshot once; do not alter a turn already in flight.

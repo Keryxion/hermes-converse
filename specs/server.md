@@ -295,6 +295,7 @@ and API-key authentication stay on the API server.
 | Turn settled | `on_processing_complete` |
 | Barge-in, `cancel`, `stop` | `interrupt_session_activity`, then wait for the turn to settle |
 | Tool and reasoning progress | `pre_tool_call` and `post_api_request` plugin hooks |
+| `command` from the client | the gateway command named in `name`, with `args`, after stopping any turn in flight; its reply is not spoken and goes back to the client in a `command` frame |
 | Model selection | the gateway `/model` command, sent only when the choice differs from the session's; its confirmation is not spoken |
 
 For a named device the chat is the device's conversation: chat name
@@ -330,6 +331,28 @@ earlier turn has not settled.
 At startup a socket waits up to 30 s for the platform to connect. When the
 platform is not hosted, the connection is refused with `conversation_unavailable`.
 
+## Commands from a device
+
+A `command` frame names any gateway command, without its slash, and may carry
+`args`. Pass `/<name> <args>` to the gateway for the device's conversation as a
+chat user's command would be, and return its
+reply in a `command` frame without speaking it. There is no list of allowed
+commands: a device holding the API key can run what a chat user can, including
+commands that change approvals.
+
+Answer a `commands` frame with Hermes's command registry as its Telegram
+command menu lists it: each command that runs outside a terminal, with its
+description, aliases, `args_hint`, and subcommands, then plugin commands. Do not
+filter by the slash-access policy; the gateway applies it when a command runs. Answer
+a `command` frame whose `name` is not one of Hermes's commands or aliases with
+`unknown_command` instead of sending it.
+
+After a command that starts a new conversation (`new`, or any alias of it), send the answer and
+then close the socket with `4410 conversation_changed`. Do not move the live
+socket to the new conversation: the device reconnects and attaches to it in the
+ordinary way. The conversation keeps the title
+`<assistant_name>: <device_name>`.
+
 ## Catching up
 
 Give every user `transcript` frame, and the closing assistant frame of each
@@ -351,6 +374,11 @@ before any live frame. Keep no second copy.
 - With `after`, replay every such message after it, up to the most recent 100.
   Without `after`, or when `after` is not a message of the current
   conversation, replay the most recent 20.
+- When `start` carried `after`, say in `ready` whether it still applies:
+  `new_session` is false when `after` is a message of the current
+  conversation and true when it is not. True is how a client learns its conversation
+  was replaced, whatever replaced it: a `command` frame, the Hermes web UI, or a
+  deleted conversation.
 - Include messages that compaction has folded away when Hermes still has them.
 
 ### Nobody attached

@@ -238,6 +238,31 @@ async def test_settings_drive_the_model_and_the_prompt(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_command_frame_runs_the_command_and_new_closes_the_socket(monkeypatch):
+    fake = FakeHermes(API_KEY)
+    async with Harness(fake, {}) as client:
+        ws = await client.ws_connect("/v1/audio/converse", protocols=(VOICE_PROTOCOL, _key_protocol()))
+        await ws.send_str(_start_msg())
+        assert (await ws.receive_json())["type"] == "ready"
+        await ws.send_json({"type": "command", "name": "/new"})
+        assert await ws.receive_json() == {"type": "command", "name": "/new", "error": "bad_command"}
+        await ws.send_json({"type": "command", "name": "no-such-command"})
+        assert await ws.receive_json() == {"type": "command", "name": "no-such-command", "error": "unknown_command"}
+        await ws.send_json({"type": "commands"})
+        listing = await ws.receive_json()
+        assert listing["type"] == "commands" and "new" in {entry["name"] for entry in listing["commands"]}
+        await ws.send_json({"type": "command", "name": "compress", "args": "keep it short"})
+        frame = await ws.receive_json()
+        assert frame["name"] == "compress" and frame["args"] == "keep it short" and "reply" in frame
+        await ws.send_json({"type": "command", "name": "reset"})  # an alias of new closes the socket too
+        frame = await ws.receive_json()
+        assert frame["type"] == "command" and frame["name"] == "reset" and "reply" in frame
+        await ws.receive()
+        assert ws.close_code == 4410
+    assert [turn["text"] for turn in fake.turns] == ["/compress keep it short", "/reset"]  # the fake gateway has no commands of its own
+
+
+@pytest.mark.asyncio
 async def test_start_name_overrides_the_configured_name(monkeypatch):
     fake = FakeHermes(API_KEY)
     _patch_speech(monkeypatch, _FakeStreamer([b"\x01"]), transcript="hi")

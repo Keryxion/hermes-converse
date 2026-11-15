@@ -34,6 +34,7 @@ from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from .server_turn import ServerTurn
 
 from .catchup import History
+from . import command_catalog
 
 from .approvals import Approvals
 
@@ -166,6 +167,28 @@ class ConverseAdapter(BasePlatformAdapter):
             logger.info("converse: %s -> %s", text, " ".join((command.reply or "").split())[:200])
         except TimeoutError:
             logger.warning("converse: %r did not finish in %.0fs", text, COMMAND_TIMEOUT)
+        finally:
+            if self._commands.get(source.chat_id) is command:
+                self._commands.pop(source.chat_id, None)
+
+    async def run_command(self, source: Any, text: str) -> Optional[str]:
+        """Run the gateway slash command *text* for the chat, as a chat user would. Its reply is
+        returned, not spoken. None when the gateway did not take it or it did not finish."""
+        event = MessageEvent(text=text, message_type=MessageType.COMMAND, source=source,
+                             message_id=f"command-{uuid.uuid4().hex}")
+        command = _Command(event)
+        self._commands[source.chat_id] = command
+        try:
+            await self.handle_message(event)
+            if not event._gateway_accepted:
+                logger.warning("converse: the gateway did not accept %r", text)
+                return None
+            await asyncio.wait_for(command.done.wait(), COMMAND_TIMEOUT)
+            logger.info("converse: %s -> %s", text, " ".join((command.reply or "").split())[:200])
+            return command.reply or ""
+        except TimeoutError:
+            logger.warning("converse: %r did not finish in %.0fs", text, COMMAND_TIMEOUT)
+            return None
         finally:
             if self._commands.get(source.chat_id) is command:
                 self._commands.pop(source.chat_id, None)
@@ -463,6 +486,20 @@ class GatewayTurns:
         if turn.outcome is ProcessingOutcome.CANCELLED:
             return TurnResult("", "agent run was cancelled", "cancelled", turn_id)
         return TurnResult("", "agent run failed", "failed", turn_id)
+
+    def commands(self) -> list[dict[str, Any]]:
+        """The gateway commands this device may name in a ``command`` frame."""
+        return command_catalog.catalog()
+
+    def canonical_command(self, name: str) -> Optional[str]:
+        """The canonical name of command or alias *name*; None when the gateway has no such command."""
+        return command_catalog.canonical(name)
+
+    async def run_command(self, text: str) -> Optional[str]:
+        """End the turn in flight, then run the gateway command; its reply, or None on failure."""
+        await self.stop()
+        self._model = None  # a command such as /new may drop the model override; the next turn sets it again
+        return await self._adapter.run_command(self._source, text)
 
     async def stop(self) -> None:
         """Interrupt the turn in flight (barge-in, socket close) and wait — bounded — for it to settle."""
