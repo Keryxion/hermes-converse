@@ -953,6 +953,18 @@ bundles four sounds: `alarm-1`, `alarm-2`, `alarm-3`, and `alarm-4`. Play the
 one named in `sound`, repeating it. A countdown whose deadline passed while the
 device was off is not rung late.
 
+A word said over the ringing must still be heard, so the device rings in a way
+its detectors can hear through:
+
+- **Through the echo canceller.** Play the countdown sound on the same output
+  path as reply audio, so echo cancellation removes it from what the wake word
+  detectors hear, as it does for a reply.
+- **With gaps.** After each play of the sound, stay silent for at least one
+  second before the next. A word said in the gap is heard in quiet.
+- **Rising.** Start at a third of the device's volume and rise to full over the
+  first 30 seconds. Most countdowns are ended early, while the sound is still
+  low.
+
 The alarm keeps ringing until the first of:
 
 - a local dismissal: a button or a tap on the device;
