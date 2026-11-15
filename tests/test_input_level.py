@@ -137,3 +137,18 @@ def test_a_sentence_nobody_detected_yet_does_not_lower_the_gain():
     for i in range(100):                                   # the room again: back at once
         lv.apply(block(4, 2000 + i), learn=True)
     assert abs(lv.gain_db - before) < 1.0
+
+
+def test_stt_copy_is_one_gain_high_passed_and_never_quieter():
+    rate = 16000
+    t = np.arange(rate * 2) / rate
+    voice = 600 * np.sin(2 * np.pi * 300 * t) * np.where(t < 1, 0.5, 1.0)  # quiet, its second half twice the first
+    hum = 400 * np.sin(2 * np.pi * 50 * t)
+    out = level.for_stt(np, (voice + hum).astype(np.int16), rate).astype(np.float64)
+    assert np.percentile(np.abs(out), 99.9) > 0.6 * 32767                    # brought up to about -3 dBFS
+    first, second = np.sqrt(np.mean(out[2000:14000] ** 2)), np.sqrt(np.mean(out[18000:30000] ** 2))
+    assert abs(second / first - 2) < 0.1                                     # one gain: the ratio stays
+    spectrum = np.abs(np.fft.rfft(out)); f = np.fft.rfftfreq(out.size, 1 / rate)
+    assert spectrum[(f > 45) & (f < 55)].max() < 1e-3 * spectrum.max()       # the 50 Hz hum is gone
+    loud = (20000 * np.sin(2 * np.pi * 300 * t)).astype(np.int16)
+    assert np.abs(level.for_stt(np, loud, rate)).max() >= 19000               # never quieter than received
