@@ -6,7 +6,7 @@ import pytest
 from hermes_converse import speech
 from tests.support.fake_hermes import FakeHermes
 from tests.test_route import (API_KEY, Harness, _FakeStreamer, _patch_speech, _start_msg,
-                              _collect_turn, _speech_then_silence_pcm)
+                              _collect_turn, _speech_then_silence_pcm, device_conversation_id)
 
 
 async def connect(client, **fields):
@@ -40,8 +40,8 @@ async def test_idle_output_without_mic_wake_or_model_and_reconnect(monkeypatch):
     harness = Harness(fake)
     async with harness as client:
         ws, ready = await connect(client)
-        cid = ready['conversation_id']
-        assert cid == ready['session_id']
+        cid = device_conversation_id(client)
+        assert cid != ready['session_id']  # the conversation outlives this socket's session
         response = await publish(client, cid)
         assert response.status == 202
         frames, pcm = await _collect_turn(ws)
@@ -55,28 +55,22 @@ async def test_idle_output_without_mic_wake_or_model_and_reconnect(monkeypatch):
             if cid not in harness.route.hub._attachments:
                 break
             await asyncio.sleep(.01)
-        ws, attached = await connect(client, conversation_id=cid)
-        assert attached['type'] == 'ready' and attached['conversation_id'] == cid
+        ws, attached = await connect(client)  # the same names find the same conversation
+        assert attached['type'] == 'ready' and device_conversation_id(client) == cid
         assert (await publish(client, cid, event_id='event-2')).status == 202
         await _collect_turn(ws)
         await ws.close()
 
 
 @pytest.mark.asyncio
-async def test_authorization_attachment_conflicts_and_validation(monkeypatch):
+async def test_output_to_an_unattached_or_expired_conversation_is_refused(monkeypatch):
     _patch_speech(monkeypatch, _FakeStreamer([b'\x01\x02']))
     async with Harness(FakeHermes(API_KEY)) as client:
-        ws, ready = await connect(client)
-        cid = ready['conversation_id']
-        second, error = await connect(client, conversation_id=cid)
-        assert error['error'] == 'conversation_in_use'
-        await second.close()
-        missing, error = await connect(client, conversation_id='not-a-conversation')
-        assert error['error'] == 'conversation_unavailable'
-        await missing.close()
-        bad, error = await connect(client, conversation_id='../secret')
-        assert error['error'] == 'bad_conversation_id'
-        await bad.close()
+        ws, _ = await connect(client)
+        cid = device_conversation_id(client)
+        refused, error = await connect(client, conversation_id=cid)
+        assert error == {'type': 'error', 'error': 'bad_start'}  # no client-chosen conversation
+        await refused.close()
         assert (await publish(client, 'unattached')).status == 409
         assert (await publish(client, cid, expires_at_unix_ms=0)).status == 410
         await ws.close()
@@ -87,7 +81,7 @@ async def test_second_output_waits_for_matching_speaker_drain(monkeypatch):
     _patch_speech(monkeypatch, _FakeStreamer([b'\x01\x02']))
     async with Harness(FakeHermes(API_KEY)) as client:
         ws, ready = await connect(client)
-        cid = ready['conversation_id']
+        cid = device_conversation_id(client)
         await publish(client, cid)
         frames, _ = await _collect_turn(ws, drain=False)
         await publish(client, cid, event_id='second')
@@ -168,7 +162,7 @@ async def test_expired_queued_output_is_skipped_and_other_outputs_still_run(monk
     _patch_speech(monkeypatch, _FakeStreamer([b'\x01\x02']))
     async with Harness(FakeHermes(API_KEY)) as client:
         ws, ready = await connect(client)
-        cid = ready['conversation_id']
+        cid = device_conversation_id(client)
         await publish(client, cid)
         first, _ = await _collect_turn(ws, drain=False)
         await publish(client, cid, event_id='expires', expires_at_unix_ms=(time.time() + .1) * 1000)
@@ -189,7 +183,7 @@ async def test_output_waits_for_in_progress_capture_even_if_stt_is_empty(monkeyp
     harness = Harness(fake)
     async with harness as client:
         ws, ready = await connect(client, transcripts=True)
-        cid = ready['conversation_id']
+        cid = device_conversation_id(client)
         audio = _speech_then_silence_pcm()
         for frame in audio[:-60]:
             await ws.send_bytes(frame)
@@ -217,7 +211,7 @@ async def test_cancel_after_turn_done_replaces_pending_standby(monkeypatch):
     _patch_speech(monkeypatch, _FakeStreamer([b'\x01\x02']))
     async with Harness(FakeHermes(API_KEY)) as client:
         ws, ready = await connect(client)
-        await publish(client, ready['conversation_id'])
+        await publish(client, device_conversation_id(client))
         first, _ = await _collect_turn(ws, drain=False)
         turn_id = first[-1]['turn_id']
         assert first[-1]['next_action'] == 'standby'

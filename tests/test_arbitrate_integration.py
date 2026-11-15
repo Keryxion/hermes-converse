@@ -12,7 +12,8 @@ from aiohttp import web
 from hermes_converse import speech
 from tests.support.fake_hermes import FakeHermes
 from tests.test_route import (
-    Harness, _FakeStreamer, _patch_speech, _collect_turn, _speech_then_silence_pcm, _start_msg,
+    API_KEY, DEVICE_NAME, Harness, _FakeStreamer, _patch_speech, _collect_turn,
+    _speech_then_silence_pcm, _start_msg,
 )
 
 # After a granted wake the capture holds for WAKE_SPEECH_MS of speech before it accepts a pause,
@@ -55,9 +56,10 @@ def _speech_seams(monkeypatch):
     monkeypatch.setattr(speech, "mark_speech_interrupted", lambda: None)
 
 
-async def _connect(client):
+async def _connect(client, device_name=DEVICE_NAME):
+    """One device's socket. Two sockets in a room are two devices, so give each its own name."""
     ws = await client.ws_connect('/v1/audio/converse')
-    await ws.send_str(_start_msg(key='-'.join(('fixture', 'converse', 'api', 'key', '0123456789'))))
+    await ws.send_str(_start_msg(key=API_KEY, device_name=device_name))
     assert (await ws.receive_json(timeout=2))['type'] == 'ready'
     return ws
 
@@ -113,7 +115,7 @@ async def test_denial_is_advisory_and_followups_run(monkeypatch, first_signals, 
     fake = _patch(monkeypatch)
     async with Harness(fake, settings={'arbitrate_enabled': True,
                                         'arbitrate_device_id': 'shared-label'}) as client:
-        first, second = await _connect(client), await _connect(client)
+        first, second = await _connect(client, 'Den Echo'), await _connect(client, 'Kitchen Echo')
         await first.send_json({'type': 'wake', 'claim_id': 'first', 'wake_word': 'Hey Arya',
                                **first_signals})
         await second.send_json({'type': 'wake', 'claim_id': 'second', 'wake_word': 'Hey Arya',
@@ -135,7 +137,7 @@ async def test_denial_is_advisory_and_followups_run(monkeypatch, first_signals, 
 async def test_clients_without_wake_both_answer_same_transcript(monkeypatch):
     fake = _patch(monkeypatch)
     async with Harness(fake, settings={'arbitrate_enabled': True}) as client:
-        first, second = await _connect(client), await _connect(client)
+        first, second = await _connect(client, 'Den Echo'), await _connect(client, 'Kitchen Echo')
         await asyncio.gather(_audio_turn(first), _audio_turn(second))
         assert len(fake.turns) == 2
         await first.close()
@@ -212,7 +214,7 @@ async def test_default_window_over_websockets(monkeypatch, spacing, second_phras
     """Audio-free diagnostic: each deadline starts at that client's own send."""
     fake = _patch(monkeypatch)
     async with Harness(fake, settings={'arbitrate_enabled': True}) as client:
-        first, second = await _connect(client), await _connect(client)
+        first, second = await _connect(client, 'Den Echo'), await _connect(client, 'Kitchen Echo')
         clock = asyncio.get_running_loop().time
 
         async def claim(ws, claim_id, phrase, confidence):

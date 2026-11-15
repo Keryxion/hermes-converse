@@ -90,26 +90,12 @@ async def test_closing_the_socket_stops_the_turn_in_flight(tmp_path, monkeypatch
     assert len(fake.stopped) == 1
 
 
-async def test_socket_without_names_gets_a_conversation_it_can_reattach(monkeypatch):
+async def test_a_socket_cannot_name_its_own_conversation(tmp_path, monkeypatch):
+    """There is no client-chosen conversation: the names alone select it."""
     fake = _patch(monkeypatch)
-    async with Harness(fake) as client:
-        ws, ready = await _connect(client, assistant_name=None, device_name=None)
-        conversation = ready["conversation_id"]
-        assert ready["type"] == "ready" and conversation.startswith("voice_")
-        await _say(ws)
-        await ws.close()
-        ws, again = await _connect(client, assistant_name=None, device_name=None, conversation_id=conversation)
-        assert again["conversation_id"] == conversation
-        await _say(ws)
-        await ws.close()
-    assert [turn["chat_id"] for turn in fake.turns] == [conversation, conversation]
-
-
-async def test_unknown_conversation_id_is_refused(monkeypatch):
-    fake = _patch(monkeypatch)
-    async with Harness(fake) as client:
-        _, refused = await _connect(client, assistant_name=None, device_name=None, conversation_id="voice_nope")
-        assert refused == {"type": "error", "error": "conversation_unavailable"}
+    async with Harness(fake, device_store=DeviceStore(tmp_path / "devices.db")) as client:
+        _, refused = await _connect(client, conversation_id="voice_nope")
+        assert refused == {"type": "error", "error": "bad_start"}
     assert not fake.store.ids
 
 

@@ -17,13 +17,10 @@ class NamedError(Exception):
         self.error, self.code = error, code
 
 
-def parse_names(frame: dict) -> tuple[str, str] | None:
-    """Read the ordinary name fields without a conversation override."""
-    if 'conversation' in frame:
-        raise NamedError('bad_start', 4400)
-    if 'assistant_name' not in frame and 'device_name' not in frame:
-        return None
-    if any(key in frame for key in ('conversation_id', 'profile', 'name')):
+def parse_names(frame: dict) -> tuple[str, str]:
+    """The ``start`` frame's required names. Both are mandatory and no other identity or
+    conversation field is accepted."""
+    if any(key in frame for key in ('conversation', 'conversation_id', 'profile', 'name')):
         raise NamedError('bad_start', 4400)
     names = []
     for key in ('assistant_name', 'device_name'):
