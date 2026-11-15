@@ -604,7 +604,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                     if frame.get("type") == "state":
                         # Leaving `speaking` for a turn: its audio has played or been discarded.
                         if isinstance(frame.get("turn_id"), str) and frame.get("state") != "speaking":
-                            session.notify_drained(frame["turn_id"])
+                            session.playback_ended(frame["turn_id"])
                     if (frame.get("type") == "countdown" and attachment is not None
                             and getattr(hub, "countdowns", None) is not None):
                         hub.countdowns.reported(attachment.conversation_id, frame)

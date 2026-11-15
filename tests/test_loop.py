@@ -301,11 +301,11 @@ def test_playback_tail_suppresses_quiet_until_drained():
     for _ in range(50):
         session._account_received_silence()
     assert _drain_ticks() == []
-    session.notify_drained("other")
+    session.playback_ended("other")
     for _ in range(50):
         session._account_received_silence()
     assert _drain_ticks() == []
-    session.notify_drained("t1")
+    session.playback_ended("t1")
     for _ in range(50):
         session._account_received_silence()
     assert len(_drain_ticks()) >= 1
@@ -534,7 +534,7 @@ class _FakeConverseSession:
     def end_playback_tail(self):
         pass
 
-    def notify_drained(self, turn_id=None):
+    def playback_ended(self, turn_id=None):
         pass
 
 
@@ -954,9 +954,9 @@ def test_standby_preserves_playback_tail_until_matching_drain():
             sent.append(frame)
             if isinstance(frame, dict) and frame.get("type") == "turn_done":
                 assert session._tail_active
-                session.notify_drained("another-turn")
+                session.playback_ended("another-turn")
                 assert session._tail_active
-                session.notify_drained(frame["turn_id"])
+                session.playback_ended(frame["turn_id"])
         async def run(text, on_delta, **kwargs):
             on_delta("Goodbye. Over and out.")
             return "Goodbye. Over and out.", None
@@ -1407,7 +1407,7 @@ def test_answer_taken_ends_the_wait_before_it_is_settled():
 def test_a_state_report_ends_the_tail_only_when_it_leaves_speaking_for_that_turn():
     session = ConverseSession(np)
     session.begin_playback_tail("turn-1", 5)
-    session.notify_drained("turn-0")  # another turn: ignored
+    session.playback_ended("turn-0")  # another turn: ignored
     assert session._tail_active
-    session.notify_drained("turn-1")
+    session.playback_ended("turn-1")
     assert not session._tail_active and session._tail_result[1] == "reported"

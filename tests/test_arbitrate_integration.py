@@ -183,7 +183,7 @@ async def test_invalid_wake_does_not_close_socket(monkeypatch):
 async def test_pending_wake_does_not_block_control_frames(monkeypatch):
     from hermes_converse.loop import ConverseSession
 
-    seen = {name: asyncio.Event() for name in ('cancel', 'commit', 'notify_drained')}
+    seen = {name: asyncio.Event() for name in ('cancel', 'commit', 'playback_ended')}
     for name, event in seen.items():
         original = getattr(ConverseSession, name)
         def record(self, *args, _original=original, _event=event):

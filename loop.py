@@ -340,8 +340,8 @@ class ConverseSession:
         self._active_turn_id: Optional[str] = None
         self._interrupt_callback: Optional[Callable[[], None]] = None
         self.on_tail_barge: Optional[Callable[[Optional[str]], None]] = None
-        self._tail_drained = threading.Event()
-        self._tail_drained.set()
+        self._tail_ended = threading.Event()
+        self._tail_ended.set()
         self._tail_interrupted = False
         # Playback tail: between turn_done and the client's state report (or a fallback) the client is
         # still PLAYING the reply; quiet is suppressed and onset must pass the echo guard.
@@ -489,7 +489,7 @@ class ConverseSession:
         """End the loop and unblock the reader and any transcript waiter."""
         self._stop.set()
         self.stream.close()
-        self._tail_drained.set()
+        self._tail_ended.set()
         self.transcripts.put(None)
 
     @property
@@ -729,7 +729,7 @@ class ConverseSession:
         """Driver hook: the reply is fully SENT but the client is still PLAYING it."""
         if fallback_seconds <= 0:
             return
-        self._tail_drained.clear()
+        self._tail_ended.clear()
         self._tail_interrupted = False
         self._tail_active = True
         self._tail_turn_id = turn_id
@@ -747,13 +747,13 @@ class ConverseSession:
         if not self.capture_pending():
             self.stream.discard()
             self._pre_roll.clear()
-        self._tail_drained.set()
+        self._tail_ended.set()
         self._active_turn_id = None
         self._tts_stop = None
         self._reset_quiet()
 
     @_session_state
-    def notify_drained(self, turn_id: Optional[str] = None) -> None:
+    def playback_ended(self, turn_id: Optional[str] = None) -> None:
         """Client hook (its ``state`` left ``speaking``): ends the playback tail for the matching
         turn (or the current tail when no id is given)."""
         if self._tail_active and (turn_id is None or turn_id == self._tail_turn_id):
@@ -762,7 +762,7 @@ class ConverseSession:
     async def wait_for_playback_tail(self) -> None:
         if self._tail_active:
             remaining = max(0, self._tail_deadline - time.monotonic())
-            await asyncio.get_running_loop().run_in_executor(None, self._tail_drained.wait, remaining)
+            await asyncio.get_running_loop().run_in_executor(None, self._tail_ended.wait, remaining)
             if self._tail_active:
                 self.end_playback_tail("disconnected" if self._stop.is_set() else "timeout")
 
