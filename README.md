@@ -130,7 +130,6 @@ plugin settings form):
 
 | key | default | what it does |
 |---|---|---|
-| `name` | `Arya` | the assistant's name in the voice prompt when the start frame has none |
 | `voice_model`, `voice_provider` | `""` | a voice-only model override sent with every run |
 | `turn_timeout_seconds` | `120` | a turn that makes no progress for this long is stopped and reported; each tool call and model call counts as progress |
 | `playback_tail_timeout_seconds` | `45` | how long to wait for the client's `drained` frame |
@@ -306,16 +305,14 @@ upstream PR publishes; nothing else in the plugin touches core internals.
 ## Profiles
 
 The route serves the Hermes profile that owns the configured API server listener.
-`start.profile` is not supported by the client contract: all clients must omit it
-and delete their profile selector and saved per-server profile setting. Discard
-legacy values rather than sending `null`, an empty string, or `"default"`.
-Select the server URL and authenticate normally; neither `start.name` nor a
-client-constructed `/p/<profile>/` route replaces profile selection.
-
-Deployed servers may still parse the legacy field and reject it with
-`profile_unsupported` (4400). The parser remains in the current implementation;
-clients must remove the field regardless. See [specs/client.md](specs/client.md)
-for the removal contract.
+A client selects the server URL and authenticates to it; `start` does not select a
+profile. `start` carries `assistant_name` and `device_name` and nothing else that
+names a profile or a conversation: a `profile`, `name`, `conversation` or
+`conversation_id` field closes the socket with `4400 bad_start`, and so does a
+`start` missing either name. There is no profile-prefixed `/p/<profile>/` route.
+Delete any profile selector and saved per-server profile setting in a client, and
+discard legacy values instead of sending `null`, `""` or `"default"`.
+See [specs/client.md](specs/client.md) for the client contract.
 
 The voice lifecycle and server integration contract are in [specs/server.md](specs/server.md).
 

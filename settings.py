@@ -13,7 +13,6 @@ from typing import Any, Callable, Optional
 from .arbitrate import DEFAULT_WAKE_WINDOW, POLICY_FIRST_TO_ENDPOINT, POLICY_WAKE_SIGNAL
 from .speech_detector import DEFAULT_VAD_MODEL
 
-DEFAULT_NAME = "Arya"
 # ── cross-device voice arbitration ────────────────────────────────────────────────────────
 DEFAULT_ARBITRATE_POLICY = POLICY_WAKE_SIGNAL
 DEFAULT_ARBITRATE_DEVICE_ID = None  # ''/None = auto-generate from socket
@@ -51,7 +50,6 @@ Getter = Callable[..., Any]
 
 @dataclass(frozen=True)
 class Settings:
-    name: str = DEFAULT_NAME
     model: Optional[str] = None
     provider: Optional[str] = None
     turn_timeout: float = DEFAULT_TURN_TIMEOUT
@@ -118,7 +116,6 @@ def load_settings(get: Getter) -> Settings:
     approval = str(get("approval_choice", "deny") or "deny").strip().lower()
     silence_ms = _milliseconds(get("endpoint_silence_ms", DEFAULT_ENDPOINT_SILENCE_MS), DEFAULT_ENDPOINT_SILENCE_MS)
     return Settings(
-        name=_text(get("name", DEFAULT_NAME)) or DEFAULT_NAME,
         model=_text(get("voice_model", "")),
         provider=_text(get("voice_provider", "")),
         turn_timeout=_number(get("turn_timeout_seconds", DEFAULT_TURN_TIMEOUT), DEFAULT_TURN_TIMEOUT),

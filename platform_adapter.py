@@ -131,10 +131,6 @@ class ConverseAdapter(BasePlatformAdapter):
         return self.build_source(chat_id=chat_id, chat_name=title, chat_type="dm",
                                  user_id=recipient_id, user_name=device_name)
 
-    def has_conversation(self, source: Any) -> bool:
-        store = getattr(self, "_session_store", None)
-        return store is not None and store.lookup_by_session_key(self._source_session_key(source)) is not None
-
     async def bind(self, source: Any) -> str:
         """Make sure the gateway conversation for this chat exists; return its session key."""
         store = getattr(self, "_session_store", None)

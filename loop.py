@@ -34,7 +34,7 @@ from . import speech, vad
 from .speech_detector import DEFAULT_VAD_MODEL, SpeechDetector
 from .settings import (
     DEFAULT_CAPTURE_NO_DATA_SECONDS, DEFAULT_ENDPOINT_MAX_SILENCE_MS,
-    DEFAULT_ENDPOINT_SILENCE_MS, DEFAULT_MAX_TTS_CHARS, DEFAULT_NAME, DEFAULT_TAIL_FALLBACK,
+    DEFAULT_ENDPOINT_SILENCE_MS, DEFAULT_MAX_TTS_CHARS, DEFAULT_TAIL_FALLBACK,
     DEFAULT_TURN_TIMEOUT)
 from .synth import split_text_for_tts_stream
 from .tracing import PhaseRecorder, emit_turn_trace, start_turn
@@ -958,17 +958,14 @@ def parse_quiet_interval(raw: Any) -> float:
     return 0.0 if val <= 0 else min(val, QUIET_INTERVAL_MAX)
 
 
-def parse_start_config(frame: dict[str, Any], *, default_name: str = DEFAULT_NAME,
-                       ) -> tuple[int, int, float, str, Optional[str]]:
-    """``(input_rate, output_rate, quiet_interval, name, profile)`` from a ``start`` frame. All
-    fields optional; rates are clamped to [8000, 48000]."""
+def parse_start_config(frame: dict[str, Any]) -> tuple[int, int, float]:
+    """``(input_rate, output_rate, quiet_interval)`` from a ``start`` frame. All three are
+    optional; rates are clamped to [8000, 48000]. The names are parsed separately and required,
+    see :func:`~.named.parse_names`."""
     input_rate = clamp_sample_rate(frame.get("input_rate"), DEFAULT_INPUT_RATE)
     output_rate = clamp_sample_rate(frame.get("output_rate"), DEFAULT_OUTPUT_RATE)
     quiet_interval = parse_quiet_interval(frame.get("quiet_interval"))
-    raw_name = frame.get("assistant_name", frame.get("name"))
-    name = str(raw_name).strip() if raw_name is not None and str(raw_name).strip() else default_name
-    profile = frame.get("profile") or None
-    return input_rate, output_rate, quiet_interval, name, (str(profile).strip() if profile else None)
+    return input_rate, output_rate, quiet_interval
 
 
 # Voice replies are spoken aloud — keep them short and speakable. Sent as the turn's channel prompt

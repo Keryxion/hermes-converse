@@ -8,7 +8,9 @@ from __future__ import annotations
 import asyncio
 import functools
 import json
+import tempfile
 import wave
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -18,6 +20,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from hermes_converse import speech
 from hermes_converse.loop import voice_system_prompt
 from gateway.config import PlatformConfig
+from hermes_converse.named import DeviceStore
 from hermes_converse.platform_adapter import ConverseAdapter
 from hermes_converse.route import ConverseRoute, loopback_base_url
 from hermes_converse.settings import load_settings
@@ -28,6 +31,9 @@ from tests.support.fake_hermes import FakeHermes
 
 API_KEY = "-".join(("fixture", "converse", "api", "key", "0123456789"))
 VOICE_PROTOCOL = "hermes-voice-v1"
+# Every start frame carries both names; these are the defaults a test does not care about.
+ASSISTANT_NAME = "Arya"
+DEVICE_NAME = "Test Echo"
 
 
 def _key_protocol(key=API_KEY):
@@ -35,10 +41,16 @@ def _key_protocol(key=API_KEY):
 
 
 def _start_msg(key=None, **cfg):
-    frame = {"type": "start", **cfg}
+    frame = {"type": "start", "assistant_name": ASSISTANT_NAME, "device_name": DEVICE_NAME, **cfg}
     if key is not None:
         frame["key"] = key
     return json.dumps(frame)
+
+
+def device_conversation_id(client):
+    """The hub key of the only socket attached to *client* — the device's conversation."""
+    (attached,) = client.app["hub"]._attachments
+    return attached
 
 
 class _FakeStreamer:
@@ -64,8 +76,11 @@ class Harness:
         app = web.Application()
         app.add_routes(fake.routes())
         getter = lambda key, default=None: self.settings.get(key, default)  # noqa: E731
+        if device_store is None:
+            # Device identity is per harness: one test's names never reuse another's conversation.
+            device_store = DeviceStore(Path(tempfile.mkdtemp(prefix="converse-devices-"))/"devices.db")
         self.route = ConverseRoute(settings_getter=getter, base_url_resolver=lambda: self.base["url"],
-                                   profile_name="default", device_store=device_store)
+                                   device_store=device_store)
         self.route.wire(app)
         app['hub'] = self.route.hub
         self.app = app
@@ -140,6 +155,8 @@ async def _drive_full_turn(ws, streamer):
     assert ready["input"] == {"sample_rate": 16000, "format": "pcm16", "block_ms": 30}
     assert ready["output"] == {"sample_rate": 24000, "format": "pcm16"}
     assert ready["session_id"]
+    assert ready["assistant_name"] == ASSISTANT_NAME and ready["device_name"] == DEVICE_NAME
+    assert ready["recipient_id"] and "conversation_id" not in ready
     assert isinstance(ready["server_recv_unix_ms"], int)
     assert ready["server_send_unix_ms"] >= ready["server_recv_unix_ms"]
     for frame in _speech_then_silence_pcm():
@@ -149,7 +166,7 @@ async def _drive_full_turn(ws, streamer):
     assert streamer.requests
     assert [f["type"] for f in frames] == ["thinking", "speaking", "turn_done"]
     assert frames[-1]["next_action"] == "listen"
-    return frames
+    return ready, frames
 
 
 async def _end(ws):
@@ -167,13 +184,14 @@ async def test_subprotocol_key_accept_full_turn_through_the_gateway(monkeypatch)
         try:
             assert ws.protocol == VOICE_PROTOCOL  # the key-bearing protocol is never echoed
             await ws.send_str(_start_msg())
-            await _drive_full_turn(ws, streamer)
+            ready, _ = await _drive_full_turn(ws, streamer)
         finally:
             await _end(ws)
     (turn,) = fake.turns
     assert turn["text"] == "turn it on"
-    assert turn["chat_id"].startswith("voice_")
-    assert turn["instructions"] == voice_system_prompt("Arya")
+    assert turn["chat_name"] == f"{ASSISTANT_NAME}: {DEVICE_NAME}"
+    assert turn["instructions"] == voice_system_prompt(
+        ASSISTANT_NAME, device_name=DEVICE_NAME, recipient_id=ready["recipient_id"])
     assert turn["model"] is None and turn["provider"] is None and not fake.commands
     assert streamer.requests == ["Turn it on."]
 
@@ -220,12 +238,13 @@ async def test_settings_drive_the_model_and_the_prompt(monkeypatch):
     fake = FakeHermes(API_KEY)
     streamer = _FakeStreamer([b"\x01\x02"])
     _patch_speech(monkeypatch, streamer, transcript="what time is it")
-    settings = {"name": "Hal", "voice_model": "fast-model", "voice_provider": "local-llm"}
+    settings = {"voice_model": "fast-model", "voice_provider": "local-llm"}
     async with Harness(fake, settings) as client:
         ws = await client.ws_connect("/v1/audio/converse", protocols=(VOICE_PROTOCOL, _key_protocol()))
         try:
-            await ws.send_str(_start_msg(quiet_interval=5))
-            assert (await ws.receive_json())["type"] == "ready"
+            await ws.send_str(_start_msg(quiet_interval=5, assistant_name="Hal"))
+            ready = await ws.receive_json()
+            assert ready["type"] == "ready"
             for frame in _speech_then_silence_pcm():
                 await ws.send_bytes(frame)
             await _collect_turn(ws)
@@ -234,7 +253,8 @@ async def test_settings_drive_the_model_and_the_prompt(monkeypatch):
     (turn,) = fake.turns
     assert turn["model"] == "fast-model" and turn["provider"] == "local-llm"
     assert fake.commands == ["/model fast-model --provider local-llm"]
-    assert turn["instructions"] == voice_system_prompt("Hal")
+    assert turn["instructions"] == voice_system_prompt(
+        "Hal", device_name=DEVICE_NAME, recipient_id=ready["recipient_id"])
 
 
 @pytest.mark.asyncio
@@ -260,24 +280,6 @@ async def test_command_frame_runs_the_command_and_new_closes_the_socket(monkeypa
         await ws.receive()
         assert ws.close_code == 4410
     assert [turn["text"] for turn in fake.turns] == ["/compress keep it short", "/reset"]  # the fake gateway has no commands of its own
-
-
-@pytest.mark.asyncio
-async def test_start_name_overrides_the_configured_name(monkeypatch):
-    fake = FakeHermes(API_KEY)
-    _patch_speech(monkeypatch, _FakeStreamer([b"\x01"]), transcript="hi")
-    async with Harness(fake, {"name": "Hal"}) as client:
-        ws = await client.ws_connect("/v1/audio/converse", protocols=(VOICE_PROTOCOL, _key_protocol()))
-        try:
-            await ws.send_str(_start_msg(name="Nova"))
-            assert (await ws.receive_json())["type"] == "ready"
-            for frame in _speech_then_silence_pcm():
-                await ws.send_bytes(frame)
-            await _collect_turn(ws)
-        finally:
-            await _end(ws)
-    (turn,) = fake.turns
-    assert turn["instructions"] == voice_system_prompt("Nova")
 
 
 @pytest.mark.asyncio
@@ -356,14 +358,25 @@ async def test_query_token_and_cookie_are_not_credentials():
 
 
 @pytest.mark.asyncio
-async def test_foreign_profile_in_start_frame_is_refused(monkeypatch):
+@pytest.mark.parametrize("start", [
+    {"profile": "work"}, {"profile": "default"}, {"name": "Nova"},
+    {"conversation_id": "voice_abc"}, {"conversation": {}},
+    {"assistant_name": None}, {"device_name": None},
+])
+async def test_a_start_frame_with_a_removed_field_or_a_missing_name_closes_bad_start(monkeypatch, start):
+    """No profile selection, no client-chosen conversation, and no socket without both names."""
     _patch_speech(monkeypatch, _FakeStreamer([b"\x01"]))
+    frame = json.loads(_start_msg())
+    frame.update(start)
     async with Harness(FakeHermes(API_KEY)) as client:
         ws = await client.ws_connect("/v1/audio/converse", protocols=(VOICE_PROTOCOL, _key_protocol()))
         try:
-            await ws.send_str(_start_msg(profile="work"))
+            await ws.send_str(json.dumps({k: v for k, v in frame.items() if v is not None}))
             msg = await ws.receive()
-            assert json.loads(msg.data) == {"type": "error", "error": "profile_unsupported"}
+            assert json.loads(msg.data) == {"type": "error", "error": "bad_start"}
+            closing = await ws.receive()
+            assert closing.type in (web.WSMsgType.CLOSE, web.WSMsgType.CLOSED)
+            assert ws.close_code == 4400
         finally:
             await ws.close()
 

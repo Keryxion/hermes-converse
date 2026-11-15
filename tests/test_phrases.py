@@ -6,7 +6,7 @@ from hermes_converse.settings import load_settings
 class TestSettings:
     def test_defaults_without_any_config(self):
         s = load_settings(lambda key, default=None: default)
-        assert s.name == "Arya" and s.model is None and s.provider is None
+        assert s.model is None and s.provider is None
         assert s.turn_timeout == 120.0 and s.tail_fallback == 45.0 and s.max_tts_chars == 1500
         assert s.endpoint_model is False and s.endpoint_threshold == 0.5
         assert s.endpoint_silence_ms == 700 and s.endpoint_max_silence_ms == 3000
@@ -23,12 +23,12 @@ class TestSettings:
         assert s.endpoint_silence_ms == 700 and s.endpoint_max_silence_ms == 3000
 
     def test_values_are_coerced_and_clamped(self):
-        cfg = {"name": "  Hal ", "voice_model": "gpt-x", "voice_provider": "", "turn_timeout_seconds": "30",
+        cfg = {"voice_model": "gpt-x", "voice_provider": "", "turn_timeout_seconds": "30",
                "playback_tail_timeout_seconds": "not a number", "max_tts_chars_per_turn": 200.7,
                "endpoint_model": "smart-turn-v3",
                "endpoint_threshold": 5, "approval_choice": "ONCE", "api_base_url": "http://127.0.0.1:9000/"}
         s = load_settings(lambda key, default=None: cfg.get(key, default))
-        assert s.name == "Hal" and s.model == "gpt-x" and s.provider is None
+        assert s.model == "gpt-x" and s.provider is None
         assert s.turn_timeout == 30.0 and s.tail_fallback == 45.0 and s.max_tts_chars == 200
         assert s.endpoint_model is True and s.endpoint_threshold == 1.0
         assert s.approval_choice == "once" and s.api_base_url == "http://127.0.0.1:9000"

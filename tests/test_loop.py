@@ -378,10 +378,9 @@ def test_split_sample_resume_requires_a_full_new_quiet_interval(monkeypatch):
 # ── start frame + prompt ──
 
 def test_parse_start_config_defaults_and_clamps():
-    assert parse_start_config({}) == (16000, 24000, 0.0, "Arya", None)
-    assert parse_start_config({"input_rate": 100, "output_rate": "99000", "quiet_interval": "15",
-                               "name": " Hal ", "profile": "work"}) == (8000, 48000, 15.0, "Hal", "work")
-    assert parse_start_config({"name": "  "}, default_name="Nova")[3] == "Nova"
+    assert parse_start_config({}) == (16000, 24000, 0.0)
+    assert parse_start_config({"input_rate": 100, "output_rate": "99000",
+                               "quiet_interval": "15"}) == (8000, 48000, 15.0)
     assert parse_start_config({"quiet_interval": -3})[2] == 0.0
 
 

@@ -17,8 +17,7 @@ def test_default_and_provider_choice():
     assert parse_model_selection({'model': ' beta ', 'provider': ' litellm '}) == ('beta', 'litellm')
 
 
-@pytest.mark.parametrize('named', [False, True])
-async def test_switch_does_not_interrupt_current_run_and_reset_restores_default(monkeypatch, named):
+async def test_switch_does_not_interrupt_current_run_and_reset_restores_default(monkeypatch):
     from hermes_converse import route as route_module
     from tests.test_route import API_KEY, Harness, _FakeStreamer, _patch_speech, _collect_turn
     from tests.support.fake_hermes import FakeHermes
@@ -38,7 +37,7 @@ async def test_switch_does_not_interrupt_current_run_and_reset_restores_default(
     async with Harness(fake, {'voice_model': 'agent', 'voice_provider': 'litellm'}) as client:
         ws = await client.ws_connect('/v1/audio/converse')
         await ws.send_json({'type': 'start', 'key': API_KEY,
-                            **({'assistant_name': 'Arya', 'device_name': 'Office Mac'} if named else {})})
+                            'assistant_name': 'Arya', 'device_name': 'Office Mac'})
         assert (await ws.receive_json())['type'] == 'ready'
         session = created[0]
         session.transcripts.put('first question')
@@ -80,9 +79,8 @@ async def test_switch_does_not_interrupt_current_run_and_reset_restores_default(
 
 
 @pytest.mark.parametrize('unavailable', [False, True])
-@pytest.mark.parametrize('named', [False, True])
 @pytest.mark.parametrize('models', [None, False, True, 'true', 1])
-async def test_ready_catalog_is_opt_in(monkeypatch, tmp_path, unavailable, named, models):
+async def test_ready_catalog_is_opt_in(monkeypatch, tmp_path, unavailable, models):
     import numpy as np
     from aiohttp import web
     from tests.test_route import API_KEY, Harness, _FakeStreamer, _patch_speech
@@ -106,11 +104,9 @@ async def test_ready_catalog_is_opt_in(monkeypatch, tmp_path, unavailable, named
     from hermes_converse.named import DeviceStore
     async with Harness(fake, device_store=DeviceStore(tmp_path / "devices.db")) as client:
         ws = await client.ws_connect('/v1/audio/converse')
-        start = {'type': 'start', 'key': API_KEY}
+        start = {'type': 'start', 'key': API_KEY, 'assistant_name': 'Arya', 'device_name': 'Office Mac'}
         if models is not None:
             start['models'] = models
-        if named:
-            start.update(assistant_name='Arya', device_name='Office Mac')
         await ws.send_json(start)
         ready = await ws.receive_json()
         assert ready['type'] == 'ready'
