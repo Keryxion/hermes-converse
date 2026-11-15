@@ -210,8 +210,9 @@ onset needs at least 250 ms above Silero's speech threshold (0.5, continuing dow
 to 0.35). After `endpoint_silence_ms` of silence the utterance ends, unless Smart Turn
 judges it unfinished; then it keeps listening, rechecking each window, for up to
 `endpoint_max_silence_ms`. After a wake word the first pause also waits up to
-`endpoint_max_silence_ms`, so "Hey Arya … set a timer" stays one request. The 12 s
-utterance cap still applies.
+`endpoint_max_silence_ms`, so "Hey Arya … set a timer" stays one request. One capture
+lasts at most 60 s; one that gets there ends at its last pause, and what followed
+begins the next capture.
 
 **Smart Turn v3** (optional): with `endpoint_model: smart-turn-v3` the fixed silence endpoint
 becomes adaptive — on each candidate pause the model estimates whether the utterance sounds
@@ -340,6 +341,13 @@ model. Ordinary tests stay offline and exercise the energy fallback. To include 
 
 ```bash
 HERMES_TEST_SILERO_MODEL=/path/to/silero_vad_16k_op15.onnx HERMES_AGENT_ROOT=/path/to/hermes-agent python -m pytest tests/test_silero_vad.py
+```
+
+Tests on long real takes also need a checkout of
+[voice-recordings](https://github.com/Keryxion/voice-recordings):
+
+```bash
+HERMES_TEST_VOICE_RECORDINGS=/path/to/voice-recordings HERMES_TEST_SILERO_MODEL=/path/to/silero_vad_16k_op15.onnx HERMES_AGENT_ROOT=/path/to/hermes-agent python -m pytest tests/test_silero_vad.py
 ```
 
 `tests/test_barge_soft_speech.py` exercises pending, thinking, speaking, and

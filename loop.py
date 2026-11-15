@@ -197,6 +197,11 @@ class NetworkMicStream:
             out = np.pad(out, (0, block - len(out)))
         return out, False
 
+    def unread(self, samples: Any) -> None:
+        """Give back samples already read, so the next read returns them first."""
+        if self._read_epoch == self._epoch:
+            self._carry = self._np.concatenate([samples, self._carry])
+
     def ready_blocks(self, block: int) -> list[Any]:
         """Whole *block*-sample blocks already received, without waiting for more audio."""
         if self._read_epoch != self._epoch:
@@ -378,6 +383,7 @@ class ConverseSession:
         self._max_silence_blocks = max(self._endpoint_blocks, math.ceil(endpoint_max_silence_ms / vad.BLOCK_MS))
         self._wake_speech_blocks = math.ceil(WAKE_SPEECH_MS / vad.BLOCK_MS)
         self._max_blocks = max(1, vad.MAX_UTTERANCE_MS // vad.BLOCK_MS)
+        self._pause_blocks = max(1, vad.PAUSE_MS // vad.BLOCK_MS)
         self._endpoint_threshold = float(endpoint_threshold)
         self._turn_detector: Any = None
         if endpoint_model:
@@ -876,21 +882,28 @@ class ConverseSession:
         and is checked again after each further window. ``endpoint_max_silence_ms`` of continuous
         silence ends it regardless. After a wake, a pause before ``WAKE_SPEECH_MS`` of speech waits
         for that maximum, so the user may pause after the wake word. Client ``commit`` ends it at once.
+        A capture that reaches ``MAX_UTTERANCE_MS`` ends at its last pause of ``PAUSE_MS``, and what
+        followed that pause goes back to the stream to begin the next capture.
         """
         np = self._np
         frames = list(self._pre_roll)
         pre_roll = len(frames)
-        quiet = speech_blocks = longest_pause = 0
+        received: list = []  # the blocks after the pre-roll as they arrived, before the session's gain
+        quiet = speech_blocks = longest_pause = split = 0
         next_check = self._endpoint_blocks
         reason = "max_utterance"
 
-        def take(data: Any) -> None:
-            nonlocal quiet, speech_blocks, longest_pause, next_check
+        def take(raw: Any) -> None:
+            nonlocal quiet, speech_blocks, longest_pause, next_check, split
+            data = self._level.apply(raw, learn=False)
+            received.append(raw)
             frames.append(data.copy())
             if self._detector.is_quiet(data):
                 quiet += 1
             else:
                 longest_pause = max(longest_pause, quiet)  # a pause the user spoke through
+                if speech_blocks and quiet >= self._pause_blocks:
+                    split = len(frames) - 1 - quiet // 2  # the middle of that pause
                 quiet, next_check = 0, self._endpoint_blocks
                 speech_blocks += 1
 
@@ -902,12 +915,11 @@ class ConverseSession:
                 reason = "client_commit"
                 break
             data, _ = self.stream.read(self._block, no_data_seconds=self._capture_no_data_seconds)
-            data = self._level.apply(data, learn=False)
             if self.stream.no_data_return or self._stop.is_set():
                 reason = "no_data" if self.stream.no_data_return else "stopped"
                 break
             if self.stream.committed:
-                frames.append(data.copy())
+                frames.append(self._level.apply(data, learn=False).copy())
                 continue
             take(data)
             if quiet >= self._max_silence_blocks:
@@ -931,7 +943,7 @@ class ConverseSession:
                 # Speech that arrived while the model ran belongs to this turn: keep listening.
                 spoken = speech_blocks
                 for data in self.stream.ready_blocks(self._block):
-                    take(self._level.apply(data, learn=False))
+                    take(data)
                 complete = speech_blocks == spoken
             if phase is not None:
                 phase.event("endpoint.decision", **{
@@ -944,6 +956,10 @@ class ConverseSession:
             if complete:
                 reason = "threshold"
                 break
+        if reason == "max_utterance" and split and not self.stream.committed:
+            # End at the last pause instead of mid-word; the rest is heard again as the next capture.
+            self.stream.unread(np.concatenate(received[split - pre_roll:]))
+            del frames[split:]
         self.stream.committed = False  # a commit ends only the capture it arrived in
         if phase is not None:
             phase.set(**{"endpoint.reason": reason, "endpoint.pause_ms": self._blocks_ms(quiet),

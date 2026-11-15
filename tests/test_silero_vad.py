@@ -348,3 +348,70 @@ def test_a_lone_loud_block_does_not_interrupt_playback(monkeypatch):
     pattern = ([True] + [False]*9)*4
     probabilities = [0.99]*40 + [0.99 if loud else 0.1 for loud in pattern]
     assert _over_playback(scripted(monkeypatch, probabilities), pattern) == [None]*len(pattern)
+
+
+def recorded_take(name):
+    """One take from a checkout of Keryxion/voice-recordings, as int16 PCM at 16 kHz."""
+    root = os.environ.get('HERMES_TEST_VOICE_RECORDINGS')
+    if not root:
+        pytest.skip('set HERMES_TEST_VOICE_RECORDINGS to a checkout of Keryxion/voice-recordings')
+    import av
+    with av.open(str(Path(root) / 'recordings/2026-11-15' / name)) as container:
+        stream = container.streams.audio[0]
+        assert stream.rate == 16000
+        return np.concatenate([frame.to_ndarray().reshape(-1) for frame in container.decode(stream)]).astype(np.int16)
+
+
+class _Trace:
+    def __init__(self):
+        self.attrs = {}
+
+    def set(self, **attrs):
+        self.attrs.update(attrs)
+
+    def event(self, name, **attrs):
+        pass
+
+
+class _Unfinished:
+    """Smart Turn hearing every pause as mid-thought, so only the limits can end a capture."""
+
+    def turn_complete_probability(self, audio):
+        return 0.0
+
+
+def captures_of(audio, *, cap_ms):
+    """Capture *audio* back to back, as (samples, end reason) per capture, until silence ends one."""
+    session = ConverseSession(np, vad_model='silero')
+    assert session._detector.name == 'silero'
+    session._turn_detector = _Unfinished()
+    session._max_blocks = cap_ms // vad.BLOCK_MS
+    session.stream.feed(np.concatenate([audio, np.zeros(5 * 16000, np.int16)]).tobytes())
+    captures = []
+    while not captures or captures[-1][1] == 'max_utterance':
+        trace = _Trace()
+        wav_path, _volume = session._capture(phase=trace)
+        with wave.open(wav_path, 'rb') as wav:
+            captures.append((np.frombuffer(wav.readframes(wav.getnframes()), np.int16), trace.attrs['endpoint.reason']))
+        vad.unlink_quietly(wav_path)
+    return captures
+
+
+@pytest.mark.parametrize('name', ['01-talk-quiet.flac', '02-talk-over-tv.flac'])
+def test_a_person_talking_under_the_cap_is_one_capture(real_model, name):
+    audio = recorded_take(name)
+    (samples, reason), = captures_of(audio, cap_ms=vad.MAX_UTTERANCE_MS)
+    assert len(samples) >= len(audio) and reason == 'max_silence'
+
+
+@pytest.mark.parametrize('name', ['01-talk-quiet.flac', '02-talk-over-tv.flac'])
+def test_real_talk_past_the_cap_is_split_at_a_pause(real_model, name):
+    """With the cap at 20 s these takes run past it: each capture that reaches it ends in a pause
+    the person made, and the captures together are the take, with nothing lost or repeated."""
+    audio = recorded_take(name)
+    captures = captures_of(audio, cap_ms=20_000)
+    assert len(captures) >= 2
+    for samples, _reason in captures[:-1]:
+        assert len(samples) < 20 * 16000  # ended before the cap, at a pause
+    heard = np.concatenate([samples for samples, _reason in captures])
+    assert np.array_equal(heard[:len(audio)], audio)
