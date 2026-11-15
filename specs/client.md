@@ -191,7 +191,7 @@ Hermes is updated; ask again after each `ready` rather than storing it.
 A command that starts a new conversation, `new` or its alias `reset`, needs nothing special from the
 app. After answering, the server closes the connection with
 `4410 conversation_changed`. The app reconnects as it would after any drop, and
-`ready` comes back with `after_found: false`, which is where it clears its view
+`ready` comes back with `new_session: true`, which is where it clears its view
 ("Catching up", section 4). The earlier conversation is not deleted; it stays
 in Hermes's history. Other commands, such as `title`, leave the connection
 open.
@@ -519,16 +519,16 @@ since then as ordinary `transcript` frames marked `replay`:
 Omit `after` the first time; the server then sends the most recent 20. Keep the
 last `message_id` shown and send it on every connect, so nothing is shown twice.
 
-When `start` carries `after`, `ready` carries `after_found`:
+When `start` carries `after`, `ready` carries `new_session`:
 
 ```json
-{"type":"ready","session_id":"socket-10","recipient_id":"device-7","transcripts":true,"after_found":false}
+{"type":"ready","session_id":"socket-10","recipient_id":"device-7","transcripts":true,"new_session":true}
 ```
 
-| `after_found` | Meaning | What to do |
+| `new_session` | Meaning | What to do |
 |---|---|---|
-| `true` | The cursor is a message of the device's conversation. | Append the replayed transcripts. |
-| `false` | The conversation is a different one now: a new one was started, from this app or anywhere else, or the old one is gone. | Clear the conversation view and forget the cursor, then show what is replayed. A brand-new conversation replays nothing. |
+| `false` | The cursor is a message of the device's conversation. | Append the replayed transcripts. |
+| `true` | The conversation is a different one now: a new one was started, from this app or anywhere else, or the old one is gone. | Clear the conversation view and forget the cursor, then show what is replayed. A brand-new conversation replays nothing. |
 
 This is the one place a client learns the conversation was cleared, however it
 happened.

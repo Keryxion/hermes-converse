@@ -372,8 +372,9 @@ before any live frame. Keep no second copy.
 - With `after`, replay every such message after it, up to the most recent 100.
   Without `after`, or when `after` is not a message of the current
   conversation, replay the most recent 20.
-- When `start` carried `after`, say in `ready` whether it was found:
-  `after_found` true or false. False is how a client learns its conversation
+- When `start` carried `after`, say in `ready` whether it still applies:
+  `new_session` is false when `after` is a message of the current
+  conversation and true when it is not. True is how a client learns its conversation
   was replaced, whatever replaced it: a `command` frame, the Hermes web UI, or a
   deleted conversation.
 - Include messages that compaction has folded away when Hermes still has them.

@@ -354,7 +354,8 @@ class ConverseRoute:
         if transcripts and history is not None:
             rows = await asyncio.to_thread(history.rows)
             if isinstance(after, str):
-                ready["after_found"] = after.isdigit() and int(after) in {row["id"] for row in rows or []}
+                # True when the client's cursor is not a message of the device's current session.
+                ready["new_session"] = not (after.isdigit() and int(after) in {row["id"] for row in rows or []})
         ready["server_send_unix_ms"] = int(time.time() * 1000)
         await ws.send_json(ready)
         # Catch the client up before anything live, then hand it any turn still running.
