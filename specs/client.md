@@ -128,7 +128,7 @@ All are JSON text frames:
 | `{"type": "cancel", "turn_id": "..."}` | Cancels the **current** turn — stops TTS and the agent — but keeps the socket, session, and history alive. |
 | `{"type": "wake", "claim_id": "...", "wake_word": "Hey Arya"}` | request an advisory wake decision while buffering the new activation locally; see section 8. |
 | `{"type": "drained", "turn_id": "..."}` | Tells the server the reply's last audio has left the speaker, so the server won't transcribe its own echo as a new turn. |
-| `{"type": "commands"}` | Ask which commands this device may run; see "Commands" below. |
+| `{"type": "commands"}` | Ask which commands the server runs; see "Commands" below. |
 | `{"type": "command", "name": "new"}` | Run a Hermes command for this device's conversation, such as starting a fresh one; see "Commands" below. |
 | `{"type": "say", "text": "..."}` | Speaks the given text (trimmed, at most 400 characters) as a reply of its own: `thinking`, `speaking` + PCM, then `turn_done` with `next_action: "standby"`. No agent turn runs and nothing is added to the conversation. For fixed device prompts such as a spoken help reminder. Empty or non-string text is ignored. |
 | `{"type": "approval_response", "approval_id": "...", "choice": "once"}` | Answer a pending approval from a screen with one of its `choices`; see "Approvals" in section 4. |
@@ -165,7 +165,7 @@ conversation, and answers with the same frame plus the command's own reply:
 for a chat user can be named.
 
 To learn which those are, for a command menu, send `{"type":"commands"}`. The
-server answers with every command this device may run, in Hermes's own order:
+server answers with every command a chat can run, in Hermes's own order:
 
 ```json
 {"type":"commands","commands":[
@@ -184,8 +184,10 @@ server answers with every command this device may run, in Hermes's own order:
 
 Hermes has no stricter description of arguments than `args_hint`, so `args` is
 free text and the command itself says when it is wrong. Commands that only run
-in a terminal are not listed, nor are commands the server's slash-command
-access settings keep from this device. The list can change when the server's
+in a terminal are not listed. The list is the same for every device, like
+Hermes's Telegram command menu: when the server's slash-command access settings
+keep a command from a device, it is still listed, and running it brings Hermes's
+refusal back in `reply`. The list can change when the server's
 Hermes is updated; ask again after each `ready` rather than storing it.
 
 A command that starts a new conversation, `new` or its alias `reset`, needs nothing special from the

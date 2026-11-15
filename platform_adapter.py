@@ -478,7 +478,7 @@ class GatewayTurns:
 
     def commands(self) -> list[dict[str, Any]]:
         """The gateway commands this device may name in a ``command`` frame."""
-        return command_catalog.catalog(getattr(self._adapter.config, "extra", None), self._source.user_id)
+        return command_catalog.catalog()
 
     def canonical_command(self, name: str) -> Optional[str]:
         """The canonical name of command or alias *name*; None when the gateway has no such command."""

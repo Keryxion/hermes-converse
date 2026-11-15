@@ -338,10 +338,10 @@ reply in a `command` frame without speaking it. There is no list of allowed
 commands: a device holding the API key can run what a chat user can, including
 commands that change approvals.
 
-Answer a `commands` frame with Hermes's command registry, as its `/help` in a
-chat would list it: each command that runs outside a terminal and that the
-platform's slash-access policy lets the device's `recipient_id` run, with its
-description, aliases, `args_hint`, and subcommands, then plugin commands. Answer
+Answer a `commands` frame with Hermes's command registry as its Telegram
+command menu lists it: each command that runs outside a terminal, with its
+description, aliases, `args_hint`, and subcommands, then plugin commands. Do not
+filter by the slash-access policy; the gateway applies it when a command runs. Answer
 a `command` frame whose `name` is not one of Hermes's commands or aliases with
 `unknown_command` instead of sending it.
 
