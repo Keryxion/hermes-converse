@@ -176,6 +176,10 @@ without Smart Turn, so "Hey Arya … set a timer" is one request while a continu
 
 Explicit `commit` ends the capture at once with the audio already received,
 bypassing Smart Turn and the wake pause. The utterance limit still applies.
+
+The utterance limit (60 s) is a memory backstop, not an endpoint. It must never
+be short enough to cut ordinary speech: a person explaining something for twenty
+seconds is one request, and truncating it silently drops half the sentence.
 Capture traces record the endpoint mode, windows, wake flag, end reason, final
 pause, and longest pause spoken through. A failed/empty STT result starts no
 run and releases capture ownership. Continue listening within an open activation.

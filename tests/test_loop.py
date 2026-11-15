@@ -176,6 +176,13 @@ def test_without_wake_a_short_pause_ends_capture():
     assert _captured_blocks(session, wav_path) == 5 + session._endpoint_blocks
 
 
+def test_the_utterance_cap_is_a_memory_backstop_not_an_endpoint():
+    """12 s truncated ordinary speech mid-sentence and silently lost the rest of the request.
+    The endpointer decides where a turn ends; the cap only stops an unbounded capture."""
+    assert vad.MAX_UTTERANCE_MS == 60_000
+    assert ConverseSession(np)._max_blocks == 60_000 // 30
+
+
 @pytest.mark.parametrize("wake", [False, True])
 def test_client_commit_ends_capture_even_when_smart_turn_would_hold(wake):
     det = _ScriptedDetector([0.0])
