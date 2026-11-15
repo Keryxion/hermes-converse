@@ -86,7 +86,9 @@ answered:
 
 With `ask`, the person is asked in two ways at once, and the first answer wins:
 
-- **Spoken.** A summary is spoken on the device attached to that conversation.
+- **Spoken.** The `approval` tone plays on the device attached to that
+  conversation, then a summary is spoken. The tone is how the person knows a
+  question is coming and not an answer.
 - **On screen.** `approval_request` is sent with the summary, Hermes's redacted
   command, and the choices Hermes allows for this request, for a device that
   can show a box.
@@ -440,7 +442,9 @@ that only calls `play_tone` still speaks its reply text; call `speak_this` with
 
 ### `play_tone`
 
-Send `{"type":"tone","tone":"confirm"}` to the device. A tone plays before any
+Send `{"type":"tone","tone":"confirm"}` to the device. The agent's tool plays `confirm`
+and `error`; the third tone, `approval`, is sent by the server itself when it
+asks for an approval. A tone plays before any
 speech from the same turn. It is not a reply: it has no `turn_id`, and the
 device sends no `drained` for it.
 

@@ -232,7 +232,7 @@ Countdowns are unaffected by a command.
 | `turn_done` | the reply is fully sent; `next_action` tells the client to listen or enter standby after drain |
 | `quiet` | session mode: the stream has been silent for another `quiet_interval` seconds |
 | `error` | the turn failed (spoken-safe text) |
-| `{"type":"tone","tone":"confirm"}` | Play the named tone, `confirm` or `error` (see `tones.md`). It is not a reply: no `turn_id`, no `drained`. |
+| `{"type":"tone","tone":"confirm"}` | Play the named tone, `confirm`, `error`, or `approval` (see `tones.md`). It is not a reply: no `turn_id`, no `drained`. |
 | `countdown`, `countdown_cancel` | Start, extend, or cancel a countdown that ends with a tone (section 10). |
 
 These are the only server frames, apart from `model_changed` and `model_error`
@@ -372,7 +372,7 @@ Continue handling `speaking`, PCM, `interrupted`, `error`, and `turn_done` norma
 ### Approvals
 
 When the assistant needs permission before it acts, the turn waits. The server
-asks out loud with a short summary, and also sends:
+plays the `approval` tone, asks out loud with a short summary, and also sends:
 
 ```json
 {"type":"approval_request","turn_id":"turn-42","approval_id":"approval-7","summary":"Open a network connection to the Kitchen speaker to read its logs. OK?","command":"nc 10.0.4.17 6053","choices":["once","session","always","deny"]}
