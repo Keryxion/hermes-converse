@@ -385,8 +385,10 @@ microphone audio during a turn.
 Once the spoken question has played, show listening until `approval_resolved`,
 even as `thinking` frames arrive: the assistant is waiting for the person, and
 listening is how the person knows it is their turn to talk. If the question is
-asked again, it plays as speaking, then listening resumes. After
-`approval_resolved`, show thinking until the turn's reply.
+asked again, it plays as speaking, then listening resumes. On
+`approval_resolved`, show thinking and play the thinking tone at once: that is
+how the person knows their answer was heard. Show thinking until the turn's
+reply.
 
 A device with a screen also shows a box with `summary`, `command`, and one
 button for each entry in `choices`:

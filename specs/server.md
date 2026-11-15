@@ -139,10 +139,14 @@ was not offered changes nothing.
 
 While a request is pending, speech from the device is an answer to it, not a new
 request and not an interruption of the waiting turn. The spoken summary itself
-must not be taken as the answer. Do not speak secrets. When the action did not
+must not be taken as the answer. Once the question's audio has played out, listen
+as in ordinary listening, not as for a barge-in over playback: no echo gate and
+no interruption threshold, so a single quiet "yes" is heard. The turn being open
+does not mean anything is playing. Do not speak secrets. When the action did not
 run, the agent's reply says so.
 
 Verify each allowed choice by voice and by screen; a plain yes answering `once`;
+a single short "yes" heard the first time it is said;
 a choice that was not offered; an unclear reply once and
 twice, a failed summary call, Hermes's timeout, a stale or repeated response,
 cancellation, a disconnect and reconnect while pending, a prompt that arrives with

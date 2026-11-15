@@ -106,7 +106,8 @@ The frames named here are defined in [client.md](client.md).
 - While an approval is pending, show listening once the spoken question has
   drained: the assistant is waiting for the person's answer. `thinking` frames
   do not replace it. A spoken re-ask shows speaking, then listening again. On
-  `approval_resolved`, return to thinking; the turn carries on.
+  `approval_resolved`, return to thinking at once, with the thinking tone; the
+  turn carries on.
 - `interrupted` discards queued audio and returns to listening. It is not an
   error.
 - A new state replaces the old one immediately and cancels its timers,
