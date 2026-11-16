@@ -676,7 +676,10 @@ listening comes after one full `quiet_interval` of received silence, for example
 {"type": "quiet", "quiet_seconds": 3.0}
 ```
 
-Silence sent before you stopped streaming does not carry over. `turn_done.next_action` tells the client whether to continue
+Silence sent before you stopped streaming does not carry over. After manual
+Talk, ignore `quiet` until the person's first request (a new turn starts); the
+person pressed Talk to speak, so silence before they do is not a reason to stop
+listening. After that request, `quiet` returns to standby as usual. `turn_done.next_action` tells the client whether to continue
 listening or return to standby after playback drain.
 
 ## 6. Typical flow
