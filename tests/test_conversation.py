@@ -64,6 +64,28 @@ async def test_idle_output_without_mic_wake_or_model_and_reconnect(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_server_output_preserves_listening_exchange_unless_explicit_standby(monkeypatch):
+    _patch_speech(monkeypatch, _FakeStreamer([b'\x01\x02']))
+    async with Harness(FakeHermes(API_KEY)) as client:
+        ws, _ = await connect(client)
+        cid = device_conversation_id(client)
+        for frame in _speech_then_silence_pcm():
+            await ws.send_bytes(frame)
+        first, _ = await _collect_turn(ws)
+        assert first[-1]['next_action'] == 'listen'
+        assert (await publish(client, cid)).status == 202
+        output, _ = await _collect_turn(ws)
+        assert output[-1]['next_action'] == 'listen'
+        assert (await publish(client, cid, event_id='explicit', next_action='standby')).status == 202
+        end, _ = await _collect_turn(ws)
+        assert end[-1]['next_action'] == 'standby'
+        assert (await publish(client, cid, event_id='idle-again')).status == 202
+        idle, _ = await _collect_turn(ws)
+        assert idle[-1]['next_action'] == 'standby'
+        await ws.close()
+
+
+@pytest.mark.asyncio
 async def test_output_to_an_unattached_or_expired_conversation_is_refused(monkeypatch):
     _patch_speech(monkeypatch, _FakeStreamer([b'\x01\x02']))
     async with Harness(FakeHermes(API_KEY)) as client:
