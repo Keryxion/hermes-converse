@@ -25,6 +25,7 @@ Protocol:
            ``bad_start`` — then binary PCM16 mono frames at ``input_rate`` (30 ms blocks preferred),
            ``{"stop": true}`` to end, ``{"commit": true}`` to force an endpoint,
            ``{"type":"cancel","turn_id":?}`` to cancel the current turn and keep the session,
+           ``{"type":"heard","wake_word":"..."}`` a wake word heard during a turn (logged only),
            ``{"type":"state","turn_id":?,"state":...}`` the state the device now shows (leaving
            ``speaking`` means the reply's audio has played or been discarded), ``{"type":"countdown",
            "countdown_id":...,"ringing":true}`` or ``..."ended":true}`` a countdown ringing or ended,
@@ -58,8 +59,8 @@ from .conversation import ConversationHub
 from .named import DeviceStore, NamedError, parse_names
 from .platform_adapter import GatewayTurns
 from .model_selection import parse_model_selection, public_model_catalog
-from .loop import (ConversationOutput, ConverseSession, drive_converse_turns, parse_start_config,
-                   voice_system_prompt)
+from .loop import (ConversationOutput, ConverseSession, drive_converse_turns,
+                   parse_start_config, voice_system_prompt)
 from .settings import Settings, load_settings
 from .tracing import ConnectionTrace, emit_span, force_flush
 
@@ -563,6 +564,10 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                         break
                     if frame.get("commit"):
                         session.commit()
+                    if frame.get("type") == "endpointing":
+                        on = frame.get("on")
+                        session.set_endpointing(on if isinstance(on, bool) else None,
+                                                commit=frame.get("commit") is True)
                     if frame.get("type") == "state":
                         # Leaving `speaking` for a turn: its audio has played or been discarded.
                         if isinstance(frame.get("turn_id"), str) and frame.get("state") != "speaking":
@@ -578,6 +583,10 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                         session.cancel(frame.get("turn_id"))
                         if adopted is not None:  # a turn carried over from the previous connection
                             adopted.session.cancel(frame.get("turn_id"))
+                    if frame.get("type") == "heard":
+                        # Neither cancel nor barge-in: the turn carries on unchanged.
+                        logger.info("converse heard: session=%s turn=%s wake_word=%r", session.session_id,
+                                    getattr(session, "_active_turn_id", None), str(frame.get("wake_word"))[:80])
                     if frame.get("type") == "say":
                         text = _say_text(frame.get("text"))
                         if text:
