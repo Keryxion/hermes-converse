@@ -25,8 +25,7 @@ Protocol:
            ``bad_start`` — then binary PCM16 mono frames at ``input_rate`` (30 ms blocks preferred),
            ``{"stop": true}`` to end, ``{"commit": true}`` to force an endpoint,
            ``{"type":"cancel","turn_id":?}`` to cancel the current turn and keep the session,
-           ``{"type":"heard","wake_word":"..."}`` a wake word heard during an activation (the
-           reply stops and the server listens; the turn is not cancelled),
+           ``{"type":"heard","wake_word":"..."}`` a wake word heard during a turn (logged only),
            ``{"type":"state","turn_id":?,"state":...}`` the state the device now shows (leaving
            ``speaking`` means the reply's audio has played or been discarded), ``{"type":"countdown",
            "countdown_id":...,"ringing":true}`` or ``..."ended":true}`` a countdown ringing or ended,
@@ -581,9 +580,9 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                         if adopted is not None:  # a turn carried over from the previous connection
                             adopted.session.cancel(frame.get("turn_id"))
                     if frame.get("type") == "heard":
-                        session.heard()
-                        if adopted is not None:  # a turn carried over from the previous connection
-                            adopted.session.heard()
+                        # Neither cancel nor barge-in: the turn carries on unchanged.
+                        logger.info("converse heard: session=%s turn=%s wake_word=%r", session.session_id,
+                                    getattr(session, "_active_turn_id", None), str(frame.get("wake_word"))[:80])
                     if frame.get("type") == "say":
                         text = _say_text(frame.get("text"))
                         if text:

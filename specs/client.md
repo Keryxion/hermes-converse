@@ -162,7 +162,7 @@ All are JSON text frames:
 | `{"commit": true}` | Ends the current utterance now, with the audio already sent (runs a turn on it). |
 | `{"type": "cancel", "turn_id": "..."}` | Cancels the **current** turn — stops TTS and the agent — but keeps the socket, session, and history alive. |
 | `{"type": "wake", "claim_id": "...", "wake_word": "Hey Arya"}` | request an advisory wake decision while buffering the new activation locally; see section 8. |
-| `{"type": "heard", "wake_word": "Hey Arya"}` | A wake word was heard during a turn or an open activation; the reply stops and the server listens. See "A wake word heard during a turn" in section 4. |
+| `{"type": "heard", "wake_word": "Hey Arya"}` | A wake word was heard during a turn; see "A wake word heard during a turn" in section 4. |
 | `{"type": "state", "turn_id": "...", "state": "listening"}` | The state the device now shows; see "The turn's state" in section 4. |
 | `{"type": "countdown", "countdown_id": "...", "ringing": true}` | A countdown is ringing, or with `ended` has ended; see section 10. |
 | `{"type": "commands"}` | Ask which commands the server runs; see "Commands" below. |
@@ -331,7 +331,13 @@ If the old reply had finished but none of it had played, it is not lost: it
 arrives first as a server-started reply turn (it carries `event_id`, and
 `next_action` is `"listen"`), then the reply to the additional instruction.
 
-Words such as "stop" or "never mind" said during a turn are speech to the
+The words that follow the assistant's wake word during an activation, such as
+"Hey Arya, actually make it the kitchen" while the reply plays, are barge-in
+like any other speech: the device is already streaming, and the server hears
+them, interrupts the reply, and answers what follows. Do not send `cancel` and
+do not send another `wake`. A wake word that cancelled the turn would throw that
+request away and make the person say the wake word twice. The same goes for
+"cancel", "stop", or "never mind" said during a turn: they are speech to the
 server, and the assistant stops.
 
 Explicit `cancel` stops the matching turn without submitting a user message:
@@ -347,8 +353,7 @@ conversation remain usable. `stop` closes the attachment instead.
 Do not use an `agentTurn`, thinking, or playback flag to suppress PCM during
 an activation. Play incoming PCM and send microphone PCM concurrently.
 Local echo cancellation may clean the signal, but must preserve user speech.
-Do not replace microphone audio with synthetic silence during playback,
-unless the device is half duplex ("A wake word heard during a turn").
+Do not replace microphone audio with synthetic silence during playback.
 On unmute, resume live audio only if the activation is still open; never
 replay audio accumulated while muted.
 
@@ -379,36 +384,17 @@ report.
 
 A device that detects wake words keeps detecting them during a turn and while
 an activation is open. When it hears the assistant's wake word or the `cancel`
-wake word then, such as "Hey Arya, actually make it the kitchen" while the
-reply plays, it stops and discards queued reply audio and sends:
+wake word then, it sends:
 
 ```json
 {"type":"heard","wake_word":"Hey Arya"}
 ```
 
 `wake_word` is the exact phrase detected, as in `wake` (section 8); for the
-`cancel` wake word it is `"cancel"`. Then send live microphone audio and show
-listening.
-
-The server stops sending the reply and listens as it does when no reply is
-playing. Expect `interrupted` and `turn_done` with `next_action: "listen"` for
-that turn. What the person says next is their next request, in the same
-conversation, with the original request as context. If the reply had finished
-but none of it had played, it arrives afterwards as a server-started reply
-turn, as it does after barge-in.
-
-`heard` is not `cancel`: the assistant keeps working on the request, and
-nothing the person is saying is thrown away. It is not another `wake`: no
-election runs, and the activation stays open. It carries no `turn_id`. With no
-reply in flight, or while the turn waits on an approval answer, it changes
-nothing.
-
-`heard` matters most on a half-duplex device: one that cannot keep its own
-speaker out of its microphone, and so sends silence in place of microphone
-audio while reply audio plays. The server cannot hear the person over a reply
-there, so the wake word is how they get the floor. A device that streams clean
-microphone audio during playback sends `heard` as well; the server has usually
-heard the speech already, and the frame then changes nothing.
+`cancel` wake word it is `"cancel"`. `heard` is neither `cancel` nor barge-in:
+the server records it, and the turn carries on unchanged. No frame answers it.
+It is mostly for half-duplex devices, where the server cannot hear the person
+while a reply plays.
 
 ### The turn's state
 
@@ -898,7 +884,7 @@ stream and restore local wake detection unless an activation is now open.
 Serialize outbound audio on each socket: never interleave the untagged
 binary PCM of two turns. Output waits behind an active turn and its playback
 drain; stale output is discarded instead of played late. Ordinary barge-in,
-`cancel`, `heard`, and state reports apply equally to these turns. Output goes to the one
+`cancel`, and state reports apply equally to these turns. Output goes to the one
 device attached to that conversation. It is never broadcast and never runs a
 wake election.
 
@@ -986,7 +972,7 @@ the assistant's. It is detected on the device and needs no election:
 | Heard | The device |
 |---|---|
 | `cancel` while a countdown rings | Ends every ringing countdown, as a local dismissal. |
-| `cancel` during a turn or an open activation, with nothing ringing | Sends `heard` (section 4). |
+| `cancel` during a turn, with nothing ringing | Sends `heard` (section 4). The server also hears it as speech. |
 | `cancel` at any other time | Does nothing. |
 
 A device without the `cancel` wake word ends an alarm with its button or tap,

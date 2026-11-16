@@ -99,29 +99,9 @@ An untargeted cancel also abandons a capture in progress. Stop the agent and TTS
 discard that cancelled capture, emit the existing interruption/terminal frames,
 and leave the socket and conversation usable. `stop` closes the attachment.
 
-### A wake word heard on the device
-
-`heard` says the device detected a wake word during a turn and has stopped
-playing. It is neither cancellation nor barge-in: nothing is cancelled, and the
-server did not hear speech. Stop sending the reply's audio, discard what is
-unsent, and emit `interrupted` and `turn_done` with `next_action: "listen"`.
-Leave the agent run going and keep a capture in progress. Drop playback
-protection for that turn at once, with no echo rejection and no wait for the
-client's state report, since nothing is playing: the person's next words are
-heard as in ordinary listening.
-
-From there the stopped reply is the conversation's, as after barge-in: the next
-words go to the same Hermes conversation while the run is going, and a reply
-none of which had played is spoken before the answer to them, or at once when
-the run ends with nothing said. During the playback tail, `heard` ends the tail
-after the turn's `interrupted` and updated `turn_done`. Ignore `heard` when no
-reply is in flight and while a turn waits on an approval answer. `wake_word`
-does not change what the server does.
-
-Verify `heard` during thinking, speaking, and the playback tail; that the run
-is not stopped and no capture is discarded; that a queued server-started reply
-follows the stopped turn's terminal frames; and `heard` with no reply in flight
-and during an approval wait.
+`heard` says the device detected a wake word during a turn. It is neither
+cancellation nor barge-in: log it with the session, the turn, and the wake
+word, and change nothing else.
 
 ### Approvals
 
@@ -374,7 +354,6 @@ and API-key authentication stay on the API server.
 | Turn settled | `on_processing_complete` |
 | Barge-in | the continuation goes to `handle_message` while the run is going; the run is not interrupted |
 | `cancel`, `stop` | `interrupt_session_activity`, then wait for the turn to settle |
-| `heard` | nothing reaches the gateway; the run is not interrupted |
 | Tool and reasoning progress | `pre_tool_call` and `post_api_request` plugin hooks |
 | `command` from the client | the gateway command named in `name`, with `args`, after stopping any turn in flight; its reply is not spoken and goes back to the client in a `command` frame |
 | Model selection | the gateway `/model` command, sent only when the choice differs from the session's; its confirmation is not spoken |

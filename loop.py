@@ -463,9 +463,6 @@ class ConverseSession:
         self.playback_until = 0.0
         self._tts_stop: Optional[threading.Event] = None
         self._interrupted = threading.Event()
-        # The device stopped the turn's playback itself (``heard``): no playback tail follows it.
-        self._device_stopped = False
-        self._heard_in_tail = False
         # Cancel: set by ``cancel()`` to abort an in-progress capture (its transcript is discarded,
         # no turn runs on it) and to stop an in-flight turn's TTS + agent without ending the session.
         self._cancelled = threading.Event()
@@ -876,14 +873,13 @@ class ConverseSession:
         self._active_utterance = None
         self._tts_stop = None
         self._interrupt_callback = None
-        self._device_stopped = False
         self._reset_quiet()
 
     @_session_state
     def finish_turn(self, turn_id: str, playback_tail_seconds: float) -> bool:
         # A continuation owns incoming PCM even if cancellation races with completion.
         continuation_pending = self.capture_pending()
-        if playback_tail_seconds > 0 and not continuation_pending and not self._device_stopped:
+        if playback_tail_seconds > 0 and not continuation_pending:
             self.begin_playback_tail(turn_id, playback_tail_seconds)
         self.end_turn()
         return continuation_pending
@@ -895,7 +891,6 @@ class ConverseSession:
             return
         self._tail_ended.clear()
         self._tail_interrupted = False
-        self._heard_in_tail = False
         self._tail_active = True
         self._tail_turn_id = turn_id
         self._active_turn_id = turn_id
@@ -964,39 +959,10 @@ class ConverseSession:
             self.transcripts.put(CancelTurn(turn_id))
         return True
 
-    def _trace_cancel(self, phase: str, cause: str = "cancel") -> None:
+    def _trace_cancel(self, phase: str) -> None:
         turn_trace = self._trace_of_active_turn()
         if turn_trace is not None:
-            turn_trace.event("interrupt", **{"interrupt.cause": cause, "interrupt.phase": phase})
-
-    @_session_state
-    def release_heard_tail(self) -> None:
-        """Driver hook: the terminal frames of a tail that ``heard`` interrupted have been sent."""
-        if self._heard_in_tail:
-            self._heard_in_tail = False
-            if self._tail_interrupted:
-                self.end_playback_tail("interrupted")
-
-    @_session_state
-    def heard(self) -> None:
-        """The device heard a wake word during an activation (client ``heard``) and has stopped
-        playing: stop sending the reply and listen as when no reply is playing. Unlike ``cancel``,
-        the agent run goes on and a capture in progress is kept. A turn waiting on an approval
-        answer is left alone."""
-        if self._tail_active:
-            self._trace_cancel("drain", "heard")
-            if self.on_tail_barge is None or self._tail_interrupted:
-                self._interrupt_tail()
-                self.end_playback_tail("interrupted")
-            else:
-                # The driver ends the tail once the turn's terminal frames are out, so the next
-                # reply's frames cannot overtake them.
-                self._heard_in_tail = True
-                self._interrupt_tail()
-        elif self._turn_active.is_set() and self.answer_hook is None and not self._interrupted.is_set():
-            self._trace_cancel("speaking" if self.playing() else "thinking", "heard")
-            self._device_stopped = True
-            self._trigger_barge_in()
+            turn_trace.event("interrupt", **{"interrupt.cause": "cancel", "interrupt.phase": phase})
 
     @_session_state
     def _trigger_barge_in(self, *, stop_run: bool = False) -> None:
@@ -1427,8 +1393,6 @@ async def drive_converse_turns(
                 await notify_tail_barge(turn_id)
             except Exception:
                 logger.debug("tail interrupt delivery failed", exc_info=True)
-            finally:
-                getattr(session, "release_heard_tail", lambda: None)()
         loop.call_soon_threadsafe(lambda: asyncio.create_task(notify()))
     session.on_tail_barge = tail_barge
     deferred_outputs = deque()
