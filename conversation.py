@@ -17,6 +17,7 @@ class Attachment:
     seen: OrderedDict = field(default_factory=OrderedDict)
     pending: int = 0
     send: Optional[Callable[[dict], Any]] = None  # sends a JSON frame to the device
+    assistant_name: str = ""  # the start frame's, which approvals speak as
 
 
 class ConversationHub:
@@ -31,11 +32,11 @@ class ConversationHub:
         self.detached: dict[str, Any] = {}  # conversation id -> turn running after its socket left
         self.countdowns: Any = None  # set by countdowns.register_tool
 
-    def attach(self, conversation_id: str, session: Any) -> Attachment:
+    def attach(self, conversation_id: str, session: Any, assistant_name: str = "") -> Attachment:
         with self._lock:
             if conversation_id in self._attachments:
                 raise ValueError("conversation_in_use")
-            item = Attachment(session, conversation_id)
+            item = Attachment(session, conversation_id, assistant_name=assistant_name)
             self._attachments[conversation_id] = item
             return item
 

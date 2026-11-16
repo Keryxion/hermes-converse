@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import math
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -21,10 +22,13 @@ WATCH_SECONDS = 1.0
 SPEECH_TTL = 60.0
 
 SUMMARY_SYSTEM = (
-    "You turn a shell command awaiting permission into one yes-or-no question to read aloud. "
-    "Say what will happen in plain words, in twenty words or fewer, ending with a question mark. "
-    "Do not read the command out character by character and never repeat secrets. Reply with the question only."
+    "A voice assistant asks permission to run a shell command, aloud, as \"<name> wants to <phrase>. Okay?\". "
+    "Write only the phrase: what will happen, in plain words, in twenty words or fewer, as a verb phrase "
+    "that follows \"wants to\" (for example: open a network connection to the Kitchen speaker to read its logs). "
+    "No name, no question mark. Do not read the command out character by character and never repeat secrets. "
+    "Reply with the phrase only."
 )
+NO_NAME = "The assistant"  # who asks when no device has told its assistant_name
 ANSWER_SYSTEM = (
     "A voice assistant asked the user a yes-or-no question about running a command. Decide what the user's "
     "reply means. Reply with exactly one word from the allowed list.\n"
@@ -47,6 +51,22 @@ def _answers(choices: Any) -> str:
     if len(words) == 1:
         return f"Say {words[0]}."
     return "Say " + ", ".join(words[:-1]) + (", or " if len(words) > 2 else " or ") + words[-1] + "."
+
+
+def phrase(text: str) -> str:
+    """Hermes's description (or the model's phrase) as words that follow "wants to": "Start a new
+    session (fresh session ID + history)" -> "start a new session, with fresh session ID + history"."""
+    text = " ".join((text or "").split()).rstrip(" .!?;:,")
+    text = re.sub(r"\s*\(([^()]*)\)$", r", with \1", text).rstrip(" .!?;:,")
+    first = text.split(" ", 1)[0]
+    if not (len(first) > 1 and first[:2].isupper()):  # SSH, URL: an acronym keeps its capitals
+        text = text[:1].lower() + text[1:]
+    return text
+
+
+def summary(assistant_name: str, what: str) -> str:
+    """The spoken question: "Arya wants to <what will happen>. Okay?" """
+    return f"{assistant_name or NO_NAME} wants to {what}. Okay?"
 
 
 def _aux(system: str, user: str, max_tokens: int) -> str:
@@ -108,10 +128,13 @@ class Approvals:
     async def _prepare(self, p: _Pending) -> None:
         user = f"Command:\n{p.command}\n\nDescription:\n{p.description}"
         try:
-            p.summary = await asyncio.to_thread(_aux, SUMMARY_SYSTEM, user, 80)
+            what = phrase(await asyncio.to_thread(_aux, SUMMARY_SYSTEM, user, 80))
         except Exception:
             logger.warning("converse: approval summary failed; using Hermes's description", exc_info=True)
-            p.summary = p.description or "Run a command that needs permission. OK?"
+            what = ""
+        attachment = self._hub.attachment(p.chat_id)
+        p.summary = summary(getattr(attachment, "assistant_name", ""),
+                            what or phrase(p.description) or "run a command that needs permission")
         if not p.settled:
             self._ask(p)
 
