@@ -249,6 +249,34 @@ async def test_status_text_during_a_turn_is_not_spoken(rig):
     assert spoken == ["Okay."]
 
 
+@pytest.mark.parametrize('notify', [False, True])
+async def test_interim_notices_never_become_proactive_speech(rig, notify):
+    device = Device()
+    rig.hub.attach("den", device)
+    for content in ("Use /sethome to set your home channel.", "Skill review: updated a skill."):
+        result = await rig.adapter.send(
+            "den", content, metadata={"_interim_send": True, "notify": notify})
+        assert result.success
+    assert device.outputs == []
+    assert (await rig.adapter.send("den", "Your reminder is due.", metadata=NOTIFY)).success
+    assert len(device.outputs) == 1
+
+
+async def test_interim_notice_cannot_finish_an_active_voice_turn(rig):
+    turns, _ = await _turns(rig)
+
+    async def handler(event):
+        assert (await rig.adapter.send(
+            "den", "Skill review completed.",
+            metadata={"_interim_send": True, "notify": True})).success
+        return "Timer set."
+
+    rig.adapter.set_message_handler(handler)
+    spoken = []
+    result = await turns.run_turn(text="Set a timer", on_delta=spoken.append)
+    assert result.reply == "Timer set." and spoken == ["Timer set."]
+
+
 async def test_stop_interrupts_the_turn_and_drops_its_late_reply(rig):
     turns, key = await _turns(rig)
     started = asyncio.Event()
