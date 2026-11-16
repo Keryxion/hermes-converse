@@ -160,9 +160,9 @@ All are JSON text frames:
 |---|---|
 | `{"stop": true}` | Stops live work and closes the socket. The device's conversation and its history are kept for reconnection. |
 | `{"commit": true}` | Ends the current utterance now, with the audio already sent (runs a turn on it). |
-| `{"push_to_talk": true}` | The next utterance uses `commit` instead of silence/Smart Turn to end; see "Push to talk" below. |
 | `{"type": "cancel", "turn_id": "..."}` | Cancels the **current** turn — stops TTS and the agent — but keeps the socket, session, and history alive. |
 | `{"type": "wake", "claim_id": "...", "wake_word": "Hey Arya"}` | request an advisory wake decision while buffering the new activation locally; see section 8. |
+| `{"type": "endpointing", "on": false, "commit": true}` | Turns silence/Smart Turn endpointing off or on, and with `commit` ends the current utterance; both fields are optional. See "Push to talk" below. |
 | `{"type": "state", "turn_id": "...", "state": "listening"}` | The state the device now shows; see "The turn's state" in section 4. |
 | `{"type": "countdown", "countdown_id": "...", "ringing": true}` | A countdown is ringing, or with `ended` has ended; see section 10. |
 | `{"type": "commands"}` | Ask which commands the server runs; see "Commands" below. |
@@ -178,22 +178,24 @@ assistant's wake word nor the `cancel` wake word cancels a turn (section 4,
 
 ### Push to talk
 
-A client sends this control frame when a talk button is held:
+When a talk button is held, turn endpointing off:
 
 ```json
-{"push_to_talk": true}
+{"type":"endpointing","on":false}
 ```
 
-Binary PCM while the control is held, then:
+Binary PCM while the control is held, then on release:
 
 ```json
-{"commit": true}
+{"type":"endpointing","on":true,"commit":true}
 ```
 
-on release. For this utterance only, the server does not endpoint on silence or
-Smart Turn; a pause mid-sentence remains part of the same request. `commit`
-submits the audio and restores normal endpointing for the next utterance.
-The utterance cap still applies as a memory backstop.
+While endpointing is off the server does not endpoint on silence or Smart Turn;
+a pause mid-sentence remains part of the same request, and only `commit` ends
+it. `commit` submits the audio already sent; an `on` in the same frame takes
+effect after that audio, so it cannot cut the held utterance short. `on` stays
+as last set until the device changes it, and each connection starts with
+endpointing on. The utterance cap still applies as a memory backstop.
 
 Quick taps and wake-word turns use normal endpointing. Send no PCM while the
 control is released. Barge-in, `cancel`, `stop`, and every other frame keep their

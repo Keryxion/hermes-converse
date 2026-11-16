@@ -563,8 +563,10 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                         break
                     if frame.get("commit"):
                         session.commit()
-                    if frame.get("push_to_talk") is True:
-                        session.push_to_talk()
+                    if frame.get("type") == "endpointing":
+                        on = frame.get("on")
+                        session.set_endpointing(on if isinstance(on, bool) else None,
+                                                commit=frame.get("commit") is True)
                     if frame.get("type") == "state":
                         # Leaving `speaking` for a turn: its audio has played or been discarded.
                         if isinstance(frame.get("turn_id"), str) and frame.get("state") != "speaking":

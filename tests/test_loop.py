@@ -227,23 +227,22 @@ def test_client_commit_ends_capture_even_when_smart_turn_would_hold(wake):
     assert _captured_blocks(session, wav_path) == 4
 
 
-def test_push_to_talk_ignores_silence_and_smart_turn_until_commit():
-    """The talk control ends the utterance, not the audio: 40 blocks of silence — far past
+def test_endpointing_off_ignores_silence_and_smart_turn_until_commit():
+    """The device ends the utterance, not the audio: 40 blocks of silence — far past
     ``max_silence_blocks`` — must not endpoint, and Smart Turn is never consulted."""
     det = _ScriptedDetector([0.99])  # would commit on the first ask
     session = _adaptive_session(det, endpoint_blocks=2, max_silence_blocks=4)
-    session.push_to_talk()
+    session.set_endpointing(False)
     _feed_speech(session, 5)
     _feed_silence(session, 40)
     session.commit()
     wav_path, _volume = asyncio.run(session._capture())
     assert det.calls == 0
     assert _captured_blocks(session, wav_path) == 5 + 40 + 1  # the commit marker
-    assert not session._push_to_talk
 
 
-def test_without_push_to_talk_the_same_silence_endpoints():
-    """Control for the test above: the fixed/smart endpointer still ends a non-PTT capture."""
+def test_with_endpointing_the_same_silence_endpoints():
+    """Control for the test above: the fixed/smart endpointer still ends an ordinary capture."""
     det = _ScriptedDetector([0.0])
     session = _adaptive_session(det, endpoint_blocks=2, max_silence_blocks=4)
     _feed_speech(session, 5)
@@ -252,21 +251,25 @@ def test_without_push_to_talk_the_same_silence_endpoints():
     assert _captured_blocks(session, wav_path) == 5 + 4
 
 
-def test_push_to_talk_uses_the_same_utterance_cap():
-    """The talk control changes the endpoint, not the capture's memory backstop."""
+def test_endpointing_off_uses_the_same_utterance_cap():
+    """Turning endpointing off changes the endpoint, not the capture's memory backstop."""
     session = ConverseSession(np)
-    session.push_to_talk()
+    session.set_endpointing(False)
     assert session._max_blocks == vad.MAX_UTTERANCE_MS // 30
 
 
-def test_push_to_talk_reverts_to_normal_endpoint_after_release():
+def test_endpointing_turned_on_with_commit_applies_after_the_held_audio():
+    """Release sends ``on`` with ``commit``: the held silence already sent still cannot endpoint,
+    and the next utterance endpoints normally."""
     session = _adaptive_session(_ScriptedDetector([0.0]), endpoint_blocks=2, max_silence_blocks=4)
-    session.push_to_talk()
+    session.set_endpointing(False)
     _feed_speech(session, 5)
-    session.commit()
+    _feed_silence(session, 40)
+    session.set_endpointing(True, commit=True)
+    assert not session._endpointing
     wav_path, _ = asyncio.run(session._capture())
-    vad.unlink_quietly(wav_path)
-    assert not session._push_to_talk
+    assert _captured_blocks(session, wav_path) == 5 + 40 + 1  # the commit marker
+    assert session._endpointing
     _feed_speech(session, 5)
     _feed_silence(session, 40)
     wav_path, _ = asyncio.run(session._capture())

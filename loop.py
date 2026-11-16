@@ -418,7 +418,8 @@ class ConverseSession:
         capture_no_data_seconds: float = DEFAULT_CAPTURE_NO_DATA_SECONDS,
     ) -> None:
         self._np = np
-        self._push_to_talk = False
+        self._endpointing = True
+        self._endpointing_at_commit: Optional[bool] = None  # `on` sent with `commit`, applied when it is reached
         self._state_lock = threading.RLock()
         self.session_id = uuid.uuid4().hex  # echoed in `ready`, joinable across client/server traces
         self.device_name: Optional[str] = None  # trace only; set by the route
@@ -624,9 +625,20 @@ class ConverseSession:
         wakes a capture that is waiting for audio."""
         self.stream.feed(self._np.zeros(self._block, dtype=self._np.int16).tobytes(), commit=True)
 
-    def push_to_talk(self) -> None:
-        """The next utterance is delimited by commit, not by its pauses."""
-        self._push_to_talk = True
+    def set_endpointing(self, on: Optional[bool], *, commit: bool = False) -> None:
+        """Whether pauses end the utterance. Off, only ``commit`` (or the utterance cap) does.
+        With *commit*, ``on`` applies where the commit marker is reached, so audio sent before it
+        is still heard with endpointing as it was."""
+        if commit:
+            self._endpointing_at_commit = on
+            self.commit()
+        elif on is not None:
+            self._endpointing = on
+
+    def _commit_reached(self) -> None:
+        self.stream.committed = False
+        if self._endpointing_at_commit is not None:
+            self._endpointing, self._endpointing_at_commit = self._endpointing_at_commit, None
 
     def attach_device(self, device_name: Optional[str]) -> None:
         """The device this session's microphone belongs to: its input gain starts from what was learned before."""
@@ -754,9 +766,7 @@ class ConverseSession:
                 self._pre_roll.append(data.copy())
                 if phase is None:
                     if commit_from is None or i >= commit_from:
-                        self.stream.committed = False  # a commit with no utterance to end
-                        if commit_from is not None and i >= commit_from:
-                            self._push_to_talk = False
+                        self._commit_reached()  # a commit with no utterance to end
                     self._account_received_silence()
                     continue
                 self._reset_quiet()
@@ -992,7 +1002,7 @@ class ConverseSession:
         generation = self._generation
         recorder = recorder or PhaseRecorder()
         with recorder.phase("voice.capture", **{
-                "endpoint.mode": ("push_to_talk" if self._push_to_talk
+                "endpoint.mode": ("commit" if not self._endpointing
                                   else "smart_turn" if self._turn_detector is not None else "fixed"),
                 "endpoint.silence_ms": self._blocks_ms(self._endpoint_blocks),
                 "endpoint.max_silence_ms": self._blocks_ms(self._max_silence_blocks),
@@ -1093,8 +1103,8 @@ class ConverseSession:
             # End at the last pause instead of mid-word; the rest is heard again as the next capture.
             self.stream.unread(np.concatenate(c.received[c.split - c.pre_roll:]))
             del c.frames[c.split:]
-        self.stream.committed = False  # a commit ends only the capture it arrived in
-        self._push_to_talk = False
+        if self.stream.committed:
+            self._commit_reached()  # a commit ends only the capture it arrived in
         if phase is not None:
             phase.set(**{"endpoint.reason": reason, "endpoint.pause_ms": self._blocks_ms(c.quiet),
                          "endpoint.longest_pause_ms": self._blocks_ms(c.longest_pause)})
@@ -1129,9 +1139,9 @@ class ConverseSession:
                     c.split = len(c.frames) - 1 - c.quiet // 2  # the middle of that pause
                 c.quiet, c.next_check = 0, self._endpoint_blocks
                 c.speech_blocks += 1
-            if not decide or self._push_to_talk:
-                # The talk control, not the audio, ends a push-to-talk utterance: `commit` is the
-                # only natural endpoint. The utterance cap still applies above.
+            if not decide or not self._endpointing:
+                # With endpointing off the device, not the audio, ends the utterance: `commit` is
+                # the only natural endpoint. The utterance cap still applies above.
                 continue
             if c.quiet >= self._max_silence_blocks:
                 return i + 1, "max_silence"

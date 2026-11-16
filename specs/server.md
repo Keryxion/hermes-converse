@@ -210,9 +210,12 @@ without Smart Turn, so "Hey Arya … set a timer" is one request while a continu
 Explicit `commit` ends the capture at once with the audio already received,
 bypassing Smart Turn and the wake pause. The utterance limit still applies.
 
-After `{"push_to_talk": true}`, only `commit` ends that utterance; neither
-silence nor Smart Turn endpoints it. The following utterance uses normal
-endpointing again. Onset detection, barge-in, and the wake pause are unchanged.
+An `endpointing` frame's `on` turns endpointing off or on until the device
+changes it; each connection starts with it on. While it is off only `commit`
+ends the utterance; neither silence nor Smart Turn endpoints it. The frame's
+`"commit": true` is the same as `{"commit": true}`, and an `on` sent with it
+applies where the commit marker is reached in the audio. Onset detection,
+barge-in, and the wake pause are unchanged.
 
 The utterance limit (60 s) is a memory backstop, not an endpoint. It must never
 be short enough to cut ordinary speech: a person explaining something for twenty
