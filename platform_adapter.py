@@ -212,9 +212,16 @@ class ConverseAdapter(BasePlatformAdapter):
         event = MessageEvent(text=text, message_type=MessageType.COMMAND, source=source,
                              message_id=f"command-{uuid.uuid4().hex}")
         command = _Command(event)
+        # Mid-run (the ``command`` tool) the gateway dispatches a command inline, with no processing
+        # bracket, and has sent its reply when handle_message returns.
+        inline = command.started = self._event_session_key(event) in self._active_sessions
         self._commands[source.chat_id] = command
         try:
             await self.handle_message(event)
+            if inline:
+                if command.reply is None:
+                    logger.warning("converse: %r had no reply mid-run", text)
+                return command.reply
             if not event._gateway_accepted:
                 logger.warning("converse: the gateway did not accept %r", text)
                 return None
@@ -617,9 +624,15 @@ class GatewayTurns:
         """The canonical name of command or alias *name*; None when the gateway has no such command."""
         return command_catalog.canonical(name)
 
-    async def run_command(self, text: str) -> Optional[str]:
-        """End the turn in flight, then run the gateway command; its reply, or None on failure."""
-        await self.stop()
+    def describe_command(self, name: str) -> str:
+        """The description Hermes's registry gives canonical command *name*."""
+        return command_catalog.description(name)
+
+    async def run_command(self, text: str, *, stop: bool = True) -> Optional[str]:
+        """End the turn in flight (unless *stop* is False: the ``command`` tool runs inside it), then run
+        the gateway command; its reply, or None on failure."""
+        if stop:
+            await self.stop()
         self._model = None  # a command such as /new may drop the model override; the next turn sets it again
         return await self._adapter.run_command(self._source, text)
 

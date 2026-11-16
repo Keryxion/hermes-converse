@@ -1385,6 +1385,7 @@ async def drive_converse_turns(
     last_progress: Optional[Callable[[], float]] = None,
     message_ids: Any = None,
     present: Optional[Callable[[], bool]] = None,
+    after_turn: Optional[Callable[[], Awaitable[None]]] = None,
 ) -> None:
     """Run the per-transcript incremental-TTS turn loop.
 
@@ -1445,6 +1446,8 @@ async def drive_converse_turns(
         try:
             await _run_turn(d, turn, tt)
             await session.wait_for_playback_tail()
+            if after_turn is not None:
+                await after_turn()
         except asyncio.CancelledError:
             tt.set_missing(outcome="interrupted", interrupted=True)
             raise
@@ -1525,6 +1528,8 @@ async def drive_converse_turns(
                 _discard_after_signoff(session, deferred_outputs)
                 getattr(session, "end_exchange", lambda: None)()
             await session.wait_for_playback_tail()
+            if after_turn is not None:  # the reply has played, or its playback ended otherwise
+                await after_turn()
         except asyncio.CancelledError:
             tt.set_missing(outcome="interrupted", interrupted=True)
             raise

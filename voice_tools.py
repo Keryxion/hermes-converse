@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, Callable
 
@@ -34,6 +35,16 @@ SCHEMAS = {
                         "\"turn on the lights\", do not call it, since they may add \"and the kitchen "
                         "too\"."),
         "parameters": {"type": "object", "properties": {}},
+    },
+    "command": {
+        "name": "command",
+        "description": ("Voice devices only. Runs a gateway slash command for this conversation, once the "
+                        "person approves it out loud, and returns its reply (not spoken). For example "
+                        "\"start over\" -> /new, \"compress this\" -> /compress. /new takes effect when "
+                        "this turn's reply has played."),
+        "parameters": {"type": "object", "properties": {"text": {
+            "type": "string", "description": "The command with its slash and any arguments, such as /new."}},
+            "required": ["text"]},
     },
 }
 
@@ -103,10 +114,23 @@ def make_handlers(hub: Any) -> dict[str, Callable[..., str]]:
                 turn.standby = True
         return _result("ok")
 
-    return {"speak_this": speak_this, "play_tone": play_tone, "standby": standby}
+    async def command(args: dict, **kw: Any) -> str:
+        error, attachment = device()
+        if attachment is None or attachment.command is None:
+            return _result(error or "not_attached")
+        text = args.get("text")
+        if not isinstance(text, str) or not text.strip().startswith("/"):
+            return _result("unknown_command")
+        from gateway.platforms.base_exec_approval import approval_timeout_seconds
+
+        # The socket's loop asks the person and runs the command; this tool call waits for it.
+        return _result(await asyncio.wrap_future(attachment.command(text.strip(), approval_timeout_seconds())))
+
+    return {"speak_this": speak_this, "play_tone": play_tone, "standby": standby, "command": command}
 
 
 def register_tools(ctx: Any, hub: Any) -> None:
     for name, handler in make_handlers(hub).items():
         ctx.register_tool(name=name, toolset=TOOLSET, schema=SCHEMAS[name], handler=handler,
-                          description=SCHEMAS[name]["description"], emoji="🎙️")
+                          description=SCHEMAS[name]["description"], emoji="🎙️",
+                          is_async=asyncio.iscoroutinefunction(handler))

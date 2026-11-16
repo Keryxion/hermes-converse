@@ -18,6 +18,8 @@ class Attachment:
     pending: int = 0
     send: Optional[Callable[[dict], Any]] = None  # sends a JSON frame to the device
     assistant_name: str = ""  # the start frame's, which approvals speak as
+    # The ``command`` tool: (text, approval timeout) -> a concurrent future of its result, on the socket's loop.
+    command: Optional[Callable[[str, float], Any]] = None
 
 
 class ConversationHub:
