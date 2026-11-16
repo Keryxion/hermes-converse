@@ -992,6 +992,8 @@ class ConverseSession:
         }) as cap:
             wav_path, volume = await self._capture(wake=wake, phase=cap)
             cap.set(**{"vad.model": self._detector.name})
+        from ._server_recording import save_capture
+        save_capture(wav_path, self.session_id)
         self._pre_roll.clear()  # capture drained the pre-roll into the WAV
         if self.stream.no_data_return or self._capture_abandoned(generation):
             vad.unlink_quietly(wav_path)
