@@ -155,6 +155,7 @@ def test_prompt_explains_names_proactivity_and_real_scheduling_receipts():
     assert 'persistent conversation' in prompt and 'without a new user message or wake word' in prompt
     assert 'pulse tool is available' in prompt and 'tool\'s receipt' in prompt
     assert 'Cancelling speech does not cancel a timer' in prompt
+    assert 'use the countdown tool' in prompt and 'set a timer for ten minutes' in prompt   # not pulse, for a timer
     assert 'If a tool or delivery integration is unavailable' in prompt
 
 
