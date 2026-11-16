@@ -7,6 +7,7 @@ class ServerTurn:
     def __init__(self) -> None:
         self.spoken: list[str] = []
         self.exclusive = False
+        self.standby = False
 
     def speak(self, text: str) -> None:
         self.exclusive = True
