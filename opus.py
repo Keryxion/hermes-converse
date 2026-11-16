@@ -68,7 +68,7 @@ class Encoder:
         _check(lib, error.value)
         self.close = weakref.finalize(self, lib.opus_encoder_destroy, self.state)
         try:
-            for request, value in ((SET_BITRATE, 24000), (SET_COMPLEXITY, 5), (SET_DTX, 1)):
+            for request, value in ((SET_BITRATE, 24000), (SET_COMPLEXITY, 5), (SET_DTX, 0)):
                 _check(lib, lib.opus_encoder_ctl(self.state, request, ct.c_int(value)))
             delay = ct.c_int()
             _check(lib, lib.opus_encoder_ctl(self.state, GET_LOOKAHEAD, ct.byref(delay)))
