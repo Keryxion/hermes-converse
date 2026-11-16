@@ -554,6 +554,13 @@ would (Commands from a device): any command a chat user can run, no list of
 allowed ones, the slash-access policy applied by the gateway. The reply is the
 tool result, not speech; the agent says what matters in its own words.
 
+The person approves every call before it runs. The agent does not decide what a
+command does to the conversation: it is asked as for a Hermes approval
+(Approvals) with `approval_choice` `ask`, whatever the device's setting: the
+`approval` tone, the command spoken ("Run /new?"), and `approval_request` with
+the command and choices `once` and `deny`. `once` runs it; any other answer, or
+none before `approvals.timeout`, runs nothing.
+
 A command that starts a new conversation (`new`, or any alias of it) waits for
 the turn: once the turn's reply has played (the device's `state` leaves
 `speaking`, or the playback tail ends), close the socket with
@@ -564,6 +571,8 @@ once, inside the turn.
 |---|---|
 | The command's reply | It ran, or, for a new conversation, runs when the turn's reply has played. |
 | `unknown_command` | Not one of Hermes's commands or aliases. Nothing runs. |
+| `denied` | The person did not approve it. Nothing runs. |
+| `not_attached` | No device is connected to ask. Nothing runs. |
 | `not_a_device` | The call was made from a chat that is not a voice device. Nothing runs. |
 
 ## Countdowns
