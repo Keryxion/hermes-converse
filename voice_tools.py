@@ -94,9 +94,13 @@ def make_handlers(hub: Any) -> dict[str, Callable[..., str]]:
         error, attachment = device()
         if attachment is None:
             return _result(error)
-        turn = turn_of(attachment)
-        if turn is not None:
-            turn.standby = True  # a server-started turn's reply already ends in standby
+        server_turn = server_turn_of(attachment)
+        if server_turn is not None:
+            server_turn.standby = True
+        else:
+            turn = turn_of(attachment)
+            if turn is not None:
+                turn.standby = True
         return _result("ok")
 
     return {"speak_this": speak_this, "play_tone": play_tone, "standby": standby}
