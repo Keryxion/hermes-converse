@@ -162,6 +162,7 @@ All are JSON text frames:
 | `{"commit": true}` | Ends the current utterance now, with the audio already sent (runs a turn on it). |
 | `{"type": "cancel", "turn_id": "..."}` | Cancels the **current** turn — stops TTS and the agent — but keeps the socket, session, and history alive. |
 | `{"type": "wake", "claim_id": "...", "wake_word": "Hey Arya"}` | request an advisory wake decision while buffering the new activation locally; see section 8. |
+| `{"type": "heard", "wake_word": "Hey Arya"}` | A wake word was heard during a turn; see "A wake word heard during a turn" in section 4. |
 | `{"type": "endpointing", "on": false, "commit": true}` | Turns silence/Smart Turn endpointing off or on, and with `commit` ends the current utterance; both fields are optional. See "Push to talk" below. |
 | `{"type": "state", "turn_id": "...", "state": "listening"}` | The state the device now shows; see "The turn's state" in section 4. |
 | `{"type": "countdown", "countdown_id": "...", "ringing": true}` | A countdown is ringing, or with `ended` has ended; see section 10. |
@@ -173,8 +174,9 @@ All are JSON text frames:
 **`cancel` vs `stop`:** `stop` tears down the session; `cancel` only kills the
 current turn. Use `cancel` when the user hits the action button and you want
 to keep the conversation going. Nothing heard is a `cancel`: neither the
-assistant's wake word nor the `cancel` wake word cancels a turn (section 4,
-"Barge-in and cancellation").
+assistant's wake word nor the `cancel` wake word cancels a turn. A wake word
+heard during a turn is reported with `heard` (section 4, "A wake word heard
+during a turn").
 
 ### Push to talk
 
@@ -355,11 +357,11 @@ If the old reply had finished but none of it had played, it is not lost: it
 arrives first as a server-started reply turn (it carries `event_id`, and
 `next_action` is `"listen"`), then the reply to the additional instruction.
 
-The assistant's wake word heard during an activation, such as "Hey Arya,
-actually make it the kitchen" while the reply plays, is barge-in like any other
-speech. Do not send `cancel` and do not send another `wake`: the device is
-already streaming, and the server hears the words, interrupts the reply, and
-answers what follows. A wake word that cancelled the turn would throw that
+The words that follow the assistant's wake word during an activation, such as
+"Hey Arya, actually make it the kitchen" while the reply plays, are barge-in
+like any other speech: the device is already streaming, and the server hears
+them, interrupts the reply, and answers what follows. Do not send `cancel` and
+do not send another `wake`. A wake word that cancelled the turn would throw that
 request away and make the person say the wake word twice. The same goes for
 "cancel", "stop", or "never mind" said during a turn: they are speech to the
 server, and the assistant stops.
@@ -403,6 +405,22 @@ turn, replacing its pending standby action. A continuation receives its own
 turn ID. Report the state for the old turn's playback only; it must not
 discard the continuation. A bounded playback-tail timeout handles a missing
 report.
+
+### A wake word heard during a turn
+
+A device that detects wake words keeps detecting them during a turn and while
+an activation is open. When it hears the assistant's wake word or the `cancel`
+wake word then, it sends:
+
+```json
+{"type":"heard","wake_word":"Hey Arya"}
+```
+
+`wake_word` is the exact phrase detected, as in `wake` (section 8); for the
+`cancel` wake word it is `"cancel"`. `heard` is neither `cancel` nor barge-in:
+the server records it, and the turn carries on unchanged. No frame answers it.
+It is mostly for half-duplex devices, where the server cannot hear the person
+while a reply plays.
 
 ### The turn's state
 
@@ -980,7 +998,8 @@ the assistant's. It is detected on the device and needs no election:
 | Heard | The device |
 |---|---|
 | `cancel` while a countdown rings | Ends every ringing countdown, as a local dismissal. |
-| `cancel` at any other time | Does nothing. During a turn the server hears it as speech. |
+| `cancel` during a turn, with nothing ringing | Sends `heard` (section 4). The server also hears it as speech. |
+| `cancel` at any other time | Does nothing. |
 
 A device without the `cancel` wake word ends an alarm with its button or tap,
 or by asking the assistant.
