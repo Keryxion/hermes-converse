@@ -116,7 +116,7 @@ class ConverseRoute:
         self._arbitrator: Optional[Arbitrator] = None
         self._arbitrator_lock = asyncio.Lock()
         self._devices = device_store or DeviceStore()
-        self._named_lock = asyncio.Lock()
+        self._named_locks: dict[tuple[str, str], asyncio.Lock] = {}  # per device: one device's setup never waits on another's
         self._named_connections: dict[str, _NamedConnection] = {}
 
     async def _arbitrator_for_settings(self, settings: Settings) -> Optional[Arbitrator]:
@@ -225,7 +225,8 @@ class ConverseRoute:
         attachment = None
         audio = None
         try:
-            async with self._named_lock:
+            lock = self._named_locks.setdefault(tuple(names), asyncio.Lock())
+            async with lock:
                 device = await asyncio.to_thread(self._devices.reserve, *names)
                 old = self._named_connections.get(device.recipient_id)
                 if old is not None:

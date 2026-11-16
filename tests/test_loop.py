@@ -17,6 +17,7 @@ import pytest
 from hermes_converse import loop as cl
 from hermes_converse import speech, vad
 from hermes_converse.loop import (
+    AsyncQueue,
     HISTORY_MAX_MESSAGES, ConverseSession, QuietTick, TailBarge, Utterance,
     drive_converse_turns, parse_start_config, voice_system_prompt)
 from hermes_converse.synth import decode_audio_file_to_pcm16, resample_synth, resolve_synthesizer
@@ -517,7 +518,7 @@ class _FakeConverseSession:
     """Serves fixed transcripts (then the shutdown sentinel) with no VAD."""
 
     def __init__(self, transcripts):
-        self.transcripts = _queue.Queue()
+        self.transcripts = AsyncQueue()
         for t in transcripts:
             self.transcripts.put(t)
         self.transcripts.put(None)
@@ -691,7 +692,7 @@ def test_drive_converse_turns_brackets_the_turn_with_begin_end():
 
 def test_drive_converse_turns_forwards_quiet_ticks_and_keeps_socket_open():
     session = _FakeConverseSession([])
-    session.transcripts = _queue.Queue()
+    session.transcripts = AsyncQueue()
     for q in (0.5, 1.0, 1.5):
         session.transcripts.put(QuietTick(q))
     session.transcripts.put(None)
@@ -832,7 +833,7 @@ def test_driver_hands_each_turn_its_own_recorder(monkeypatch):
 
 def test_driver_tail_barge_emits_interrupted_not_a_turn():
     session = _FakeConverseSession([])
-    session.transcripts = _queue.Queue()
+    session.transcripts = AsyncQueue()
     session.transcripts.put(TailBarge("turn-x"))
     session.transcripts.put(None)
     sent = _run_driver(session, [], [])
@@ -951,7 +952,7 @@ def test_session_idle_cancel_does_not_poison_next_capture():
 
 def test_driver_cancel_turn_emits_frames():
     session = _FakeConverseSession([])
-    session.transcripts = _queue.Queue()
+    session.transcripts = AsyncQueue()
     session.transcripts.put(cl.CancelTurn("turn-9"))
     session.transcripts.put(None)
     sent = _run_driver(session, [], [], quiet_interval=1.0)
@@ -1484,3 +1485,31 @@ def test_a_state_report_ends_the_tail_only_when_it_leaves_speaking_for_that_turn
     assert session._tail_active
     session.playback_ended("turn-1")
     assert not session._tail_active and session._tail_result[1] == "reported"
+
+
+def test_waiting_for_transcripts_and_the_playback_tail_holds_no_pool_thread():
+    """Every connection waits on its transcripts (and its playback tail) for its whole life. Those
+    waits must not take threads from the shared pool, or connection setup (``to_thread``) stalls
+    once a few devices are connected."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    async def main():
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
+        sessions = [ConverseSession(np) for _ in range(4)]
+        for session in sessions:
+            session.begin_playback_tail("t", 30.0)
+        gets = [asyncio.ensure_future(s.transcripts.get_async()) for s in sessions]
+        tails = [asyncio.ensure_future(s.wait_for_playback_tail()) for s in sessions]
+        await asyncio.sleep(0.05)
+        assert await asyncio.wait_for(asyncio.to_thread(lambda: "free"), 1) == "free"
+        threads = [threading.Thread(target=s.transcripts.put, args=(f"heard {i}",)) for i, s in enumerate(sessions)]
+        for t in threads:
+            t.start()
+        assert await asyncio.wait_for(asyncio.gather(*gets), 1) == [f"heard {i}" for i in range(4)]
+        for session in sessions:
+            threading.Thread(target=session.playback_ended, args=("t",)).start()
+        await asyncio.wait_for(asyncio.gather(*tails), 1)
+        assert not any(s._tail_active for s in sessions)
+
+    asyncio.run(main())
