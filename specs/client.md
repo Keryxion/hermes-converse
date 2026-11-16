@@ -121,14 +121,15 @@ fallback. The format stays fixed until reconnect.
 Each binary WebSocket message is exactly one raw Opus packet containing 20 ms
 of mono audio: 320 samples at 16 kHz, or 480 at 24 kHz. No Ogg, RTP, or additional
 header. Configure each encoder with libopus `OPUS_APPLICATION_VOIP`, a target
-bitrate of 24000 bit/s, DTX enabled, and complexity 5. Packet sizes vary; bitrate
+bitrate of 24000 bit/s, DTX off, and complexity 5. Packet sizes vary; bitrate
 is a target, not a packet length.
 
 Feed captured samples to the encoder without changing their level. Keep encoding
-and sending every 20 ms of captured audio during an activation, including the
-tiny DTX packets for silence. Do not omit packets: each advances the received
-audio timeline by 20 ms, so endpointing and `quiet` keep working. Flush wake
-pre-roll in capture order as Opus packets before live audio.
+and sending every 20 ms of captured audio during an activation, silence
+included. Do not omit packets: each advances the received audio timeline by
+20 ms, so endpointing and `quiet` keep working. This is why DTX stays off: some
+encoders, such as Chromium's WebCodecs, drop DTX frames instead of sending
+them. Flush wake pre-roll in capture order as Opus packets before live audio.
 
 Keep microphone codec state across turns and activation gaps on the socket.
 For replies, start fresh encoder/decoder state at the first `speaking` for each

@@ -25,8 +25,8 @@ on how loud that is.
 - Allowed: echo cancellation and beamforming, format conversion that loses no
   level (sample rate, a lossless narrowing to 16 bits), and analog preamp
   settings.
-- Opus encoding and its DTX are allowed when selected; keep the encoder input
-  at the captured level and send the DTX packets as the client spec requires.
+- Opus encoding is allowed when selected, with DTX off; keep the encoder input
+  at the captured level and send every packet as the client spec requires.
 - A wake word engine that wants a different level changes its own copy, never
   the audio sent upstream.
 

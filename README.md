@@ -56,7 +56,7 @@ Wait for `ready` before streaming audio. It returns `assistant_name`, `device_na
 
 Add `"audio_format": "opus"` to `start` to opt in for both microphone and reply
 audio; omitting it keeps PCM16. Opus uses one raw 20 ms mono packet per binary
-WebSocket message, VOIP, 24 kbps, DTX, and complexity 5. Send silence packets too
+WebSocket message, VOIP, 24 kbps, DTX off, and complexity 5. Send silence packets too
 so endpointing and `quiet` retain their audio timing. `ready.input.format` and
 `ready.output.format` confirm the selection. See [the client spec](specs/client.md#opt-in-to-opus)
 for sample rates and codec state across turns.

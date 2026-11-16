@@ -16,11 +16,11 @@ from tests.test_route import API_KEY, Harness, _FakeStreamer, _collect_turn, _pa
 
 
 @pytest.mark.parametrize("rate", RATES)
-def test_real_codec_rates_settings_and_dtx(rate):
+def test_real_codec_rates_settings_without_dtx(rate):
     encoder, decoder = Encoder(rate), Decoder(rate)
     try:
         # Query the native encoder, rather than mirroring the wrapper's constants.
-        for request, expected in ((4001, 2048), (4003, 24000), (4011, 5), (4017, 1)):
+        for request, expected in ((4001, 2048), (4003, 24000), (4011, 5), (4017, 0)):
             value = ct.c_int()
             assert encoder.lib.opus_encoder_ctl(encoder.state, request, ct.byref(value)) == 0
             assert value.value == expected
@@ -29,7 +29,7 @@ def test_real_codec_rates_settings_and_dtx(rate):
         assert len(decoded) == rate // 50 * 2
         assert np.abs(np.frombuffer(decoded, dtype="<i2")).max() > 100
         packets = [encoder.encode(bytes(len(pcm))) for _ in range(100)]
-        assert any(len(p) <= 2 for p in packets)
+        assert all(len(p) > 2 for p in packets)  # no DTX: silence is a real frame
         assert all(len(decoder.decode(p)) == len(pcm) for p in packets)
     finally:
         encoder.close()
@@ -75,9 +75,11 @@ def test_pcm_does_not_load_libopus(monkeypatch):
 
 
 def test_dtx_packets_advance_audio_without_learning_synthetic_noise():
+    # Clients should not send DTX, but one that does still gets silence.
     audio = AudioTransport("opus", 16000, 16000)
     encoder = Encoder(16000)
     try:
+        assert encoder.lib.opus_encoder_ctl(encoder.state, 4016, ct.c_int(1)) == 0
         packets = [encoder.encode(bytes(640)) for _ in range(100)]
         tiny = [p for p in packets if len(p) <= 2]
         assert tiny
@@ -173,7 +175,7 @@ async def test_relay_reconnect_changes_format_and_resamples_running_turn(old_for
 
 
 @pytest.mark.asyncio
-async def test_opus_socket_full_turn_and_dtx_quiet(monkeypatch):
+async def test_opus_socket_full_turn_and_silence_quiet(monkeypatch):
     fake = FakeHermes(API_KEY)
     streamer = _FakeStreamer([speech_like(2500, seconds=0.15, rate=24000).tobytes()])
     seen = _patch_speech(monkeypatch, streamer)
@@ -193,7 +195,7 @@ async def test_opus_socket_full_turn_and_dtx_quiet(monkeypatch):
             assert seen["n"] == 1 and len(fake.turns) == 1
             decoded = b"".join(decoder.decode(p) for p in packets)
             assert np.abs(np.frombuffer(decoded, dtype="<i2")).max() > 100
-            # Wait until the worker consumes the post-request audio, then send only DTX.
+            # Wait until the worker consumes the post-request audio, then send only silence.
             await asyncio.sleep(0.1)
             for _ in range(100):
                 await ws.send_bytes(encoder.encode(bytes(640)))
