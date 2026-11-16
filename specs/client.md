@@ -163,6 +163,7 @@ All are JSON text frames:
 | `{"type": "cancel", "turn_id": "..."}` | Cancels the **current** turn — stops TTS and the agent — but keeps the socket, session, and history alive. |
 | `{"type": "wake", "claim_id": "...", "wake_word": "Hey Arya"}` | request an advisory wake decision while buffering the new activation locally; see section 8. |
 | `{"type": "heard", "wake_word": "Hey Arya"}` | A wake word was heard during a turn; see "A wake word heard during a turn" in section 4. |
+| `{"type": "endpointing", "on": false, "commit": true}` | Turns silence/Smart Turn endpointing off or on, and with `commit` ends the current utterance; both fields are optional. See "Push to talk" below. |
 | `{"type": "state", "turn_id": "...", "state": "listening"}` | The state the device now shows; see "The turn's state" in section 4. |
 | `{"type": "countdown", "countdown_id": "...", "ringing": true}` | A countdown is ringing, or with `ended` has ended; see section 10. |
 | `{"type": "commands"}` | Ask which commands the server runs; see "Commands" below. |
@@ -176,6 +177,31 @@ to keep the conversation going. Nothing heard is a `cancel`: neither the
 assistant's wake word nor the `cancel` wake word cancels a turn. A wake word
 heard during a turn is reported with `heard` (section 4, "A wake word heard
 during a turn").
+
+### Push to talk
+
+When a talk button is held, turn endpointing off:
+
+```json
+{"type":"endpointing","on":false}
+```
+
+Binary PCM while the control is held, then on release:
+
+```json
+{"type":"endpointing","on":true,"commit":true}
+```
+
+While endpointing is off the server does not endpoint on silence or Smart Turn;
+a pause mid-sentence remains part of the same request, and only `commit` ends
+it. `commit` submits the audio already sent; an `on` in the same frame takes
+effect after that audio, so it cannot cut the held utterance short. `on` stays
+as last set until the device changes it, and each connection starts with
+endpointing on. The utterance cap still applies as a memory backstop.
+
+Quick taps and wake-word turns use normal endpointing. Send no PCM while the
+control is released. Barge-in, `cancel`, `stop`, and every other frame keep their
+usual meaning, and `commit` with no utterance in progress is ignored.
 
 ### Commands
 

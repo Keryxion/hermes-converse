@@ -418,6 +418,8 @@ class ConverseSession:
         capture_no_data_seconds: float = DEFAULT_CAPTURE_NO_DATA_SECONDS,
     ) -> None:
         self._np = np
+        self._endpointing = True
+        self._endpointing_at_commit: Optional[bool] = None  # `on` sent with `commit`, applied when it is reached
         self._state_lock = threading.RLock()
         self.session_id = uuid.uuid4().hex  # echoed in `ready`, joinable across client/server traces
         self.device_name: Optional[str] = None  # trace only; set by the route
@@ -623,6 +625,21 @@ class ConverseSession:
         wakes a capture that is waiting for audio."""
         self.stream.feed(self._np.zeros(self._block, dtype=self._np.int16).tobytes(), commit=True)
 
+    def set_endpointing(self, on: Optional[bool], *, commit: bool = False) -> None:
+        """Whether pauses end the utterance. Off, only ``commit`` (or the utterance cap) does.
+        With *commit*, ``on`` applies where the commit marker is reached, so audio sent before it
+        is still heard with endpointing as it was."""
+        if commit:
+            self._endpointing_at_commit = on
+            self.commit()
+        elif on is not None:
+            self._endpointing = on
+
+    def _commit_reached(self) -> None:
+        self.stream.committed = False
+        if self._endpointing_at_commit is not None:
+            self._endpointing, self._endpointing_at_commit = self._endpointing_at_commit, None
+
     def attach_device(self, device_name: Optional[str]) -> None:
         """The device this session's microphone belongs to: its input gain starts from what was learned before."""
         self._level.attach(device_name)
@@ -749,7 +766,7 @@ class ConverseSession:
                 self._pre_roll.append(data.copy())
                 if phase is None:
                     if commit_from is None or i >= commit_from:
-                        self.stream.committed = False  # a commit with no utterance to end
+                        self._commit_reached()  # a commit with no utterance to end
                     self._account_received_silence()
                     continue
                 self._reset_quiet()
@@ -985,7 +1002,8 @@ class ConverseSession:
         generation = self._generation
         recorder = recorder or PhaseRecorder()
         with recorder.phase("voice.capture", **{
-                "endpoint.mode": "smart_turn" if self._turn_detector is not None else "fixed",
+                "endpoint.mode": ("commit" if not self._endpointing
+                                  else "smart_turn" if self._turn_detector is not None else "fixed"),
                 "endpoint.silence_ms": self._blocks_ms(self._endpoint_blocks),
                 "endpoint.max_silence_ms": self._blocks_ms(self._max_silence_blocks),
                 "endpoint.wake": wake,
@@ -1020,6 +1038,7 @@ class ConverseSession:
         for that maximum, so the user may pause after the wake word. Client ``commit`` ends it at once.
         A capture that reaches ``MAX_UTTERANCE_MS`` ends at its last pause of ``PAUSE_MS``, and what
         followed that pause goes back to the stream to begin the next capture.
+        In push-to-talk mode neither silence nor Smart Turn ends it: only ``commit`` does.
 
         The blocks are heard on the audio thread, as many as have arrived at a time; those after
         the block that decides go back to the stream.
@@ -1084,7 +1103,8 @@ class ConverseSession:
             # End at the last pause instead of mid-word; the rest is heard again as the next capture.
             self.stream.unread(np.concatenate(c.received[c.split - c.pre_roll:]))
             del c.frames[c.split:]
-        self.stream.committed = False  # a commit ends only the capture it arrived in
+        if self.stream.committed:
+            self._commit_reached()  # a commit ends only the capture it arrived in
         if phase is not None:
             phase.set(**{"endpoint.reason": reason, "endpoint.pause_ms": self._blocks_ms(c.quiet),
                          "endpoint.longest_pause_ms": self._blocks_ms(c.longest_pause)})
@@ -1119,7 +1139,9 @@ class ConverseSession:
                     c.split = len(c.frames) - 1 - c.quiet // 2  # the middle of that pause
                 c.quiet, c.next_check = 0, self._endpoint_blocks
                 c.speech_blocks += 1
-            if not decide:
+            if not decide or not self._endpointing:
+                # With endpointing off the device, not the audio, ends the utterance: `commit` is
+                # the only natural endpoint. The utterance cap still applies above.
                 continue
             if c.quiet >= self._max_silence_blocks:
                 return i + 1, "max_silence"
@@ -1203,15 +1225,26 @@ def parse_start_config(frame: dict[str, Any]) -> tuple[int, int, float]:
 # (the ephemeral system prompt) so spoken replies don't balloon to full chat length.
 VOICE_PROMPT = (
     "You are in a live, low-latency voice conversation and your reply is spoken aloud. Speed "
-    "matters: answer immediately with your first, most direct response — do not deliberate, "
-    "plan, weigh options, or think out loud before answering. Keep it concise and conversational "
-    "— at most 2-3 short sentences of plain spoken text, with no code blocks, markdown, lists, or "
-    "URLs. If the request is unclear or you only caught fragments, ask one short clarifying "
+    "matters: respond promptly and directly. Keep it concise and conversational "
+    "— usually 2-3 short sentences, with no code blocks or lists. Include useful URLs or "
+    "Markdown links: they appear in text and are stripped from spoken audio. "
+    "If the request is unclear or you only caught fragments, ask one short clarifying "
     "question instead of guessing or rambling. "
+    "When handling a user's request, before starting tool calls, say one brief sentence aloud "
+    "explaining what you are about to do, such as 'I'll set a ten-minute timer.' End it with "
+    "punctuation so it can be spoken promptly. Describe the action without narrating your "
+    "internal reasoning. Describe your intent, not a completed action; "
+    "confirm success only after the tool succeeds. One acknowledgment covers a sequence of "
+    "related calls; give another short update if the work takes longer or changes direction. "
+    "For background wakes, follow the scheduler's silent-response protocol instead of "
+    "announcing routine tool calls. "
     "This is a persistent conversation. It can send a spoken update later without a new user "
-    "message or wake word while its voice device is connected. For requested timers, reminders, "
-    "follow-ups, or monitoring, use the scheduling tools actually available to you; do not "
-    "simulate a timer by waiting in this turn or promise work that has not been scheduled. "
+    "message or wake word while its voice device is connected. For a timer or alarm the user "
+    "wants to hear ring, such as 'set a timer for ten minutes', use the countdown tool: it rings "
+    "on this device, even while the connection is down. Snooze, cancel or list timers with it "
+    "too. For reminders, follow-ups, or monitoring that you speak or act on later, use the "
+    "scheduling tools actually available to you; do not simulate a timer by waiting in this "
+    "turn or promise work that has not been scheduled. "
     "When Cadence's pulse tool is available, use it to create, list, update, pause, resume, "
     "or cancel wakes and watchers in this conversation. Follow its tool schema and bundled "
     "usage instructions. For a user-requested one-time reminder, set owner_asked only when "
@@ -1220,11 +1253,9 @@ VOICE_PROMPT = (
     "quiet-hour delays, or failure; confirm a timer only after successful creation. On a "
     "Cadence wake, use pulse respond with the appropriate outcome, notify decision, and "
     "summary. Speak useful authorized updates proactively; if no update is needed, honor "
-    "the scheduler's silent-response protocol. Signing off ends this microphone activation, "
-    "not the conversation or an existing schedule. Cancelling speech does not cancel a timer: "
-    "use the scheduling tool to cancel it. A scheduled reminder does not by itself guarantee "
-    "an alarm sound, synchronized playback, or delivery to a disconnected device. If a tool "
-    "or delivery integration is unavailable, say so instead of claiming success."
+    "the scheduler's silent-response protocol. Cancelling speech does not cancel a timer: "
+    "use the countdown tool to cancel it. Use the scheduling tool to cancel a scheduled wake. "
+    "If a tool or delivery integration is unavailable, say so instead of claiming success."
 )
 
 

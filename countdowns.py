@@ -30,7 +30,8 @@ STILL_RINGING_SECONDS = (60, 120, 240, 480)
 SCHEMA = {
     "name": "countdown",
     "description": (
-        "Voice devices only. Timers that ring on the device whose conversation calls this. "
+        "Voice devices only. The tool for a timer or alarm the user asks for ('set a timer for ten "
+        "minutes', 'wake me at seven'): it rings on the device whose conversation calls this. "
         "set: a countdown at `at` (ISO 8601) or in `in_seconds`, with optional `sound` and `label`; "
         "returns countdown_id. snooze: a new time for `countdown_id`, also while it rings. "
         "cancel: end `countdown_id`, pending or ringing. list: this device's countdowns."),

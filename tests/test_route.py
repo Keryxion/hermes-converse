@@ -233,6 +233,31 @@ async def test_session_id_is_stable_across_turns_on_one_socket(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_endpointing_off_holds_the_utterance_open_until_commit(monkeypatch):
+    """A client holding its talk control streams, goes quiet, and stays unfinished: silence past ``endpoint_silence_ms``
+    starts no turn. ``commit`` ends the utterance and the turn runs on the audio already sent."""
+    fake = FakeHermes(API_KEY)
+    streamer = _FakeStreamer([b"\x01\x02"])
+    _patch_speech(monkeypatch, streamer, transcript="set a timer")
+    async with Harness(fake, {}) as client:
+        ws = await client.ws_connect("/v1/audio/converse", protocols=(VOICE_PROTOCOL, _key_protocol()))
+        try:
+            await ws.send_str(_start_msg())
+            assert (await ws.receive_json())["type"] == "ready"
+            await ws.send_json({"type": "endpointing", "on": "false"})  # only a JSON boolean
+            await ws.send_json({"type": "endpointing", "on": False})
+            for frame in _speech_then_silence_pcm():
+                await ws.send_bytes(frame)
+            await asyncio.sleep(1.5)  # silence runs well past endpoint_silence_ms (700 ms)
+            assert fake.turns == []
+            await ws.send_json({"type": "endpointing", "on": True, "commit": True})
+            await _collect_turn(ws)
+        finally:
+            await _end(ws)
+    assert len(fake.turns) == 1
+
+
+@pytest.mark.asyncio
 async def test_settings_drive_the_model_and_the_prompt(monkeypatch):
     fake = FakeHermes(API_KEY)
     streamer = _FakeStreamer([b"\x01\x02"])

@@ -336,7 +336,8 @@ class ConverseAdapter(BasePlatformAdapter):
         if not text or text.upper() == SILENT:
             return SendResult(success=True, message_id=uuid.uuid4().hex)
         event_id = f"send:{uuid.uuid4().hex}"
-        status = self._hub.publish(chat_id, text, event_id, expires_at=time.time() + OUTPUT_TTL)
+        status = self._hub.publish(chat_id, text, event_id, expires_at=time.time() + OUTPUT_TTL,
+                                   next_action="standby" if server_turn is not None and server_turn.standby else None)
         if status == "accepted":
             return SendResult(success=True, message_id=event_id)
         # No live device (or it is saturated): report it; nothing is queued for a later connection.
