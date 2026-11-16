@@ -242,8 +242,10 @@ async def test_push_to_talk_holds_the_utterance_open_until_commit(monkeypatch):
     async with Harness(fake, {}) as client:
         ws = await client.ws_connect("/v1/audio/converse", protocols=(VOICE_PROTOCOL, _key_protocol()))
         try:
-            await ws.send_str(_start_msg(push_to_talk=True))
+            await ws.send_str(_start_msg())
             assert (await ws.receive_json())["type"] == "ready"
+            await ws.send_json({"push_to_talk": "true"})  # only the JSON boolean arms it
+            await ws.send_json({"push_to_talk": True})
             for frame in _speech_then_silence_pcm():
                 await ws.send_bytes(frame)
             await asyncio.sleep(1.5)  # silence runs well past endpoint_silence_ms (700 ms)

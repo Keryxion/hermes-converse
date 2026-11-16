@@ -60,7 +60,6 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 | `quiet_interval` | session mode: seconds of silence between turns (0 = off) |
 | `device_name` | The configured device label, such as `Den Echo` or `Kitchen`. Each device keeps its own conversation, titled `<assistant_name>: <device_name>`. |
 | `models` | Boolean; only `true` includes the model catalog in `ready`. Defaults to `false`. See section 11. |
-| `push_to_talk` | Boolean; the user's talk control delimits each utterance instead of the server's endpointer. Defaults to `false`. See "Push to talk" in section 3. |
 | `transcripts` | Boolean; request user and assistant transcript frames when `true`. Defaults to `false`. See section 4. |
 | `after` | The `message_id` of the last transcript this client has shown, to catch up on what it missed. Only with `transcripts: true`. See "Catching up" in section 4. |
 | `assistant_name` | What you call the assistant, normally `Arya`, without “Hey”. Used in the voice system prompt; separate from the device label, such as `Den Echo`. |
@@ -161,6 +160,7 @@ All are JSON text frames:
 |---|---|
 | `{"stop": true}` | Stops live work and closes the socket. The device's conversation and its history are kept for reconnection. |
 | `{"commit": true}` | Ends the current utterance now, with the audio already sent (runs a turn on it). |
+| `{"push_to_talk": true}` | The next utterance uses `commit` instead of silence/Smart Turn to end; see "Push to talk" below. |
 | `{"type": "cancel", "turn_id": "..."}` | Cancels the **current** turn — stops TTS and the agent — but keeps the socket, session, and history alive. |
 | `{"type": "wake", "claim_id": "...", "wake_word": "Hey Arya"}` | request an advisory wake decision while buffering the new activation locally; see section 8. |
 | `{"type": "state", "turn_id": "...", "state": "listening"}` | The state the device now shows; see "The turn's state" in section 4. |
@@ -178,12 +178,10 @@ assistant's wake word nor the `cancel` wake word cancels a turn (section 4,
 
 ### Push to talk
 
-A client with an explicit talk control — a button held down, a keyboard key, a
-walkie-talkie mic — sends `"push_to_talk": true` in `start` and frames each
-utterance itself:
+A client sends this control frame when a talk button is held:
 
 ```json
-{"type": "start", "key": "...", "push_to_talk": true, "assistant_name": "Arya", "device_name": "MacBook Pro"}
+{"push_to_talk": true}
 ```
 
 Binary PCM while the control is held, then:
@@ -192,15 +190,14 @@ Binary PCM while the control is held, then:
 {"commit": true}
 ```
 
-on release. The server does not endpoint a push-to-talk utterance on silence or
-on Smart Turn: a pause mid-sentence, a noisy room, or a long hold before
-speaking all produce no boundary. Only `commit` ends it, so the turn contains
-exactly the audio between press and release. The utterance cap still ends it as
-a memory backstop.
+on release. For this utterance only, the server does not endpoint on silence or
+Smart Turn; a pause mid-sentence remains part of the same request. `commit`
+submits the audio and restores normal endpointing for the next utterance.
+The utterance cap still applies as a memory backstop.
 
-Send no PCM while the control is released. Barge-in, `cancel`, `stop`, and every
-other frame keep their usual meaning, and `commit` with no utterance in progress
-is ignored.
+Quick taps and wake-word turns use normal endpointing. Send no PCM while the
+control is released. Barge-in, `cancel`, `stop`, and every other frame keep their
+usual meaning, and `commit` with no utterance in progress is ignored.
 
 ### Commands
 

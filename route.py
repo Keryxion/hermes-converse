@@ -20,8 +20,7 @@ Browser-context clients must also pass the API server's own CORS origin guard (`
 
 Protocol:
   client → ``{"type":"start", "key":?, "assistant_name":"...", "device_name":"...",
-             "input_rate":?, "output_rate":?, "quiet_interval":?,
-             "push_to_talk":?}`` — both names are REQUIRED and
+             "input_rate":?, "output_rate":?, "quiet_interval":?}`` — both names are REQUIRED and
            a ``profile``/``name``/``conversation``/``conversation_id`` field closes 4400
            ``bad_start`` — then binary PCM16 mono frames at ``input_rate`` (30 ms blocks preferred),
            ``{"stop": true}`` to end, ``{"commit": true}`` to force an endpoint,
@@ -59,7 +58,7 @@ from .conversation import ConversationHub
 from .named import DeviceStore, NamedError, parse_names
 from .platform_adapter import GatewayTurns
 from .model_selection import parse_model_selection, public_model_catalog
-from .loop import (ConversationOutput, ConverseSession, drive_converse_turns, parse_push_to_talk,
+from .loop import (ConversationOutput, ConverseSession, drive_converse_turns,
                    parse_start_config, voice_system_prompt)
 from .settings import Settings, load_settings
 from .tracing import ConnectionTrace, emit_span, force_flush
@@ -249,9 +248,8 @@ class ConverseRoute:
                 turns = GatewayTurns(gateway, source, await gateway.bind(source))
                 input_rate, output_rate, quiet_interval = parse_start_config(frame)
                 audio = AudioTransport(audio_format(frame), input_rate, output_rate)
-                push_to_talk = parse_push_to_talk(frame)
                 synth, cap, session = await asyncio.to_thread(
-                    _resolve_session, settings, input_rate, output_rate, quiet_interval, push_to_talk)
+                    _resolve_session, settings, input_rate, output_rate, quiet_interval)
                 connection.session = session
                 attachment = self.hub.attach(conversation_id, session)
                 self._named_connections[device.recipient_id] = connection
@@ -361,8 +359,7 @@ async def _model_options(base_url: str, api_key: str, http: ClientSession) -> di
     return result
 
 
-def _resolve_session(settings: Settings, input_rate: int, output_rate: int, quiet_interval: float,
-                     push_to_talk: bool = False):
+def _resolve_session(settings: Settings, input_rate: int, output_rate: int, quiet_interval: float):
     """Blocking provider/config resolution — runs off the event loop. Returns ``(synth, cap,
     session)``: a synthesizer emitting int16 PCM at *output_rate* (NEVER ``None``), its per-request
     text cap, and a fresh :class:`ConverseSession` capturing at *input_rate*."""
@@ -383,8 +380,7 @@ def _resolve_session(settings: Settings, input_rate: int, output_rate: int, quie
         np, input_rate=input_rate, quiet_interval=quiet_interval, transcribe=_transcribe,
         endpoint_model=settings.endpoint_model, endpoint_threshold=settings.endpoint_threshold,
         endpoint_silence_ms=settings.endpoint_silence_ms, endpoint_max_silence_ms=settings.endpoint_max_silence_ms,
-        vad_model=settings.vad_model, capture_no_data_seconds=settings.capture_no_data_seconds,
-        push_to_talk=push_to_talk)
+        vad_model=settings.vad_model, capture_no_data_seconds=settings.capture_no_data_seconds)
     return synth, cap, session
 
 
@@ -567,6 +563,8 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                         break
                     if frame.get("commit"):
                         session.commit()
+                    if frame.get("push_to_talk") is True:
+                        session.push_to_talk()
                     if frame.get("type") == "state":
                         # Leaving `speaking` for a turn: its audio has played or been discarded.
                         if isinstance(frame.get("turn_id"), str) and frame.get("state") != "speaking":

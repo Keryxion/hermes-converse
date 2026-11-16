@@ -210,10 +210,9 @@ without Smart Turn, so "Hey Arya … set a timer" is one request while a continu
 Explicit `commit` ends the capture at once with the audio already received,
 bypassing Smart Turn and the wake pause. The utterance limit still applies.
 
-A `push_to_talk` session endpoints only on `commit`: neither the pauses above nor
-Smart Turn end its captures, so a held talk control keeps one utterance open
-across any amount of silence. Onset detection, barge-in, and the wake pause are
-unchanged.
+After `{"push_to_talk": true}`, only `commit` ends that utterance; neither
+silence nor Smart Turn endpoints it. The following utterance uses normal
+endpointing again. Onset detection, barge-in, and the wake pause are unchanged.
 
 The utterance limit (60 s) is a memory backstop, not an endpoint. It must never
 be short enough to cut ordinary speech: a person explaining something for twenty

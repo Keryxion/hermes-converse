@@ -416,12 +416,9 @@ class ConverseSession:
         endpoint_max_silence_ms: int = DEFAULT_ENDPOINT_MAX_SILENCE_MS,
         vad_model: str = DEFAULT_VAD_MODEL,
         capture_no_data_seconds: float = DEFAULT_CAPTURE_NO_DATA_SECONDS,
-        push_to_talk: bool = False,
     ) -> None:
         self._np = np
-        # Push to talk: the client's talk control delimits the utterance, so silence and Smart Turn
-        # never end a capture — only the client's ``commit`` does.
-        self._push_to_talk = bool(push_to_talk)
+        self._push_to_talk = False
         self._state_lock = threading.RLock()
         self.session_id = uuid.uuid4().hex  # echoed in `ready`, joinable across client/server traces
         self.device_name: Optional[str] = None  # trace only; set by the route
@@ -627,6 +624,10 @@ class ConverseSession:
         wakes a capture that is waiting for audio."""
         self.stream.feed(self._np.zeros(self._block, dtype=self._np.int16).tobytes(), commit=True)
 
+    def push_to_talk(self) -> None:
+        """The next utterance is delimited by commit, not by its pauses."""
+        self._push_to_talk = True
+
     def attach_device(self, device_name: Optional[str]) -> None:
         """The device this session's microphone belongs to: its input gain starts from what was learned before."""
         self._level.attach(device_name)
@@ -754,6 +755,8 @@ class ConverseSession:
                 if phase is None:
                     if commit_from is None or i >= commit_from:
                         self.stream.committed = False  # a commit with no utterance to end
+                        if commit_from is not None and i >= commit_from:
+                            self._push_to_talk = False
                     self._account_received_silence()
                     continue
                 self._reset_quiet()
@@ -1091,6 +1094,7 @@ class ConverseSession:
             self.stream.unread(np.concatenate(c.received[c.split - c.pre_roll:]))
             del c.frames[c.split:]
         self.stream.committed = False  # a commit ends only the capture it arrived in
+        self._push_to_talk = False
         if phase is not None:
             phase.set(**{"endpoint.reason": reason, "endpoint.pause_ms": self._blocks_ms(c.quiet),
                          "endpoint.longest_pause_ms": self._blocks_ms(c.longest_pause)})
@@ -1195,11 +1199,6 @@ def parse_quiet_interval(raw: Any) -> float:
     except (TypeError, ValueError):
         return 0.0
     return 0.0 if val <= 0 else min(val, QUIET_INTERVAL_MAX)
-
-
-def parse_push_to_talk(frame: dict[str, Any]) -> bool:
-    """The push-to-talk opt-in from the ``start`` frame. Only a literal ``true`` enables it."""
-    return frame.get("push_to_talk") is True
 
 
 def parse_start_config(frame: dict[str, Any]) -> tuple[int, int, float]:

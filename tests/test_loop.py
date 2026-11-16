@@ -232,13 +232,14 @@ def test_push_to_talk_ignores_silence_and_smart_turn_until_commit():
     ``max_silence_blocks`` — must not endpoint, and Smart Turn is never consulted."""
     det = _ScriptedDetector([0.99])  # would commit on the first ask
     session = _adaptive_session(det, endpoint_blocks=2, max_silence_blocks=4)
-    session._push_to_talk = True
+    session.push_to_talk()
     _feed_speech(session, 5)
     _feed_silence(session, 40)
     session.commit()
     wav_path, _volume = asyncio.run(session._capture())
     assert det.calls == 0
     assert _captured_blocks(session, wav_path) == 5 + 40 + 1  # the commit marker
+    assert not session._push_to_talk
 
 
 def test_without_push_to_talk_the_same_silence_endpoints():
@@ -253,14 +254,23 @@ def test_without_push_to_talk_the_same_silence_endpoints():
 
 def test_push_to_talk_uses_the_same_utterance_cap():
     """The talk control changes the endpoint, not the capture's memory backstop."""
-    assert ConverseSession(np, push_to_talk=True)._max_blocks == vad.MAX_UTTERANCE_MS // 30
+    session = ConverseSession(np)
+    session.push_to_talk()
+    assert session._max_blocks == vad.MAX_UTTERANCE_MS // 30
 
 
-def test_push_to_talk_start_flag_requires_literal_true():
-    assert cl.parse_push_to_talk({"push_to_talk": True}) is True
-    for raw in (False, "true", 1, "yes", None):
-        assert cl.parse_push_to_talk({"push_to_talk": raw}) is False
-    assert cl.parse_push_to_talk({}) is False
+def test_push_to_talk_reverts_to_normal_endpoint_after_release():
+    session = _adaptive_session(_ScriptedDetector([0.0]), endpoint_blocks=2, max_silence_blocks=4)
+    session.push_to_talk()
+    _feed_speech(session, 5)
+    session.commit()
+    wav_path, _ = asyncio.run(session._capture())
+    vad.unlink_quietly(wav_path)
+    assert not session._push_to_talk
+    _feed_speech(session, 5)
+    _feed_silence(session, 40)
+    wav_path, _ = asyncio.run(session._capture())
+    assert _captured_blocks(session, wav_path) == 5 + 4
 
 
 @pytest.mark.asyncio
