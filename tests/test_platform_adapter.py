@@ -501,6 +501,25 @@ async def test_server_turn_explicit_standby_survives_publish(rig, monkeypatch):
     assert [(o.text, o.next_action) for o in device.outputs] == [("Going to standby.", "standby")]
 
 
+async def test_server_standby_does_not_mark_earlier_voice_turn(rig, monkeypatch):
+    from hermes_converse.server_turn import ServerTurn
+    from hermes_converse.voice_tools import make_handlers
+    from gateway import session_context
+    import json
+
+    device = Device()
+    rig.hub.attach("den", device)
+    voice = SimpleNamespace(standby=False, started=True, outcome=None)
+    rig.adapter._turns["den"] = voice
+    server_turn = ServerTurn()
+    rig.adapter._server_turns["den"] = server_turn
+    monkeypatch.setattr(session_context, "get_session_env", lambda key, default="": {
+        "HERMES_SESSION_PLATFORM": "converse", "HERMES_SESSION_CHAT_ID": "den"}.get(key, default)
+    )
+    assert json.loads(make_handlers(rig.hub)["standby"]({})) == {"result": "ok"}
+    assert server_turn.standby and not voice.standby
+
+
 async def test_proactive_reply_without_a_device_fails_and_silence_succeeds(rig):
     missing = await rig.adapter.send("den", "Anyone there?", metadata=NOTIFY)
     assert not missing.success and "not_attached" in missing.error
