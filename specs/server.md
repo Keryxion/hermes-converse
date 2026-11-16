@@ -138,10 +138,18 @@ progress, so `turn_timeout_seconds` does not end the turn; Hermes's
 #### The summary
 
 Hermes's prompt is a command and a description, which is not something to read
-aloud. Make the summary with a separate model call, outside the conversation:
-it adds nothing to the history and does not run as a turn. Give it the command
-and the description and ask for a yes-or-no question of twenty words or fewer
-saying what will happen. If that call fails, use Hermes's description.
+aloud. The summary says who is asking, then what will happen:
+
+> Arya wants to open a network connection to the Kitchen speaker to read its
+> logs. Okay?
+
+The server writes the start, the device's `assistant_name` and "wants to", and
+the end, "Okay?". A separate model call, outside the conversation, writes only
+what will happen, in twenty words or fewer: it adds nothing to the history and
+does not run as a turn, and it is given the command and the description. If
+that call fails, use Hermes's description in its place. The person always hears
+that the assistant is asking, never a question that could be taken for their own
+words or the server's.
 
 #### The answer
 
