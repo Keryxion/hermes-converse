@@ -50,7 +50,7 @@ class ConversationHub:
                 self._attachments.pop(conversation_id)
 
     def publish(self, conversation_id: str, text: str, event_id: str, *,
-                expires_at: float, next_action: str = "standby", unheard: bool = False) -> str:
+                expires_at: float, next_action: Optional[str] = None, unheard: bool = False) -> str:
         with self._lock:
             item = self._attachments.get(conversation_id)
             if item is None or item.session.stopped:

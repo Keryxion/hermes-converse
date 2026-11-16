@@ -478,7 +478,7 @@ async def test_proactive_reply_is_spoken_through_the_attached_device(rig):
     rig.hub.attach("den", device)
     sent = await rig.adapter.send("den", "Your timer is done.", metadata=NOTIFY)
     assert sent.success
-    assert [(o.text, o.next_action) for o in device.outputs] == [("Your timer is done.", "standby")]
+    assert [(o.text, o.next_action) for o in device.outputs] == [("Your timer is done.", None)]  # resolved on playback
     assert device.outputs[0].expires_at > time.time()
 
 
