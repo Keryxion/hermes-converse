@@ -521,6 +521,12 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
     selected_model = default_model
     wake_tasks: set[asyncio.Task] = set()
     relay = relay or Relay(ws)
+    from ._server_recording import ServerRecording
+    recording = ServerRecording(session)
+    send_json = relay.send_json
+    async def recorded_send_json(frame: dict) -> None:
+        recording.frame(frame)
+        await send_json(frame)
     explicit_stop = False
     async def _reply_wake(frame: dict) -> None:
         reply, sent = None, False
@@ -550,6 +556,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                         explicit_stop = True
                         await _fail(ws, "bad_audio", 4400)
                         break
+                    recording.audio(pcm)
                     session.stream.feed(pcm)
                 elif msg.type == web.WSMsgType.TEXT:
                     try:
@@ -684,7 +691,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
     async def _drive_turns() -> None:
         await drive_converse_turns(
             session=session, synth=synth, cap=cap, loop=loop,
-            send_json=relay.send_json, send_bytes=relay.send_bytes, run_turn=_run_turn, history=history,
+            send_json=recorded_send_json, send_bytes=relay.send_bytes, run_turn=_run_turn, history=history,
             message_ids=MessageIds(client) if hasattr(client, "history") else None,
             present=lambda: relay.attached,
             quiet_interval=quiet_interval, interrupt_turn=_interrupt_turn,
@@ -721,6 +728,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
     except Exception:
         logger.exception("converse loop crashed")
     finally:
+        recording.close()
         session.stop()
         if detached:
             relay.ws = None
