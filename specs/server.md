@@ -556,10 +556,17 @@ tool result, not speech; the agent says what matters in its own words.
 
 The person approves every call before it runs. The agent does not decide what a
 command does to the conversation: it is asked as for a Hermes approval
-(Approvals) with `approval_choice` `ask`, whatever the device's setting: the
-`approval` tone, the command spoken ("Run /new?"), and `approval_request` with
-the command and choices `once` and `deny`. `once` runs it; any other answer, or
-none before `approvals.timeout`, runs nothing.
+(Approvals) with `approval_choice` `ask`, whatever the device's setting. The
+`approval` tone plays, then the server, not the agent, says what will happen,
+from the command's description in Hermes's registry (the one a `commands` frame
+lists) and its `args`:
+
+> Arya wants to run a command for you: start a new session, with a fresh
+> history. Okay?
+
+`approval_request` carries the same summary, the command as given, and choices
+`once` and `deny`. `once` runs it; any other answer, or none before
+`approvals.timeout`, runs nothing.
 
 A command that starts a new conversation (`new`, or any alias of it) waits for
 the turn: once the turn's reply has played (the device's `state` leaves
