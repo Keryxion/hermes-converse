@@ -228,6 +228,84 @@ class NetworkMicStream:
                     self.committed = self.committed or commit
 
 
+class _Waiters:
+    """Coroutines waiting on something a thread changes. A thread wakes them through their own
+    loops, so a coroutine waits without holding a worker thread."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._waiting: list[tuple[asyncio.AbstractEventLoop, asyncio.Future]] = []
+
+    def add(self) -> asyncio.Future:
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        with self._lock:
+            self._waiting.append((loop, future))
+        return future
+
+    def discard(self, future: asyncio.Future) -> None:
+        with self._lock:
+            self._waiting = [w for w in self._waiting if w[1] is not future]
+
+    def wake(self) -> None:
+        with self._lock:
+            waiting, self._waiting = self._waiting, []
+        for loop, future in waiting:
+            with contextlib.suppress(RuntimeError):  # its loop has closed
+                loop.call_soon_threadsafe(_resolve, future)
+
+
+def _resolve(future: asyncio.Future) -> None:
+    if not future.done():
+        future.set_result(None)
+
+
+class AsyncQueue(queue.Queue):
+    """The session's queue of transcripts and markers: threads put, the turn driver awaits."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._waiters = _Waiters()
+
+    def _put(self, item: Any) -> None:
+        super()._put(item)
+        self._waiters.wake()
+
+    async def get_async(self) -> Any:
+        while True:
+            with contextlib.suppress(queue.Empty):
+                return self.get_nowait()
+            future = self._waiters.add()
+            try:
+                if self.empty():  # nothing was put between the check and registering
+                    await future
+            finally:
+                self._waiters.discard(future)
+
+
+class AsyncEvent(threading.Event):
+    """A ``threading.Event`` a coroutine can also await."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._waiters = _Waiters()
+
+    def set(self) -> None:
+        super().set()
+        self._waiters.wake()
+
+    async def wait_async(self, timeout: float) -> bool:
+        if self.is_set():
+            return True
+        future = self._waiters.add()
+        try:
+            if not self.is_set():
+                await asyncio.wait({future}, timeout=timeout)
+        finally:
+            self._waiters.discard(future)
+        return self.is_set()
+
+
 class InputReady:
     """Wake the dispatcher after an empty or abandoned capture."""
 
@@ -348,7 +426,7 @@ class ConverseSession:
         self._active_turn_id: Optional[str] = None
         self._interrupt_callback: Optional[Callable[[], None]] = None
         self.on_tail_barge: Optional[Callable[[Optional[str]], None]] = None
-        self._tail_ended = threading.Event()
+        self._tail_ended = AsyncEvent()
         self._tail_ended.set()
         self._tail_interrupted = False
         # Playback tail: between turn_done and the client's state report (or a fallback) the client is
@@ -376,7 +454,7 @@ class ConverseSession:
         self.stream = NetworkMicStream(np, stop=self._stop)
         # The event stream the driver consumes: a transcript str, a QuietTick, a TailBarge, or the
         # None sentinel on shutdown.
-        self.transcripts: queue.Queue = queue.Queue()
+        self.transcripts = AsyncQueue()
         self._block = int(self._input_rate * vad.BLOCK_MS / 1000)
         self._detector = SpeechDetector(np, model=vad_model, input_rate=self._input_rate, mult=barge_multiplier)
         self._level = InputLevel(np)  # specs/audio.md: one gain for this device, held through turns
@@ -780,7 +858,7 @@ class ConverseSession:
     async def wait_for_playback_tail(self) -> None:
         if self._tail_active:
             remaining = max(0, self._tail_deadline - time.monotonic())
-            await asyncio.get_running_loop().run_in_executor(None, self._tail_ended.wait, remaining)
+            await self._tail_ended.wait_async(remaining)
             if self._tail_active:
                 self.end_playback_tail("disconnected" if self._stop.is_set() else "timeout")
 
@@ -1248,7 +1326,7 @@ async def drive_converse_turns(
         if deferred_outputs and not session.capture_pending():
             item = deferred_outputs.popleft()
         else:
-            item = await loop.run_in_executor(None, session.transcripts.get)
+            item = await session.transcripts.get_async()
         if item is None:  # shutdown sentinel
             break
         if isinstance(item, InputReady):

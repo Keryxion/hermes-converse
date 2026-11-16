@@ -11,6 +11,14 @@
 - Keep spec additions small. Do not turn a roughly 50-line request into a framework.
 - Inspect Hermes's existing APIs and behavior before duplicating its functionality.
 
+## Code
+
+- Always use async I/O. A coroutine awaits a queue, event, socket or timer; it
+  never blocks the event loop and never parks a thread-pool thread waiting for
+  one (`run_in_executor`/`to_thread` around `queue.get()` or `Event.wait()`).
+  The default pool is small (a 2-CPU host has 6 threads) and shared by every
+  connection. `to_thread` is only for short blocking calls such as a database read.
+
 ## Specifications
 
 - The client spec is written from the client's point of view: what JSON to send,
