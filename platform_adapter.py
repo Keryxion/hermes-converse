@@ -316,7 +316,7 @@ class ConverseAdapter(BasePlatformAdapter):
     # ── outbound ──
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                    metadata: Optional[dict[str, Any]] = None) -> SendResult:
-        # Setup and background-review notices can arrive before or after a voice turn.
+        # Interim sends are status, never speech.
         if (metadata or {}).get("_interim_send"):
             return SendResult(success=True, message_id=uuid.uuid4().hex)
         notify = bool((metadata or {}).get("notify"))
