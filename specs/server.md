@@ -147,9 +147,7 @@ The server writes the start, the device's `assistant_name` and "wants to", and
 the end, "Okay?". A separate model call, outside the conversation, writes only
 what will happen, in twenty words or fewer: it adds nothing to the history and
 does not run as a turn, and it is given the command and the description. If
-that call fails, use Hermes's description in its place. The person always hears
-that the assistant is asking, never a question that could be taken for their own
-words or the server's.
+that call fails, use Hermes's description in its place.
 
 #### The answer
 
