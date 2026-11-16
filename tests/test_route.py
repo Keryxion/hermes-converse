@@ -164,7 +164,7 @@ async def _drive_full_turn(ws, streamer):
     assert pcm == [b"\x01\x02\x03\x04", b"\x05\x06"]
     assert streamer.requests
     assert [f["type"] for f in frames] == ["state", "thinking", "state", "speaking", "turn_done"]
-    assert frames[-1]["next_action"] == "listen"
+    assert "next_action" not in frames[-1]
     return ready, frames
 
 
@@ -239,6 +239,7 @@ async def test_endpointing_off_holds_the_utterance_open_until_commit(monkeypatch
     fake = FakeHermes(API_KEY)
     streamer = _FakeStreamer([b"\x01\x02"])
     _patch_speech(monkeypatch, streamer, transcript="set a timer")
+    monkeypatch.setattr(speech, "transcribe_wav", lambda *a, **kw: "set a timer")
     async with Harness(fake, {}) as client:
         ws = await client.ws_connect("/v1/audio/converse", protocols=(VOICE_PROTOCOL, _key_protocol()))
         try:
@@ -251,10 +252,18 @@ async def test_endpointing_off_holds_the_utterance_open_until_commit(monkeypatch
             await asyncio.sleep(1.5)  # silence runs well past endpoint_silence_ms (700 ms)
             assert fake.turns == []
             await ws.send_json({"type": "endpointing", "on": True, "commit": True})
-            await _collect_turn(ws)
+            frames, pcm = await _collect_turn(ws, drain=False)
+            assert pcm and frames[-1]["type"] == "turn_done"
+            assert "next_action" not in frames[-1], "Completion must not reopen released PTT"
+            await ws.send_json({"type": "state", "turn_id": frames[-1]["turn_id"], "state": "standby"})
+            # A fresh quick-tap request still endpoints normally after the hold.
+            for frame in _speech_then_silence_pcm():
+                await ws.send_bytes(frame)
+            followup, _ = await _collect_turn(ws)
+            assert "next_action" not in followup[-1], "Hands-free also preserves client mode"
         finally:
             await _end(ws)
-    assert len(fake.turns) == 1
+    assert len(fake.turns) == 2
 
 
 @pytest.mark.asyncio
@@ -666,7 +675,7 @@ async def test_failed_turn_reaches_the_client_as_an_error_frame(monkeypatch):
             errors = [f for f in frames if f["type"] == "error"]
             assert errors and errors[0]["error"] == "agent run failed"
             assert pcm == [] and frames[-1]["type"] == "turn_done"
-            assert frames[-1]["next_action"] == "listen"
+            assert "next_action" not in frames[-1]
         finally:
             await _end(ws)
 

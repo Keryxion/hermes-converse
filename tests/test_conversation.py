@@ -72,10 +72,10 @@ async def test_server_output_preserves_listening_exchange_unless_explicit_standb
         for frame in _speech_then_silence_pcm():
             await ws.send_bytes(frame)
         first, _ = await _collect_turn(ws)
-        assert first[-1]['next_action'] == 'listen'
+        assert "next_action" not in first[-1]
         assert (await publish(client, cid)).status == 202
         output, _ = await _collect_turn(ws)
-        assert output[-1]['next_action'] == 'listen'
+        assert "next_action" not in output[-1]
         assert (await publish(client, cid, event_id='explicit', next_action='standby')).status == 202
         end, _ = await _collect_turn(ws)
         assert end[-1]['next_action'] == 'standby'
@@ -136,7 +136,7 @@ async def test_cancel_thinking_stale_id_ignored_and_run_stopped(monkeypatch):
         await ws.send_json({'type': 'cancel', 'turn_id': transcript['turn_id']})
         frames, _ = await _collect_turn(ws, timeout=3)
         assert [f['type'] for f in frames] == ['interrupted', 'turn_done']
-        assert frames[-1]['next_action'] == 'listen' and fake.stopped
+        assert "next_action" not in frames[-1] and fake.stopped
         await ws.close()
 
 
@@ -266,7 +266,7 @@ async def test_cancel_after_turn_done_replaces_pending_standby(monkeypatch):
         await ws.send_json({'type': 'cancel', 'turn_id': turn_id})
         frames, _ = await _collect_turn(ws)
         assert [f['type'] for f in frames] == ['interrupted', 'turn_done']
-        assert frames[-1] == {'type': 'turn_done', 'turn_id': turn_id, 'next_action': 'listen'}
+        assert frames[-1] == {'type': 'turn_done', 'turn_id': turn_id}
         await ws.close()
 
 
@@ -331,7 +331,7 @@ async def test_finished_reply_cut_before_any_audio_is_spoken_before_the_next_req
         replay, pcm = await _collect_turn(ws, timeout=3)
         assert pcm and replay[0]['event_id'].startswith('unheard:')
         assert [f['text'] for f in replay if f['type'] == 'transcript'] == ['Rinse with plain water.']
-        assert replay[-1]['next_action'] == 'listen'
+        assert "next_action" not in replay[-1]
         following, _ = await _collect_turn(ws, timeout=3)
         assert following[0]['text'] == 'can I put the remote somewhere'
         assert [t['text'] for t in fake.turns] == ['my floors look gross', 'can I put the remote somewhere']
