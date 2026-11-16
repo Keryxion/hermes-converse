@@ -75,7 +75,7 @@ A non-wake client may stream after `ready`. The server answers:
 | `speaking` + binary frames | the reply as PCM16 at `output_rate` |
 | `interrupted` | you spoke over the reply: stop playing, the turn is cancelled |
 | `error` | the turn failed (the message is spoken-safe text) |
-| `turn_done` | the reply is fully sent; `next_action` tells the client to listen or enter standby after drain |
+| `turn_done` | the reply is fully sent; optional `next_action: "standby"` ends the exchange after drain |
 | `quiet` | session mode: the stream has been silent for another `quiet_interval` seconds |
 
 Handle the first `thinking` for a turn as an explicit boundary even without a preceding `transcript`:
@@ -105,11 +105,11 @@ playback-tail tracking; keep sending microphone audio throughout playback,
 `{"type": "wake", "claim_id": "...", "wake_word": "..."}` requests an advisory wake decision
 (see below) — send it when the local detector fires, then buffer audio until a matching grant.
 
-Every `turn_done` includes `next_action: "listen"` or `"standby"`. After speaker drain and
-`drained`, `listen` keeps the microphone stream open for a fresh user utterance; `standby` stops
-upstream audio and returns to local wake detection while keeping the socket open. The server
-chooses the action. Normal completions, cancellations, interruptions, and errors return
-`listen`; only a turn in which the agent called the `standby` tool requests `standby`.
+Ordinary `turn_done` frames omit `next_action` and preserve the client's interaction mode:
+hands-free continues listening after playback drain; released push-to-talk stays in standby
+and sends no PCM. `next_action: "standby"` ends the exchange after drain, stopping upstream
+audio while keeping the socket open. Cancellations, interruptions, and errors also omit
+`next_action`; they do not reopen microphone capture.
 
 **Session mode** (`quiet_interval` > 0) is for wake-word devices: the server reports quiet in
 *received* audio, recognizes stop phrases, and decides when to return the client to standby.
