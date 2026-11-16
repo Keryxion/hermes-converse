@@ -58,8 +58,8 @@ from .conversation import ConversationHub
 from .named import DeviceStore, NamedError, parse_names
 from .platform_adapter import GatewayTurns
 from .model_selection import parse_model_selection, public_model_catalog
-from .loop import (ConversationOutput, ConverseSession, drive_converse_turns, parse_start_config,
-                   voice_system_prompt)
+from .loop import (ConversationOutput, ConverseSession, drive_converse_turns,
+                   parse_start_config, voice_system_prompt)
 from .settings import Settings, load_settings
 from .tracing import ConnectionTrace, emit_span, force_flush
 
@@ -563,6 +563,10 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                         break
                     if frame.get("commit"):
                         session.commit()
+                    if frame.get("type") == "endpointing":
+                        on = frame.get("on")
+                        session.set_endpointing(on if isinstance(on, bool) else None,
+                                                commit=frame.get("commit") is True)
                     if frame.get("type") == "state":
                         # Leaving `speaking` for a turn: its audio has played or been discarded.
                         if isinstance(frame.get("turn_id"), str) and frame.get("state") != "speaking":
