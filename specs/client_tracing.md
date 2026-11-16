@@ -23,6 +23,21 @@ below.
 | Turn | `device_name`, `session.id`, `turn_id`, and the `claim_id` of the wake that started the exchange, if one did. An exchange runs from a granted wake until the device next returns to standby. |
 | Playback | `turn_id`, when the first reply audio played, when the last did, and when the state left `speaking` |
 
+For a client that displays assistant reply status, record status changes so a
+false `Interrupted` label can be compared with playback for the same `turn_id`:
+
+| Event | Attributes |
+|---|---|
+| `reply.status_requested` | `turn_id`, `status` (`replying`, `complete`, `interrupted`, or `error`), `reason` (the frame or local action that requested it), `playback.active` (whether speaker audio was still queued or playing), and `playback.drained` (whether playback for this turn finished) |
+| `reply.status_displayed` | `turn_id`, `requested` status, and `displayed` status after the transcript model applies it (`none` if no reply row exists) |
+
+Record the requested status at the client frame/action boundary and the displayed
+status immediately after updating the conversation. A later completion that leaves
+an interrupted row sticky must therefore produce `requested=complete` and
+`displayed=interrupted`. Use bounded status/reason values; never put reply text
+or transcript content in these events. A playback `drained` record says the client
+drained its queue, not that a person heard every word.
+
 Attributes are named after the fields in the client spec. `session.id` is the
 `session_id` from `ready`, under the name the server's spans already use. Set
 `client.kind` to `macos`, `ios`, `echo`, or `esp32` once, on the resource.
