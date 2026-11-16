@@ -316,6 +316,9 @@ class ConverseAdapter(BasePlatformAdapter):
     # ── outbound ──
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                    metadata: Optional[dict[str, Any]] = None) -> SendResult:
+        # Interim sends are status, never speech.
+        if (metadata or {}).get("_interim_send"):
+            return SendResult(success=True, message_id=uuid.uuid4().hex)
         notify = bool((metadata or {}).get("notify"))
         command = self._commands.get(chat_id)
         if command is not None and command.started and not command.done.is_set():
