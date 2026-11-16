@@ -196,7 +196,7 @@ class Approvals:
         self._settle(p, choice, "denied" if choice == "deny" else "approved")
 
     def _spoken(self, p: _Pending, attachment: Any, text: str) -> bool:
-        """Session worker thread: captured speech while a request is pending. True = it was an answer."""
+        """The session: captured speech while a request is pending. True = it was an answer."""
         loop = self._loop
         if p.settled or p.device is not attachment or loop is None:
             return False

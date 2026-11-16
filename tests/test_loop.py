@@ -66,6 +66,14 @@ def _feed_speech(session, blocks):
         session.stream.feed(speech_block)
 
 
+async def _until(condition, timeout):
+    """Wait on the loop until *condition()* holds; its value."""
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not condition() and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.01)
+    return condition()
+
+
 def _captured_blocks(session, wav_path):
     with wave.open(wav_path, "rb") as wf:
         frames = wf.getnframes()
@@ -77,7 +85,7 @@ def test_adaptive_commits_immediately_when_turn_sounds_complete():
     det = _ScriptedDetector([0.95])
     session = _adaptive_session(det)
     _feed_silence(session, session._endpoint_blocks + 4)
-    wav_path, volume = session._capture()
+    wav_path, volume = asyncio.run(session._capture())
     assert det.calls == 1
     assert volume >= 0
     assert _captured_blocks(session, wav_path) == session._endpoint_blocks + 4  # buffered audio is kept
@@ -87,7 +95,7 @@ def test_adaptive_rechecks_each_window_until_complete():
     det = _ScriptedDetector([0.1, 0.2, 0.9])
     session = _adaptive_session(det)
     _feed_silence(session, 20)
-    wav_path, _volume = session._capture()
+    wav_path, _volume = asyncio.run(session._capture())
     assert det.calls == 3
 
 
@@ -95,7 +103,7 @@ def test_adaptive_incomplete_turn_ends_at_max_silence():
     det = _ScriptedDetector([0.0])
     session = _adaptive_session(det, max_silence_blocks=9)
     _feed_silence(session, 20)
-    wav_path, _volume = session._capture()
+    wav_path, _volume = asyncio.run(session._capture())
     assert det.calls == 4  # checks at 2, 4, 6, 8 blocks of silence
     assert _captured_blocks(session, wav_path) == 9
 
@@ -107,7 +115,7 @@ def test_adaptive_resumed_speech_restores_the_full_pause_allowance():
     _feed_silence(session, 5)  # an incomplete-sounding pause, bridged
     _feed_speech(session, 2)
     _feed_silence(session, 10)
-    wav_path, _volume = session._capture()
+    wav_path, _volume = asyncio.run(session._capture())
     assert det.calls == 3
     assert _captured_blocks(session, wav_path) == 2 + 5 + 2 + 10
 
@@ -124,7 +132,7 @@ def test_speech_during_inference_keeps_listening():
     session = _adaptive_session(det)
     _feed_speech(session, 2)
     _feed_silence(session, 2)
-    wav_path, _volume = session._capture()
+    wav_path, _volume = asyncio.run(session._capture())
     assert det.calls == 2  # the complete verdict was discarded and the updated turn rechecked
     assert _captured_blocks(session, wav_path) == 2 + 2 + 3 + 5
 
@@ -133,7 +141,7 @@ def test_fixed_endpoint_ends_at_first_candidate_pause():
     session = _adaptive_session(None)
     _feed_speech(session, 3)
     _feed_silence(session, 10)
-    wav_path, _volume = session._capture()
+    wav_path, _volume = asyncio.run(session._capture())
     assert _captured_blocks(session, wav_path) == 3 + session._endpoint_blocks
 
 
@@ -143,7 +151,7 @@ def test_a_capture_at_the_cap_ends_at_its_last_pause_and_the_rest_is_heard_again
     _feed_speech(session, 30)
     _feed_silence(session, pause)
     _feed_speech(session, 40)
-    wav_path, _volume = session._capture()
+    wav_path, _volume = asyncio.run(session._capture())
     assert _captured_blocks(session, wav_path) == 30 + pause // 2  # ends in the middle of the pause
     rest = session.stream.ready_blocks(session._block)
     assert len(rest) == pause - pause // 2 + 40  # nothing lost, nothing heard twice
@@ -156,7 +164,7 @@ def test_a_capture_at_the_cap_with_no_pause_ends_at_the_cap():
     _feed_speech(session, 30)
     _feed_silence(session, short)  # too short to be a pause
     _feed_speech(session, 40)
-    wav_path, _volume = session._capture()
+    wav_path, _volume = asyncio.run(session._capture())
     assert _captured_blocks(session, wav_path) == 60
     assert len(session.stream.ready_blocks(session._block)) == 30 + short + 40 - 60
 
@@ -170,7 +178,7 @@ def test_wake_pause_waits_for_the_request(smart_turn):
     _feed_silence(session, 6)  # checking that the device is listening
     _feed_speech(session, 20)  # "set a five minute timer"
     _feed_silence(session, 10)
-    wav_path, _volume = session._capture(wake=True)
+    wav_path, _volume = asyncio.run(session._capture(wake=True))
     trailing = 10 if smart_turn else session._endpoint_blocks  # Smart Turn keeps buffered audio
     assert _captured_blocks(session, wav_path) == wake_word + 6 + 20 + trailing
     assert det is None or det.calls == 1
@@ -180,7 +188,7 @@ def test_wake_pause_is_bounded_by_max_silence():
     session = _adaptive_session(None)
     _feed_speech(session, 5)
     _feed_silence(session, 20)
-    wav_path, _volume = session._capture(wake=True)
+    wav_path, _volume = asyncio.run(session._capture(wake=True))
     assert _captured_blocks(session, wav_path) == 5 + session._max_silence_blocks
 
 
@@ -188,7 +196,7 @@ def test_continuous_wake_request_endpoints_normally():
     session = _adaptive_session(None)
     _feed_speech(session, session._wake_speech_blocks + 10)
     _feed_silence(session, 10)
-    wav_path, _volume = session._capture(wake=True)
+    wav_path, _volume = asyncio.run(session._capture(wake=True))
     assert _captured_blocks(session, wav_path) == session._wake_speech_blocks + 10 + session._endpoint_blocks
 
 
@@ -197,7 +205,7 @@ def test_without_wake_a_short_pause_ends_capture():
     _feed_speech(session, 5)
     _feed_silence(session, 6)
     _feed_speech(session, 20)
-    wav_path, _volume = session._capture()
+    wav_path, _volume = asyncio.run(session._capture())
     assert _captured_blocks(session, wav_path) == 5 + session._endpoint_blocks
 
 
@@ -214,12 +222,13 @@ def test_client_commit_ends_capture_even_when_smart_turn_would_hold(wake):
     session = _adaptive_session(det)
     _feed_speech(session, 3)
     session.commit()
-    wav_path, _volume = session._capture(wake=wake)
+    wav_path, _volume = asyncio.run(session._capture(wake=wake))
     assert det.calls == 0
     assert _captured_blocks(session, wav_path) == 4
 
 
-def test_commit_queued_with_speech_before_onset_still_transcribes():
+@pytest.mark.asyncio
+async def test_commit_queued_with_speech_before_onset_still_transcribes():
     """PCM and commit can both reach the stream before the worker detects onset."""
     session = ConverseSession(np, transcribe=lambda path: "set a timer", capture_no_data_seconds=1.0)
     session.stream.feed(calibration().tobytes())
@@ -227,10 +236,11 @@ def test_commit_queued_with_speech_before_onset_still_transcribes():
     session.commit()  # no further PCM
     session.start()
     try:
-        item = session.transcripts.get(timeout=3)
+        item = await session.transcripts.get_async(3)
         assert isinstance(item, Utterance) and item == "set a timer"
     finally:
         session.stop()
+        await session._worker
 
 
 def test_commit_arriving_during_inference_ends_capture_without_waiting():
@@ -246,7 +256,7 @@ def test_commit_arriving_during_inference_ends_capture_without_waiting():
     session._capture_no_data_seconds = 1.0
     _feed_speech(session, 2)
     _feed_silence(session, 2)
-    wav_path, _volume = session._capture()
+    wav_path, _volume = asyncio.run(session._capture())
     assert not session.stream.no_data_return
     assert det.calls == 1
     assert _captured_blocks(session, wav_path) == 2 + 2 + 3 + 1
@@ -277,7 +287,7 @@ def test_capture_and_transcribe_returns_transcript_and_unlinks_wav(tmp_path):
 
     session = _adaptive_session(_ScriptedDetector([0.9]), transcribe=_transcribe)
     _feed_silence(session, session._endpoint_blocks + 4)
-    transcript, volume = session._capture_and_transcribe()
+    transcript, volume = asyncio.run(session._capture_and_transcribe())
     assert transcript == "hello there"
     assert volume >= 0
     import os
@@ -290,7 +300,7 @@ def test_transcribe_failure_is_nothing_heard():
 
     session = _adaptive_session(_ScriptedDetector([0.9]), transcribe=_boom)
     _feed_silence(session, session._endpoint_blocks + 4)
-    transcript, _volume = session._capture_and_transcribe()
+    transcript, _volume = asyncio.run(session._capture_and_transcribe())
     assert transcript == ""
 
 
@@ -341,7 +351,8 @@ def test_playback_tail_suppresses_quiet_until_drained():
     assert len(_drain_ticks()) >= 1
 
 
-def test_first_quiet_tick_after_resume_is_a_full_interval_later():
+@pytest.mark.asyncio
+async def test_first_quiet_tick_after_resume_is_a_full_interval_later():
     """Silence received before the client stopped sending must not shorten the next listening phase."""
     import time
 
@@ -349,12 +360,12 @@ def test_first_quiet_tick_after_resume_is_a_full_interval_later():
     session.stream.resume_gap_seconds = 0.1
     session.start()
     try:
-        def ticks_after(blocks):
+        async def ticks_after(blocks):
             _feed_silence(session, blocks)
             deadline = time.monotonic() + 2
-            while not session.stream._chunks.empty() and time.monotonic() < deadline:
-                time.sleep(0.01)
-            time.sleep(0.05)
+            while session.stream._chunks and time.monotonic() < deadline:
+                await asyncio.sleep(0.01)
+            await asyncio.sleep(0.05)
             out = []
             while True:
                 try:
@@ -362,24 +373,25 @@ def test_first_quiet_tick_after_resume_is_a_full_interval_later():
                 except _queue.Empty:
                     return [t for t in out if isinstance(t, QuietTick)]
 
-        assert ticks_after(8) == []  # an earlier listening phase: 0.24 s of silence, then the client stops
-        time.sleep(0.2)  # client stopped sending; nothing received
-        assert ticks_after(3) == []  # resumed: 0.09 s is not an interval
-        ticks = ticks_after(7)
+        assert await ticks_after(8) == []  # an earlier listening phase: 0.24 s of silence, then the client stops
+        await asyncio.sleep(0.2)  # client stopped sending; nothing received
+        assert await ticks_after(3) == []  # resumed: 0.09 s is not an interval
+        ticks = await ticks_after(7)
         assert len(ticks) == 1 and ticks[0].quiet_seconds == 0.3
     finally:
         session.stop()
+        await session._worker
 
 
 def test_split_sample_resume_requires_a_full_new_quiet_interval(monkeypatch):
     """Drive the real worker synchronously so each assertion follows a processed audio block."""
     session = ConverseSession(np, quiet_interval=0.3)
-    read = session.stream.read
+    read = session.stream.read_blocks
     silence_block = np.zeros(session._block, dtype=np.int16).tobytes()
     blocks = 0
     completed = False
 
-    def feed_then_read(block):
+    async def feed_then_read(block, **kwargs):
         nonlocal blocks, completed
         # Eight old blocks = 0.24 s; nine new blocks = 0.27 s, still below the interval.
         if blocks in (8, 11, 17):
@@ -390,7 +402,7 @@ def test_split_sample_resume_requires_a_full_new_quiet_interval(monkeypatch):
             assert session.transcripts.empty()
             completed = True
             session._stop.set()
-            return np.zeros(block, dtype=np.int16), False
+            return [np.zeros(block, dtype=np.int16)]
         if blocks == 8:
             session.stream._last_feed -= 1.1  # a receive gap above the real 1 s threshold
             session.stream.feed(silence_block[:1])
@@ -398,10 +410,10 @@ def test_split_sample_resume_requires_a_full_new_quiet_interval(monkeypatch):
         else:
             session.stream.feed(silence_block)
         blocks += 1
-        return read(block)
+        return await read(block, **kwargs)
 
-    monkeypatch.setattr(session.stream, "read", feed_then_read)
-    session._run()
+    monkeypatch.setattr(session.stream, "read_blocks", feed_then_read)
+    asyncio.run(session._run())
     assert completed and blocks == 18  # the worker logs exceptions instead of propagating them
 
 
@@ -751,14 +763,18 @@ def test_stt_and_tts_threads_run_in_the_spawners_context(monkeypatch):
 
     monkeypatch.setattr(speech, "transcribe_wav", _transcribe)
     probe.set("request-scope")
-    session = ConverseSession(np)
-    session.start()
-    try:
-        for pcm in (calibration(), speech_like(2000, seed=1), silence(seconds=1.8)):
-            session.stream.feed(pcm.tobytes())
-        assert session.transcripts.get(timeout=6) == "hello"
-    finally:
-        session.stop()
+    async def _listen():
+        session = ConverseSession(np)
+        session.start()
+        try:
+            for pcm in (calibration(), speech_like(2000, seed=1), silence(seconds=1.8)):
+                session.stream.feed(pcm.tobytes())
+            assert await session.transcripts.get_async(6) == "hello"
+        finally:
+            session.stop()
+            await session._worker
+
+    asyncio.run(_listen())
 
     class _ProbeSynth(_EchoSynth):
         def synth(self, text):
@@ -923,7 +939,7 @@ def test_session_cancel_discards_captured_transcript():
     # Endpoint immediately with silence so capture returns.
     _feed_silence(session, session._endpoint_blocks + 4)
     # Replicate _run's post-capture discard: cancelled -> transcript not queued.
-    transcript, volume = session._capture_and_transcribe()
+    transcript, volume = asyncio.run(session._capture_and_transcribe())
     assert volume >= 0
     assert transcript == "" and seen == {}  # cancelled capture never reaches STT
     assert session._cancelled.is_set()
@@ -1018,8 +1034,9 @@ def test_standby_preserves_playback_tail_until_matching_drain():
     assert done["next_action"] == "standby" and not session._tail_active
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize('phase', ['thinking', 'speaking', 'tail'])
-def test_accepted_barge_in_is_captured_in_every_phase(monkeypatch, phase):
+async def test_accepted_barge_in_is_captured_in_every_phase(monkeypatch, phase):
     calls = []
     session = ConverseSession(np, transcribe=lambda path: calls.append(path) or 'continued request')
     stop = threading.Event()
@@ -1035,16 +1052,18 @@ def test_accepted_barge_in_is_captured_in_every_phase(monkeypatch, phase):
     try:
         for pcm in (calibration(), speech_like(5000, seed=23), silence(1.8)):
             session.stream.feed(pcm.tobytes())
-        assert interrupted.wait(3)
-        assert session.transcripts.get(timeout=3) == 'continued request'
+        assert await _until(interrupted.is_set, 3)
+        assert await session.transcripts.get_async(3) == 'continued request'
         assert len(calls) == 1
         if phase != 'tail':
             assert stop.is_set()
     finally:
         session.stop()
+        await session._worker
 
 
-def test_talk_past_the_cap_is_split_at_a_pause_with_nothing_lost():
+@pytest.mark.asyncio
+async def test_talk_past_the_cap_is_split_at_a_pause_with_nothing_lost():
     lengths = []
 
     def transcribe(path):
@@ -1059,15 +1078,16 @@ def test_talk_past_the_cap_is_split_at_a_pause_with_nothing_lost():
         for pcm in (calibration(), speech_like(5000, seconds=8, seed=31), silence(0.45),
                     speech_like(5000, seconds=8, seed=32), silence(1.8)):
             session.stream.feed(pcm.tobytes())
-        assert session.transcripts.get(timeout=5) == 'part'
-        assert session.transcripts.get(timeout=5) == 'part'
+        assert await session.transcripts.get_async(5) == 'part'
+        assert await session.transcripts.get_async(5) == 'part'
         with pytest.raises(_queue.Empty):
-            session.transcripts.get(timeout=1)
+            await session.transcripts.get_async(1)
         first, second = lengths
         assert 8 < first < 9.9  # ended at the pause after the first 8 s, not at the cap
         assert first + second >= 16.4  # both stretches of speech and the pause between them
     finally:
         session.stop()
+        await session._worker
 
 
 def test_stale_cancel_does_not_touch_newer_thinking_turn():
@@ -1089,12 +1109,13 @@ def test_thinking_completion_keeps_candidate_input_before_onset():
     session._pre_roll.append(np.full(480, 11, np.int16))
     session.stream.feed(np.full(480, 99, np.int16).tobytes())
     session.end_turn()
-    audio, _ = session.stream.read(480)
+    (audio,) = asyncio.run(session.stream.read_blocks(480))
     assert np.all(audio == 99)
     assert np.all(session._pre_roll[0] == 11)
 
 
-def test_continuation_and_later_fresh_input_are_both_preserved(monkeypatch):
+@pytest.mark.asyncio
+async def test_continuation_and_later_fresh_input_are_both_preserved(monkeypatch):
     called = []
     tripped = threading.Event()
     session = ConverseSession(np, transcribe=lambda path: called.append(path) or 'fresh request')
@@ -1103,15 +1124,16 @@ def test_continuation_and_later_fresh_input_are_both_preserved(monkeypatch):
     try:
         for pcm in (calibration(), speech_like(5000, seed=4)):
             session.stream.feed(pcm.tobytes())
-        assert tripped.wait(3)
+        assert await _until(tripped.is_set, 3)
         session.end_turn()
         for pcm in (silence(2), speech_like(2000, seed=5), silence(2)):
             session.stream.feed(pcm.tobytes())
-        assert session.transcripts.get(timeout=3) == 'fresh request'
-        assert session.transcripts.get(timeout=3) == 'fresh request'
+        assert await session.transcripts.get_async(3) == 'fresh request'
+        assert await session.transcripts.get_async(3) == 'fresh request'
         assert len(called) == 2
     finally:
         session.stop()
+        await session._worker
 
 
 
@@ -1142,25 +1164,27 @@ def test_cancel_at_transcript_boundary_never_starts_the_agent():
 
 
 
-def test_managed_input_reserves_transcript_before_driver_can_begin_thinking():
+@pytest.mark.asyncio
+async def test_managed_input_reserves_transcript_before_driver_can_begin_thinking():
     session = ConverseSession(np, transcribe=lambda path: 'first request')
     session.enable_turn_control()
     session.start()
     try:
         for pcm in (calibration(), speech_like(2000, seed=8), silence(1.8)):
             session.stream.feed(pcm.tobytes())
-        first = session.transcripts.get(timeout=3)
+        first = await session.transcripts.get_async(3)
         assert first == 'first request'
         assert session.capture_pending()
         for pcm in (speech_like(5000, seed=9), silence(1.8)):
             session.stream.feed(pcm.tobytes())
         # Continued speech supersedes a request whose driver has not started yet.
-        assert session.transcripts.get(timeout=3) == 'first request'
+        assert await session.transcripts.get_async(3) == 'first request'
         stop = threading.Event()
         session.reserve_turn('superseded', stop, first)
         assert stop.is_set()
     finally:
         session.stop()
+        await session._worker
 
 
 
@@ -1174,10 +1198,8 @@ def test_signoff_preserves_queued_conversation_output_in_arrival_order():
 
 @pytest.mark.parametrize("enabled", [True, False])
 def test_voice_transcripts_are_opt_in(monkeypatch, enabled):
-    import threading
     from hermes_converse import speech
 
-    monkeypatch.setattr(speech, "spawn_context_thread", lambda target, name, args: threading.Thread(target=target, args=args, daemon=True))
     monkeypatch.setattr(speech, "strip_markdown", lambda text: text)
     class Chunker:
         buf = ""
@@ -1410,8 +1432,9 @@ def test_pacing_waits_do_not_count_toward_the_turn_timeout(monkeypatch):
     assert not turn.timed_out and len(sent) == 8
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize('question_playing', [True, False])
-def test_pending_approval_listens_normally_once_its_question_has_played(question_playing):
+async def test_pending_approval_listens_normally_once_its_question_has_played(question_playing):
     """While an approval waits, the open turn is not playback: after the question's audio has
     played out, a short "yes" is detected as in ordinary listening (no echo gate, no barge-in
     threshold). While the question is still playing, echo rejection still applies."""
@@ -1429,11 +1452,10 @@ def test_pending_approval_listens_normally_once_its_question_has_played(question
     session.start()
     try:
         session.stream.feed(silence(0.3).tobytes())
-        deadline = cl.time.monotonic() + 3
-        while not seen and cl.time.monotonic() < deadline:
-            cl.time.sleep(0.01)
+        await _until(lambda: seen, 3)
     finally:
         session.stop()
+        await session._worker
     assert seen
     assert all(args == ((True, True) if question_playing else (False, False)) for args in seen)
 

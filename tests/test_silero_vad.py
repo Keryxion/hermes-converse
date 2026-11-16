@@ -1,4 +1,5 @@
 """Model framing/cache safety plus deterministic and real-model speech regression tests."""
+import asyncio
 import hashlib
 import io
 import os
@@ -199,9 +200,7 @@ def speech_fixture():
 
 @pytest.mark.parametrize('gain', [0.1, 1.0])
 @pytest.mark.parametrize('smart_turn', [False, True])
-def test_real_speech_captures_and_endpoints_with_silero(real_model, gain, smart_turn):
-    from hermes_converse import speech
-    from unittest.mock import patch
+async def test_real_speech_captures_and_endpoints_with_silero(real_model, gain, smart_turn):
     audio = (speech_fixture().astype(np.float32)*gain).astype(np.int16)
     transcribed = []
     def transcribe(path):
@@ -217,20 +216,17 @@ def test_real_speech_captures_and_endpoints_with_silero(real_model, gain, smart_
             return 0.1 if self.calls == 1 else 0.9
     if smart_turn:
         session._turn_detector = SmartTurn()
-    # Worker creation is the only Hermes-dependent seam in this test.
-    import threading
-    with patch.object(speech, 'spawn_context_thread', lambda target, **kw: threading.Thread(target=target, daemon=True)):
-        session.start()
+    session.start()
     try:
         session.stream.feed(np.concatenate([np.zeros(16000, np.int16), audio,
                                             np.zeros(32000, np.int16)]).tobytes())
-        assert session.transcripts.get(timeout=3) == 'real speech'
+        assert await session.transcripts.get_async(3) == 'real speech'
         assert 16000 < transcribed[0] < 8*16000
         if smart_turn:
             assert session._turn_detector.calls == 2
     finally:
         session.stop()
-        session._worker.join(timeout=2)
+        await asyncio.wait_for(session._worker, 2)
 
 
 def test_real_model_rejects_noise(real_model):
@@ -247,17 +243,14 @@ def test_playback_baseline_is_available_after_about_half_a_second(monkeypatch):
     assert 'playback' in [detector.feed(np.full(480, 4000, np.int16), True) for _ in range(12)]
 
 
-def test_generation_continuation_is_captured_with_one_evaluation_per_block(monkeypatch):
+async def test_generation_continuation_is_captured_with_one_evaluation_per_block(monkeypatch):
     import threading
-    from hermes_converse import speech
     detector = scripted(monkeypatch, [0.1]*30 + [0.9]*30 + [0.1]*30)
     interrupted = threading.Event()
     session = ConverseSession(np, vad_model='energy',
                               transcribe=lambda path: 'continued speech')
     session._detector = detector
     session.begin_turn('test-turn', on_interrupt=lambda _stop_run: interrupted.set())
-    monkeypatch.setattr(speech, 'spawn_context_thread',
-                        lambda target, **kw: threading.Thread(target=target, daemon=True))
     session.start()
     try:
         for _ in range(30):
@@ -265,11 +258,11 @@ def test_generation_continuation_is_captured_with_one_evaluation_per_block(monke
         detector._stream.calls = 0
         session.stream.feed(np.full(30*480, 5000, np.int16).tobytes())
         session.stream.feed(np.zeros(30*480, np.int16).tobytes())
-        assert interrupted.wait(timeout=2)
-        assert session.transcripts.get(timeout=2) == 'continued speech'
+        assert await asyncio.to_thread(interrupted.wait, 2)
+        assert await session.transcripts.get_async(2) == 'continued speech'
     finally:
         session.stop()
-        session._worker.join(timeout=2)
+        await asyncio.wait_for(session._worker, 2)
     assert detector._stream.calls <= 60  # every onset/capture block advances the model once
 
 

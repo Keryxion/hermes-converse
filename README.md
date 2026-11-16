@@ -271,7 +271,7 @@ This fallback requires the installed OTLP/HTTP exporter; it never installs depen
 changes the global provider, or writes configuration. It uses `service.name=hermes-gateway`
 and `telemetry.scope=voice`. No plugin-specific collector settings are needed.
 
-Capture/STT timestamps survive the worker-thread handoff and remain children of the right
+Capture/STT timestamps survive the handoff from capture to turn and remain children of the right
 turn, even when turns queue. Smart Turn decisions appear as `endpoint.decision` events with
 probabilities, thresholds, and hold/commit reasons. Spans carry only allowlisted metadata
 such as timings, counts, outcome, session/turn IDs, and endpoint mode; audio, transcripts,

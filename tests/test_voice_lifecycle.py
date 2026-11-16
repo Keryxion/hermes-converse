@@ -6,16 +6,13 @@ import wave
 import numpy as np
 import pytest
 
-from hermes_converse import speech
 from hermes_converse.loop import ConverseSession, Utterance, drive_converse_turns
 from tests.support.converse_audio import calibration, silence, speech_like
 from tests.test_loop import _EchoSynth
 
 
 @pytest.fixture
-def worker(monkeypatch):
-    monkeypatch.setattr(speech, 'spawn_context_thread',
-                        lambda target, **kw: threading.Thread(target=target, args=kw.get('args', ()), daemon=True))
+async def worker():
     sessions = []
 
     def create(**kwargs):
@@ -27,8 +24,7 @@ def worker(monkeypatch):
     for session in sessions:
         session.stop()
         if session._worker is not None:
-            session._worker.join(timeout=3)
-            assert not session._worker.is_alive()
+            await asyncio.wait_for(session._worker, 3)
 
 
 def deliver(session, *, trailing=True):
@@ -39,7 +35,7 @@ def deliver(session, *, trailing=True):
 
 
 @pytest.mark.parametrize('cancel', [False, True], ids=['old-completion', 'explicit-cancel'])
-def test_stt_capture_survives_old_completion_but_not_explicit_cancel(worker, cancel):
+async def test_stt_capture_survives_old_completion_but_not_explicit_cancel(worker, cancel):
     entered, release = threading.Event(), threading.Event()
     captured = []
 
@@ -56,7 +52,7 @@ def test_stt_capture_survives_old_completion_but_not_explicit_cancel(worker, can
     session.start()
     try:
         deliver(session)
-        assert entered.wait(3)
+        assert await asyncio.to_thread(entered.wait, 3)
         if cancel:
             assert session.cancel('old')
         # Even a completed reply with queued speaker audio cannot arm a tail over this capture.
@@ -64,7 +60,7 @@ def test_stt_capture_survives_old_completion_but_not_explicit_cancel(worker, can
         assert not session._tail_active
         session.playback_ended('old')
         release.set()
-        result = session.transcripts.get(timeout=3)
+        result = await session.transcripts.get_async(3)
         if cancel:
             assert not isinstance(result, str)  # InputReady, not a cancelled transcript
         else:
@@ -75,7 +71,7 @@ def test_stt_capture_survives_old_completion_but_not_explicit_cancel(worker, can
         release.set()
 
 
-def test_cancel_during_capture_endpoints_and_skips_stt(worker):
+async def test_cancel_during_capture_endpoints_and_skips_stt(worker):
     onset = threading.Event()
     calls = []
     session = worker(transcribe=lambda path: calls.append(path) or 'cancelled input')
@@ -84,11 +80,11 @@ def test_cancel_during_capture_endpoints_and_skips_stt(worker):
     session.on_trip = lambda phase: onset.set()
     session.start()
     deliver(session, trailing=False)
-    assert onset.wait(3)
+    assert await asyncio.to_thread(onset.wait, 3)
     session.cancel()  # commit injects silence so an unfinished capture can settle
     session.finish_turn('old', 0)
     session.stream.feed(silence(2).tobytes())
-    item = session.transcripts.get(timeout=3)
+    item = await session.transcripts.get_async(3)
     assert not isinstance(item, str) and calls == []
 
 
@@ -101,7 +97,7 @@ async def test_multiple_unstarted_corrections_retain_original_context_once(worke
     items = []
     for _ in range(3):
         deliver(session)
-        items.append(await asyncio.to_thread(session.transcripts.get, True, 3))
+        items.append(await session.transcripts.get_async(3))
     assert all(isinstance(item, Utterance) for item in items)
     assert [item.superseded for item in items] == [True, True, False]
     for item in items:

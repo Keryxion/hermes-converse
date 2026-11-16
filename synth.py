@@ -29,7 +29,7 @@ FALLBACK_PCM_CHUNK_BYTES = 32 * 1024
 def decode_audio_file_to_pcm16(path: str, target_rate: int = FALLBACK_SAMPLE_RATE) -> bytes:
     """Decode an audio file to raw little-endian int16 mono PCM at *target_rate* with PyAV (any
     container the one-shot providers emit: mp3, wav, opus/ogg, …). On any failure logs and returns
-    ``b""`` so a bad file degrades to "no audio", never an exception into the synthesis thread."""
+    ``b""`` so a bad file degrades to "no audio", never an exception into the reply's synthesis."""
     try:
         import av
         import av.audio.resampler

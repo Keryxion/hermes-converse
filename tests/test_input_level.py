@@ -1,13 +1,13 @@
 """The session's input gain (level.py, specs/audio.md): a quiet device's speech is heard, a normal one
 is left alone, and the gain holds still while a turn is under way."""
-import threading
+import asyncio
 import wave
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from hermes_converse import level, speech
+from hermes_converse import level
 from hermes_converse.level import InputLevel
 from hermes_converse.loop import ConverseSession
 from hermes_converse.silero_vad import load_silero_session as real_silero  # before conftest stubs it
@@ -71,7 +71,7 @@ def _jfk():
 
 @pytest.mark.parametrize("attenuation_db", [0, 30, 40, 50])
 @pytest.mark.parametrize("gain", [True, False])
-def test_quiet_speech_is_heard_on_an_echo_floor(monkeypatch, attenuation_db, gain):
+async def test_quiet_speech_is_heard_on_an_echo_floor(monkeypatch, attenuation_db, gain):
     """specs/audio.md acceptance: the request is captured at its own level and 30, 40 and 50 dB lower,
     over an Echo Dot 2's floor (RMS 3). Without the gain the 50 dB one (an Echo's close speech, about
     -65 dBFS, 16 dB over its floor) is missed, as on the Echo."""
@@ -82,8 +82,6 @@ def test_quiet_speech_is_heard_on_an_echo_floor(monkeypatch, attenuation_db, gai
         pytest.skip("Silero model not available")
     if not gain:
         monkeypatch.setattr(InputLevel, "apply", lambda self, b, learn: b)
-    monkeypatch.setattr(speech, "spawn_context_thread",
-                        lambda target, **kw: threading.Thread(target=target, daemon=True))
     session = ConverseSession(np, vad_model="silero", transcribe=lambda path: "heard")
     assert session._detector.name == "silero"
     speech_pcm = _jfk() * 10 ** (-attenuation_db / 20)
@@ -92,12 +90,12 @@ def test_quiet_speech_is_heard_on_an_echo_floor(monkeypatch, attenuation_db, gai
     try:
         session.stream.feed(np.clip(np.round(pcm), -32768, 32767).astype(np.int16).tobytes())
         try:
-            heard = session.transcripts.get(timeout=8)
+            heard = await session.transcripts.get_async(8)
         except Exception:
             heard = None
     finally:
         session.stop()
-        session._worker.join(timeout=2)
+        await asyncio.wait_for(session._worker, 2)
     if gain or attenuation_db < 50:
         assert heard == "heard", f"speech {attenuation_db} dB down over the Echo's floor was not captured"
     else:

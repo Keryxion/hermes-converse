@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from . import speech
+from .audio_transport import on_audio_thread
 
 logger = logging.getLogger(__name__)
 
@@ -162,24 +163,44 @@ class Relay:
 
     async def send_json(self, frame: dict) -> None:
         if self.ws is not None:
-            if self.audio is not None:
-                if frame.get("type") == "speaking":
-                    self.audio.begin(frame.get("turn_id"))
-                elif frame.get("type") in ("interrupted", "error"):
-                    self.audio.discard()
-                elif (frame.get("type") == "turn_done"
-                      or frame.get("type") == "state" and frame.get("state") == "listening"):
-                    for packet in self.audio.finish():
-                        await self.ws.send_bytes(packet)
+            audio = self.audio
+            if audio is not None and _changes_audio(frame):
+                # The Opus state is the audio thread's: every change to it runs there, in order.
+                for packet in await on_audio_thread(_audio_frame, audio, frame):
+                    if self.ws is None:
+                        return
+                    await self.ws.send_bytes(packet)
+                if self.ws is None:
+                    return
             await self.ws.send_json(frame)
 
     async def send_bytes(self, data: bytes) -> None:
         if self.ws is not None:
-            if self.audio is None:
+            audio = self.audio
+            if audio is None:
                 await self.ws.send_bytes(data)
             else:
-                for packet in self.audio.encode(data, self.source_rate):
+                for packet in await on_audio_thread(lambda: list(audio.encode(data, self.source_rate))):
+                    if self.ws is None:
+                        return
                     await self.ws.send_bytes(packet)
+
+
+def _changes_audio(frame: dict) -> bool:
+    kind = frame.get("type")
+    return (kind in ("speaking", "interrupted", "error", "turn_done")
+            or kind == "state" and frame.get("state") == "listening")
+
+
+def _audio_frame(audio: Any, frame: dict) -> list[bytes]:
+    """The Opus state change a control frame makes; returns the packets to send before it."""
+    if frame.get("type") == "speaking":
+        audio.begin(frame.get("turn_id"))
+    elif frame.get("type") in ("interrupted", "error"):
+        audio.discard()
+    else:
+        return list(audio.finish())
+    return []
 
 
 @dataclass
