@@ -4,7 +4,6 @@ Only speech-provider seams are replaced; no Hermes checkout is required.
 """
 import asyncio
 import re
-import threading
 
 import pytest
 from aiohttp import web
@@ -46,10 +45,6 @@ def _speech_seams(monkeypatch):
             self.buf = ""
             return out
 
-    def _spawn(target, *, name, args=()):
-        return threading.Thread(target=target, name=name, args=args, daemon=True)
-
-    monkeypatch.setattr(speech, "spawn_context_thread", _spawn)
     monkeypatch.setattr(speech, "sentence_chunker", lambda: _Chunker())
     monkeypatch.setattr(speech, "strip_markdown", lambda text: text)
     monkeypatch.setattr(speech, "sentence_boundary_re", lambda: re.compile(r"(?<=[.!?])\s+"))

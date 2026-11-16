@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Callable, Iterable, Iterator, Optional
+from typing import Any, Iterable, Iterator, Optional
 
 from . import vad
 from .level import for_stt
@@ -137,16 +137,6 @@ _EMPTY_BRACKETS_RE = re.compile(r"\s*[(\[{]\s*[)\]}]")
 def _drop_empty_brackets(text: str) -> str:
     """Brackets left empty once a link or URL inside them was removed: "merged ( )." -> "merged."."""
     return _EMPTY_BRACKETS_RE.sub("", text)
-
-
-# ── threads ──
-
-def spawn_context_thread(target: Callable[..., Any], *, name: str, args: tuple = ()) -> Any:
-    """An unstarted daemon thread running *target* under the spawner's contextvars, so STT and TTS
-    workers read provider credentials through the request's profile scope."""
-    from agent.memory_provider import spawn_context_thread as _spawn
-
-    return _spawn(target, name=name, args=args)
 
 
 def pcm_chunks(streamer: Any, text: str) -> Iterator[bytes]:

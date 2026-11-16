@@ -10,6 +10,7 @@ No network, no models, no audio devices. STT and the agent turn are the only thi
 """
 from __future__ import annotations
 
+import asyncio
 import queue
 from contextlib import contextmanager
 
@@ -82,8 +83,8 @@ def run_utterances(pcm_segments: list[np.ndarray], *, transcript: str = "heard",
     produced (one per detected utterance). STT is mocked; the VAD/endpoint/capture are real."""
     from hermes_converse.loop import ConverseSession
 
-    results: list[str] = []
-    with mocked_stt(transcript):
+    async def run() -> list[str]:
+        results: list[str] = []
         session = ConverseSession(np, input_rate=input_rate)
         session.start()
         try:
@@ -94,7 +95,7 @@ def run_utterances(pcm_segments: list[np.ndarray], *, transcript: str = "heard",
             deadline_empty = timeout
             while True:
                 try:
-                    item = session.transcripts.get(timeout=deadline_empty)
+                    item = await session.transcripts.get_async(deadline_empty)
                 except queue.Empty:
                     break
                 if item is None:
@@ -104,7 +105,11 @@ def run_utterances(pcm_segments: list[np.ndarray], *, transcript: str = "heard",
                     deadline_empty = 1.5
         finally:
             session.stop()
-    return results
+            await session._worker
+        return results
+
+    with mocked_stt(transcript):
+        return asyncio.run(run())
 
 
 def heard(pcm: np.ndarray, **kw) -> bool:
@@ -120,8 +125,8 @@ def collect_session_events(pcm_segments: list[np.ndarray], *, quiet_interval: fl
 
     from hermes_converse.loop import ConverseSession
 
-    events: list = []
-    with mocked_stt("heard"):
+    async def run() -> list:
+        events: list = []
         session = ConverseSession(np, input_rate=input_rate, quiet_interval=quiet_interval)
         session.start()
         try:
@@ -131,7 +136,7 @@ def collect_session_events(pcm_segments: list[np.ndarray], *, quiet_interval: fl
             deadline = time.monotonic() + max_wait
             while time.monotonic() < deadline:
                 try:
-                    item = session.transcripts.get(timeout=0.5)
+                    item = await session.transcripts.get_async(0.5)
                 except queue.Empty:
                     continue
                 if item is None:
@@ -141,4 +146,8 @@ def collect_session_events(pcm_segments: list[np.ndarray], *, quiet_interval: fl
                     break
         finally:
             session.stop()
-    return events
+            await session._worker
+        return events
+
+    with mocked_stt("heard"):
+        return asyncio.run(run())

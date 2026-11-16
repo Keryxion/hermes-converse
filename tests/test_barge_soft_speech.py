@@ -4,12 +4,13 @@ The scripted model deliberately recognizes soft speech with high confidence:
 speech probability alone is not evidence that the user intends to interrupt.
 Real PCM goes through the actual session worker and interruption callbacks.
 """
+import asyncio
 import threading
 
 import numpy as np
 import pytest
 
-from hermes_converse import speech, vad
+from hermes_converse import vad
 from hermes_converse.loop import ConverseSession
 
 
@@ -30,9 +31,7 @@ class FailedModel:
 
 @pytest.mark.parametrize('backend', ['silero', 'energy', 'failed-silero'])
 @pytest.mark.parametrize('phase', ['pending', 'thinking', 'speaking', 'tail'])
-def test_soft_mumbling_does_not_cancel_but_deliberate_speech_does(monkeypatch, backend, phase):
-    monkeypatch.setattr(speech, 'spawn_context_thread',
-                        lambda target, **kw: threading.Thread(target=target, daemon=True))
+async def test_soft_mumbling_does_not_cancel_but_deliberate_speech_does(backend, phase):
     session = ConverseSession(np, vad_model='energy',
                               transcribe=lambda path: 'deliberate continuation')
     detector = session._detector
@@ -54,49 +53,52 @@ def test_soft_mumbling_does_not_cancel_but_deliberate_speech_does(monkeypatch, b
             session.begin_playback_tail('reply', 30)
             session.on_tail_barge = lambda turn: interrupted.set()
 
-    # Observe processing rather than using sleeps to guess when the worker ran.
+    # Observe processing rather than using sleeps to guess when the session ran.
     processed, target = 0, 0
-    done = threading.Event()
+    done = asyncio.Event()
     feed = detector.feed
+    listen = session._listen
 
     def observed(block, playing, **kwargs):
         nonlocal processed
         result = feed(block, playing, **kwargs)
         processed += 1
+        return result
+
+    async def listened():
+        result = await listen()
         if processed >= target:
-            done.set()
+            done.set()  # the final block's session transition has completed too
         return result
 
     detector.feed = observed
+    session._listen = listened
 
-    def deliver(levels):
+    async def deliver(levels):
         nonlocal target
         done.clear()
         target = processed + len(levels)
         session.stream.feed(np.concatenate([pcm_block(level) for level in levels]).tobytes())
-        assert done.wait(3), 'worker did not process test PCM'
-        with session._state_lock:
-            pass  # the final block's session transition must have completed too
+        await asyncio.wait_for(done.wait(), 3)
 
     def cancelled():
         return stop.is_set() or interrupted.is_set() or session._cancelled.is_set()
 
     session.start()
     try:
-        deliver([60] * 30)  # stable room/playback baseline
-        deliver([400, 900, 600, 1200, 800, 500, 1000] * 12 + [60] * 30)
+        await deliver([60] * 30)  # stable room/playback baseline
+        await deliver([400, 900, 600, 1200, 800, 500, 1000] * 12 + [60] * 30)
         assert not cancelled(), f'{backend}/{phase}: soft mumbling cancelled the reply'
         assert session.transcripts.empty()
         # An above-threshold click/burst must not count as sustained interruption.
-        deliver(([4500] * 3 + [60] * 17) * 3)
+        await deliver(([4500] * 3 + [60] * 17) * 3)
         assert not cancelled(), f'{backend}/{phase}: a short burst cancelled the reply'
-        deliver([4500] * 3 + [900] * 30 + [60] * 30)
+        await deliver([4500] * 3 + [900] * 30 + [60] * 30)
         assert not cancelled(), f'{backend}/{phase}: a brief noise over mumbling cancelled the reply'
         session.stream.feed(np.concatenate([pcm_block(4500)] * 30 + [pcm_block(60)] * 40).tobytes())
-        assert session.transcripts.get(timeout=3) == 'deliberate continuation'
+        assert await session.transcripts.get_async(3) == 'deliberate continuation'
         if phase != 'pending':
             assert cancelled(), f'{backend}/{phase}: deliberate sustained speech was ignored'
     finally:
         session.stop()
-        session._worker.join(timeout=2)
-        assert not session._worker.is_alive()
+        await asyncio.wait_for(session._worker, 2)

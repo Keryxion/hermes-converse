@@ -1,8 +1,23 @@
-"""Per-socket Opus state around the existing PCM voice pipeline."""
+"""Per-socket Opus state around the existing PCM voice pipeline, and the one audio thread."""
 
 from __future__ import annotations
 
+import asyncio
+import functools
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Callable
+
 from .opus import Decoder, Encoder, RATES
+
+# Every connection's CPU-bound audio work (speech detection, Smart Turn, the capture's WAV, Opus
+# encoding) runs here, one call at a time in submission order, so the server's thread count does
+# not grow with connections or turns.
+_AUDIO = ThreadPoolExecutor(max_workers=1, thread_name_prefix="converse-audio")
+
+
+async def on_audio_thread(fn: Callable[..., Any], /, *args: Any) -> Any:
+    """``fn(*args)`` on the shared audio thread; the coroutine waits without holding a thread."""
+    return await asyncio.get_running_loop().run_in_executor(_AUDIO, functools.partial(fn, *args))
 
 
 def audio_format(frame: dict) -> str:
@@ -43,6 +58,10 @@ class AudioTransport:
             self.turn_id = turn_id
 
     def close(self):
+        """Free the codecs once the audio thread has finished any encoding already queued for them."""
+        _AUDIO.submit(self._close)
+
+    def _close(self):
         if self.decoder is not None:
             self.decoder.close()
             self.encoder.close()

@@ -3,8 +3,8 @@ REAL VAD, endpointer and WAV-capture path (only STT is mocked). This is the regr
 "I'm talking and the server just reports idle": it fails if the detector stops hearing a soft voice,
 and it fails if it starts hearing silence or room noise."""
 
+import asyncio
 import queue as _queue
-import time
 
 import numpy as np
 import pytest
@@ -57,7 +57,7 @@ class TestBoundaryIsDocumented:
 
 class TestNoisyRoomSelfCalibrates:
     def _run(self, segments, *, timeout=4.0):
-        with mocked_stt("heard"):
+        async def run():
             session = ConverseSession(np, input_rate=16000)
             session.start()
             try:
@@ -66,7 +66,7 @@ class TestNoisyRoomSelfCalibrates:
                 got = []
                 try:
                     while True:
-                        item = session.transcripts.get(timeout=timeout)
+                        item = await session.transcripts.get_async(timeout)
                         if item is None:
                             break
                         if isinstance(item, str) and item:
@@ -77,6 +77,10 @@ class TestNoisyRoomSelfCalibrates:
                 return got
             finally:
                 session.stop()
+                await session._worker
+
+        with mocked_stt("heard"):
+            return asyncio.run(run())
 
     def test_steady_tv_background_alone_does_not_chatter(self):
         got = self._run([room_noise(1500, seconds=3.0, seed=5)], timeout=3.0)
@@ -115,14 +119,18 @@ class TestQuietTracksReceivedSilence:
         assert first is not None and first.quiet_seconds <= 0.35
 
     def test_no_audio_produces_no_quiet_ticks(self):
-        with mocked_stt("unused"):
+        async def run():
             session = ConverseSession(np, quiet_interval=0.3)
             session.start()
             try:
-                time.sleep(1.6)  # >5 intervals of wall-clock, but no audio is fed
+                await asyncio.sleep(1.6)  # >5 intervals of wall-clock, but no audio is fed
                 drained = []
                 while not session.transcripts.empty():
                     drained.append(session.transcripts.get_nowait())
                 assert not any(isinstance(x, QuietTick) for x in drained)
             finally:
                 session.stop()
+                await session._worker
+
+        with mocked_stt("unused"):
+            asyncio.run(run())
