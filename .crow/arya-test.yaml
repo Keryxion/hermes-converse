@@ -5,9 +5,9 @@ labels:
   backend: docker
   platform: linux/amd64
 clone:
-  hermes-converse:
+  - name: hermes-converse
     image: codefloe.com/crow-plugins/clone:1.0.3
-  arya-test:
+  - name: arya-test
     image: codefloe.com/crow-plugins/clone:1.0.3
     settings:
       remote: https://github.com/Keryxion/arya-test.git
