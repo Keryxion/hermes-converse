@@ -99,7 +99,7 @@ An untargeted cancel also abandons a capture in progress. Stop the agent and TTS
 discard that cancelled capture, emit the existing interruption/terminal frames,
 and leave the socket and conversation usable. `stop` closes the attachment.
 
-`heard` says the device detected a wake word during a turn. It is neither
+`heard` says the device detected the `cancel` wake word during a turn. It is neither
 cancellation nor barge-in: log it with the session, the turn, and the wake
 word, and change nothing else.
 
@@ -239,7 +239,10 @@ frames in order. Send `state` each time the turn's state changes, so the client
 shows it without inferring it from other frames: `thinking` before the turn's
 first `thinking` frame and whenever the agent resumes after waiting on the
 person; `speaking` before the first PCM of each stretch of speech; `listening`
-when the turn waits on the person and their speech is being listened for. Interrupted, failed, or superseded replies return `listen`.
+when the turn waits on the person and their speech is being listened for.
+Ordinary, interrupted, failed, or superseded replies omit `next_action` from
+`turn_done`, preserving the device's interaction mode. Only an explicit standby
+decision sends `next_action: "standby"`; never send `next_action: "listen"`.
 
 Pace reply PCM against the playback it implies so the server, not the client,
 holds the backlog. Track where the client's queued audio ends; before sending a
@@ -267,7 +270,9 @@ context must not describe a generated or transmitted response as heard.
 
 After `turn_done`, retain playback protection until the client reports a state
 other than `speaking` for that turn, or the bounded fallback timeout. Ignore a
-report for another turn. A tail interruption updates the same turn to `listen`;
+report for another turn. A tail interruption sends an updated `turn_done`
+without `next_action` for the same turn, clearing its pending standby action
+while preserving the device's interaction mode;
 it does not create another reply for that turn. Quiet advisories count received
 idle silence, never wall time or time occupied by a reply/capture. Restart the
 count on speech onset, turn start and end, playback drain, and when received
@@ -519,11 +524,13 @@ device reports no state for it.
 The agent calls `standby` when the person has said they are done, for example
 "thanks, that's all". Finishing a request is not that: after "turn on the
 lights" the person may add "and the kitchen too". Without the call, the device
-keeps listening and returns to standby by itself after a few seconds of
-silence. The tool, the `next_action` value, and the device state
+preserves its interaction mode: hands-free keeps listening until quiet, and
+released push-to-talk stays in standby. The tool, the `next_action` value,
+and the device state
 share the one name. Standby is not mute: the device still hears its wake word.
 The server does not look for a sign-off phrase in the reply. A turn that does
-not call `standby` ends with `next_action: "listen"`.
+not call `standby` omits `next_action` from `turn_done`. Keep this field absent
+on cancellation, interruption, error, and timeout paths too.
 
 | Tool result | Meaning |
 |---|---|
@@ -591,10 +598,10 @@ rings again.
 
 ### Stopping by voice
 
-A ringing countdown is ended on the device, by its `cancel` wake word (client
-spec, section 10). The server does not listen for a stop phrase and sends
-nothing to end a countdown by voice; it learns the countdown ended from the
-device's `countdown` with `ended`.
+The `cancel` wake word does not end a countdown (client spec, section 10).
+The server does not listen for a stop phrase. A person ends a ringing
+countdown with the device's button or tap, which the server learns from the
+device's `countdown` with `ended`, or by asking the assistant.
 
 The assistant's wake word followed by a request is an ordinary turn. The
 countdown keeps its place: the agent ends it with `cancel` or `snooze`, or leaves it
@@ -603,7 +610,7 @@ ringing.
 Acceptance scenarios: a countdown set in the Kitchen counts down and rings only in
 the Kitchen. Exercise a call from a chat that is not a device, a device that is
 not attached, a reconnect before the deadline, a device that is off at the
-deadline, local dismissal, the `cancel` wake word, other speech while ringing, a
+deadline, local dismissal, the `cancel` wake word while ringing (it does not end the countdown), other speech while ringing, a
 reply and a wake word while ringing, snooze while pending and while ringing,
 cancel while ringing, still-ringing turns at 1, 2, 4 and 8 minutes and none
 after `ended`, two countdowns ringing at once (one turn naming both, a

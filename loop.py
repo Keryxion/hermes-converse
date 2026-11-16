@@ -1416,7 +1416,7 @@ async def drive_converse_turns(
     session.enable_turn_control()
     async def notify_tail_barge(turn_id):
         await send_json({"type": "interrupted", "turn_id": turn_id})
-        await send_json({"type": "turn_done", "turn_id": turn_id, "next_action": "listen"})
+        await send_json({"type": "turn_done", "turn_id": turn_id})
 
     def tail_barge(turn_id):
         async def notify():
@@ -1481,7 +1481,7 @@ async def drive_converse_turns(
             # A cancelled capture / turn: the socket, session and history stay alive; only this
             # turn stops. Emit interrupted + turn_done for it.
             await send_json({"type": "interrupted", "turn_id": item.turn_id})
-            await send_json({"type": "turn_done", "turn_id": item.turn_id, "next_action": "listen"})
+            await send_json({"type": "turn_done", "turn_id": item.turn_id})
             continue
         if isinstance(item, ConversationOutput):
             if session.capture_pending():
@@ -1680,8 +1680,11 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
         turn.ms("pcm_done"), len(turn.reply_parts), sum(len(p) for p in turn.reply_parts),
         getattr(session, "session_id", None), turn.turn_id, outcome, len(turn.result.get("reply") or ""),
         sum(len(p) for p in turn.spoken_parts), turn.pcm_chunks, next_action, action_source)
-    turn_done: dict[str, Any] = {"type": "turn_done", "turn_id": turn.turn_id,
-                                "next_action": next_action}
+    # Ordinary completion preserves the device's interaction mode. Only an
+    # explicit standby decision overrides it; never reopen a released PTT mic.
+    turn_done: dict[str, Any] = {"type": "turn_done", "turn_id": turn.turn_id}
+    if next_action == "standby":
+        turn_done["next_action"] = "standby"
     await d.send_json(turn_done)
     _finish_trace(tt, turn, reply, err=turn_err, barged=barged, next_action=next_action)
     return next_action

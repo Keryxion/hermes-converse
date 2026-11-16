@@ -162,7 +162,7 @@ All are JSON text frames:
 | `{"commit": true}` | Ends the current utterance now, with the audio already sent (runs a turn on it). |
 | `{"type": "cancel", "turn_id": "..."}` | Cancels the **current** turn — stops TTS and the agent — but keeps the socket, session, and history alive. |
 | `{"type": "wake", "claim_id": "...", "wake_word": "Hey Arya"}` | request an advisory wake decision while buffering the new activation locally; see section 8. |
-| `{"type": "heard", "wake_word": "Hey Arya"}` | A wake word was heard during a turn; see "A wake word heard during a turn" in section 4. |
+| `{"type": "heard", "wake_word": "cancel"}` | The `cancel` wake word was heard during a turn; see "The `cancel` wake word heard during a turn" in section 4. |
 | `{"type": "endpointing", "on": false, "commit": true}` | Turns silence/Smart Turn endpointing off or on, and with `commit` ends the current utterance; both fields are optional. See "Push to talk" below. |
 | `{"type": "state", "turn_id": "...", "state": "listening"}` | The state the device now shows; see "The turn's state" in section 4. |
 | `{"type": "countdown", "countdown_id": "...", "ringing": true}` | A countdown is ringing, or with `ended` has ended; see section 10. |
@@ -174,9 +174,9 @@ All are JSON text frames:
 **`cancel` vs `stop`:** `stop` tears down the session; `cancel` only kills the
 current turn. Use `cancel` when the user hits the action button and you want
 to keep the conversation going. Nothing heard is a `cancel`: neither the
-assistant's wake word nor the `cancel` wake word cancels a turn. A wake word
-heard during a turn is reported with `heard` (section 4, "A wake word heard
-during a turn").
+assistant's wake word nor the `cancel` wake word cancels a turn. The `cancel`
+wake word heard during a turn is reported with `heard` (section 4, "The
+`cancel` wake word heard during a turn").
 
 ### Push to talk
 
@@ -200,8 +200,9 @@ as last set until the device changes it, and each connection starts with
 endpointing on. The utterance cap still applies as a memory backstop.
 
 Quick taps and wake-word turns use normal endpointing. Send no PCM while the
-control is released. Barge-in, `cancel`, `stop`, and every other frame keep their
-usual meaning, and `commit` with no utterance in progress is ignored.
+control is released, including after the reply completes. A `turn_done` without
+`next_action` does not reopen the microphone. Barge-in, `cancel`, `stop`, and
+every other frame keep their usual meaning, and `commit` with no utterance in progress is ignored.
 
 ### Commands
 
@@ -295,7 +296,7 @@ Countdowns are unaffected by a command.
 | `approval_request`, `approval_resolved` | the assistant needs permission before it acts, and when that is settled; see "Approvals" below |
 | `speaking` + binary frames | mono reply audio in `ready.output.format` at `output_rate` |
 | `interrupted` | the turn was cancelled (you barged in or sent `cancel`); stop playing |
-| `turn_done` | the reply is fully sent; `next_action` tells the client to listen or enter standby after drain |
+| `turn_done` | the reply is fully sent; optional `next_action: "standby"` ends the exchange after drain |
 | `quiet` | session mode: the stream has been silent for another `quiet_interval` seconds |
 | `error` | the turn failed (spoken-safe text) |
 | `{"type":"tone","tone":"confirm"}` | Play the named tone (see `tones.md`): `confirm` or `error` when the assistant chooses to, `approval` just before the server asks for an approval. It is not a reply: no `turn_id`, and the device reports no state for it. |
@@ -349,13 +350,13 @@ only its own copy. The server handles level ([audio.md](audio.md)).
 
 Barge-in yields the floor to the user. For example, after “turn on the light”,
 the user may add “and make it warm white” while the reply is thinking. Expect
-`interrupted` and `turn_done` with `next_action: "listen"` for the old turn,
+`interrupted` and `turn_done` without `next_action` for the old turn,
 then a new reply turn for the additional instruction (and a `transcript` if enabled). The
 new turn uses the same conversation and includes the original request as context.
 
 If the old reply had finished but none of it had played, it is not lost: it
 arrives first as a server-started reply turn (it carries `event_id`, and
-`next_action` is `"listen"`), then the reply to the additional instruction.
+`next_action` is absent), then the reply to the additional instruction.
 
 The words that follow the assistant's wake word during an activation, such as
 "Hey Arya, actually make it the kitchen" while the reply plays, are barge-in
@@ -400,24 +401,23 @@ detection; do not cut off barge-in monitoring during the playback tail.
 
 The server binds interruption to the old turn before announcing `thinking`.
 If accepted speech interrupts playback after `turn_done`, expect `interrupted`
-followed by an updated `turn_done` with `next_action: "listen"` for the same
+followed by an updated `turn_done` without `next_action` for the same
 turn, replacing its pending standby action. A continuation receives its own
 turn ID. Report the state for the old turn's playback only; it must not
 discard the continuation. A bounded playback-tail timeout handles a missing
 report.
 
-### A wake word heard during a turn
+### The `cancel` wake word heard during a turn
 
-A device that detects wake words keeps detecting them during a turn and while
-an activation is open. When it hears the assistant's wake word or the `cancel`
-wake word then, it sends:
+A device that detects the `cancel` wake word (section 10) keeps detecting it
+during a turn and while an activation is open. When it hears it then, it sends:
 
 ```json
-{"type":"heard","wake_word":"Hey Arya"}
+{"type":"heard","wake_word":"cancel"}
 ```
 
-`wake_word` is the exact phrase detected, as in `wake` (section 8); for the
-`cancel` wake word it is `"cancel"`. `heard` is neither `cancel` nor barge-in:
+Only the `cancel` wake word is reported this way; the assistant's wake word
+heard during a turn sends nothing. `heard` is neither `cancel` nor barge-in:
 the server records it, and the turn carries on unchanged. No frame answers it.
 It is mostly for half-duplex devices, where the server cannot hear the person
 while a reply plays.
@@ -444,8 +444,9 @@ a completed, cancelled, or stale turn.
 
 Nothing else changes the state during a turn: `thinking` frames carry liveness
 and counters, approval frames open and close the on-screen box, and `speaking`
-marks where the audio begins. After `turn_done`, `next_action` decides between
-listening and standby, as below. States the device knows by itself, such as
+marks where the audio begins. After `turn_done`, preserve the interaction mode
+unless `next_action: "standby"` ends the exchange, as below. States the device
+knows by itself, such as
 connecting, arbitrating, or muted, are the device's own (`animations.md`).
 
 The device sends `state` back each time the state it shows changes, with the
@@ -573,11 +574,13 @@ is sent again as a new `approval_request` with the same `approval_id`; show it. 
 
 ### Handling `turn_done.next_action`
 
-Every `turn_done` includes an explicit client action:
+An ordinary completion preserves the client's interaction mode:
 
 ```json
-{"type":"turn_done","turn_id":"turn-42","next_action":"listen"}
+{"type":"turn_done","turn_id":"turn-42"}
 ```
+
+To end the exchange, the server sends:
 
 ```json
 {"type":"turn_done","turn_id":"turn-42","next_action":"standby"}
@@ -585,21 +588,21 @@ Every `turn_done` includes an explicit client action:
 
 | `next_action` | client behavior after playback drain |
 |---|---|
-| `listen` | Keep streaming microphone PCM and allow the server to capture/transcribe a fresh user utterance. |
+| absent | Preserve the interaction mode: hands-free continues streaming for a follow-up; released push-to-talk stays in standby and sends no PCM. |
 | `standby` | Stop upstream PCM and return to local wake detection (or the non-wake client's idle UI). Keep the socket/session open for outbound events. |
 
-Continue interruption/control monitoring until queued playback has actually
-finished or been discarded. Then apply the turn's pending action and report the
-state it leads to. Do not apply a late completion/action from an abandoned
-turn to a newer activation. Cancellation, interruption, errors, and timeouts
-return `listen` for ordinary activation turns; a partial or failed reply cannot
-put the client in standby. Countdown tones restore the prior idle/listening state
-after drain (section 10).
-A normal reply also returns `listen`, even when it does not ask a question.
-The server requests `standby` when the person has said they are done.
+`next_action` is optional; `standby` is its only value. Completing a reply does
+not open microphone capture. Continue playback/drain handling, then apply the
+latest completion's action and report the state it leads to. An updated
+`turn_done` without `next_action` clears an earlier pending standby action for
+that turn; it still preserves the client's interaction mode. Do not apply a
+late completion from an abandoned turn to a newer activation.
 
-The server decides the action. Clients must not inspect reply text or
-interpret whether the agent expects a follow-up.
+Cancellation, interruption, errors, and timeouts preserve the interaction mode;
+a partial or failed reply cannot request standby. Countdown tones restore the
+prior idle/listening state after drain (section 10). The server requests
+`standby` when the person has said they are done. Clients must not inspect
+reply text or interpret whether the agent expects a follow-up.
 
 ### User and assistant transcripts
 
@@ -723,8 +726,9 @@ listening comes after one full `quiet_interval` of received silence, for example
 Silence sent before you stopped streaming does not carry over. After manual
 Talk, ignore `quiet` until the person's first request (a new turn starts); the
 person pressed Talk to speak, so silence before they do is not a reason to stop
-listening. After that request, `quiet` returns to standby as usual. `turn_done.next_action` tells the client whether to continue
-listening or return to standby after playback drain.
+listening. After that request, `quiet` returns to standby as usual. Optional
+`turn_done.next_action: "standby"` ends the exchange after playback drain;
+otherwise preserve the interaction mode.
 
 ## 6. Typical flow
 
@@ -899,9 +903,8 @@ Use the same playback lifecycle as ordinary replies:
 No synthetic user `transcript` or wake event is sent. Both `thinking` and
 `speaking` must establish a turn even when no earlier frame exists for it.
 A client waiting for a wake word must accept and play that output. For an
-idle-originated turn, the server should request `next_action: "standby"`
-unless follow-up listening is explicitly requested; do not open a user
-activation merely because the server spoke. For a targeted outbound turn while idle, temporarily enable
+idle-originated turn, the server requests `next_action: "standby"`; do not
+open a user activation merely because the server spoke. For a targeted outbound turn while idle, temporarily enable
 microphone streaming for interruption/control detection when `thinking` or
 `speaking` arrives, subject to explicit user mute. This requires no local
 wake or arbitration. After the turn and playback drain, stop that temporary
@@ -952,8 +955,7 @@ device was off is not rung late.
 
 The alarm keeps ringing until the first of:
 
-- a local dismissal: a button, a tap, or the `cancel` wake word heard on the
-  device;
+- a local dismissal: a button or a tap on the device;
 - `countdown_cancel` for it;
 - a new `countdown` for it, which starts it counting again;
 - `ring_seconds` of ringing.
@@ -997,12 +999,11 @@ the assistant's. It is detected on the device and needs no election:
 
 | Heard | The device |
 |---|---|
-| `cancel` while a countdown rings | Ends every ringing countdown, as a local dismissal. |
-| `cancel` during a turn, with nothing ringing | Sends `heard` (section 4). The server also hears it as speech. |
+| `cancel` during a turn or while an activation is open | Sends `heard` (section 4). The server also hears it as speech. |
 | `cancel` at any other time | Does nothing. |
 
-A device without the `cancel` wake word ends an alarm with its button or tap,
-or by asking the assistant.
+The `cancel` wake word never ends a countdown, ringing or not. An alarm ends
+with the device's button or tap, or by asking the assistant.
 
 ### Talking during an alarm
 

@@ -667,7 +667,9 @@ def _types(sent):
 
 def _turn_done_frame(sent):
     frame = next(f for f in sent if isinstance(f, dict) and f.get("type") == "turn_done")
-    assert set(frame) == {"type", "turn_id", "next_action"}
+    assert set(frame) in ({"type", "turn_id"}, {"type", "turn_id", "next_action"})
+    if "next_action" in frame:
+        assert frame["next_action"] == "standby"
     return frame
 
 
@@ -798,7 +800,7 @@ def test_drive_converse_turns_times_out_hung_turn():
 
     asyncio.run(_main())
     assert "error" in _types(sent) and _types(sent)[-1] == "turn_done"
-    assert _turn_done_frame(sent)["next_action"] == "listen"
+    assert "next_action" not in _turn_done_frame(sent)
     assert cancelled == [True]  # the hung turn was cancelled, not left running
 
 
@@ -903,7 +905,7 @@ def test_driver_tail_barge_emits_interrupted_not_a_turn():
     session.transcripts.put(None)
     sent = _run_driver(session, [], [])
     assert sent == [{"type": "interrupted", "turn_id": "turn-x"},
-                    {"type": "turn_done", "turn_id": "turn-x", "next_action": "listen"}]
+                    {"type": "turn_done", "turn_id": "turn-x"}]
     assert session.turns_begun == 0
 
 
@@ -912,14 +914,14 @@ def test_drive_converse_turns_standby_tool_requests_standby():
     assert _turn_done_frame(sent)["next_action"] == "standby"
 
 
-def test_drive_converse_turns_question_requests_listen():
+def test_drive_converse_turns_question_preserves_client_mode():
     sent = _run_driver(_FakeConverseSession(["set a timer"]), [], ["Sure — for how long?"], quiet_interval=1.0)
-    assert _turn_done_frame(sent)["next_action"] == "listen"
+    assert "next_action" not in _turn_done_frame(sent)
 
 
-def test_drive_converse_turns_plain_reply_requests_listen():
+def test_drive_converse_turns_plain_reply_preserves_client_mode():
     sent = _run_driver(_FakeConverseSession(["what's the weather?"]), [], ["It's sunny and 72."], quiet_interval=1.0)
-    assert _turn_done_frame(sent)["next_action"] == "listen"
+    assert "next_action" not in _turn_done_frame(sent)
 
 
 def test_drive_converse_turns_caps_tts_output():
@@ -951,6 +953,7 @@ def test_drive_converse_turns_reports_turn_error():
     asyncio.run(_main())
     errors = [f for f in sent if isinstance(f, dict) and f.get("type") == "error"]
     assert errors and "409" in errors[0]["error"] and _types(sent)[-1] == "turn_done"
+    assert "next_action" not in _turn_done_frame(sent)
 
 
 # ── per-turn cancel that keeps the session (issue #5) ──
@@ -1023,7 +1026,7 @@ def test_driver_cancel_turn_emits_frames():
     sent = _run_driver(session, [], [], quiet_interval=1.0)
     assert _types(sent) == ["interrupted", "turn_done"]
     assert sent[0]["turn_id"] == "turn-9" and sent[1]["turn_id"] == "turn-9"
-    assert _turn_done_frame(sent)["next_action"] == "listen"
+    assert "next_action" not in _turn_done_frame(sent)
     assert session.turns_begun == 0 and session.turns_ended == 0
 
 
@@ -1056,7 +1059,7 @@ def test_incomplete_signoff_keeps_listening_and_does_not_drop_queued_input(inter
     asyncio.run(main())
     completions = [frame for frame in sent if isinstance(frame, dict) and frame.get("type") == "turn_done"]
     assert len(completions) == 2  # the partial sign-off must not flush the next request
-    assert all(frame["next_action"] == "listen" for frame in completions)
+    assert all("next_action" not in frame for frame in completions)
 
 
 def test_standby_preserves_playback_tail_until_matching_drain():
@@ -1209,7 +1212,7 @@ def test_cancel_at_transcript_boundary_never_starts_the_agent():
     asyncio.run(scenario())
     assert calls == []
     assert _types(sent) == ['transcript', 'interrupted', 'turn_done']
-    assert _turn_done_frame(sent)['next_action'] == 'listen'
+    assert "next_action" not in _turn_done_frame(sent)
 
 
 
@@ -1320,7 +1323,7 @@ def test_timing_line_does_not_count_partial_output_as_a_final_reply(caplog, fail
     assert f"outcome={'barged' if failure == 'cancel' else 'error'}" in line
     assert history[-1] == {"role": "assistant", "content": "Partial reply."}
     assert _types(sent)[-2:] == ["interrupted" if failure == "cancel" else "error", "turn_done"]
-    assert _turn_done_frame(sent)["next_action"] == "listen"
+    assert "next_action" not in _turn_done_frame(sent)
 
 
 def test_timing_line_counts_a_final_only_reply_without_speaking_it(caplog):
