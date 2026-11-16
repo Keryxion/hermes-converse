@@ -1,27 +1,28 @@
-# Independent client checks against live Penny. Does not deploy this commit.
+# Live Penny contract check. Suite: Keryxion/arya-test@0ddfc84546eb11ddf075c4b2f0bc2775f7e9fed3
+# The versioned source secret contains no credentials. This check does not deploy.
 when:
   - event: [push, manual]
 labels:
   backend: docker
   platform: linux/amd64
-clone:
-  - name: hermes-converse
-    image: codefloe.com/crow-plugins/clone:1.0.3
-  - name: arya-test
-    image: codefloe.com/crow-plugins/clone:1.0.3
-    settings:
-      remote: https://github.com/Keryxion/arya-test.git
-      path: ${CI_WORKSPACE}/arya-test
-      sha: 759e6e36c845d3de9a674eeb91beecf3c0a4a5c3
-      partial: false
-      depth: 1
 steps:
   - name: live-penny-free
     image: python:3.13-slim
     environment:
       ARYA_API_KEY: { from_secret: arya_penny_api_key }
+      ARYA_TEST_BUNDLE: { from_secret: arya_test_source_0ddfc84546eb }
       ARYA_URL: wss://penny.z13.org/v1/audio/converse
       ARYA_SPEC_FILE: ${CI_WORKSPACE}/specs/client.md
     commands:
       - apt-get update -qq && apt-get install -y -qq --no-install-recommends espeak-ng ffmpeg libopus0
+      - |
+        python - <<'PY'
+        import base64, hashlib, io, os, pathlib, tarfile
+        bundle = base64.b64decode(os.environ.pop('ARYA_TEST_BUNDLE'), validate=True)
+        assert hashlib.sha256(bundle).hexdigest() == '89ea81db69ae4c29be7bff5bf44e3c926e6d345ec0342c965befc1b65424ab03', 'Wrong Arya test source archive'
+        pathlib.Path('arya-test').mkdir()
+        with tarfile.open(fileobj=io.BytesIO(bundle), mode='r:gz') as archive:
+            archive.extractall('arya-test', filter='data')
+        PY
+      - unset ARYA_TEST_BUNDLE
       - cd arya-test && sh ci/run.sh
