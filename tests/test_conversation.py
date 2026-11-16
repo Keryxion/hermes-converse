@@ -141,6 +141,43 @@ async def test_cancel_thinking_stale_id_ignored_and_run_stopped(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_heard_stops_the_reply_without_stopping_the_run(monkeypatch):
+    """A wake word heard on the device is not a cancel: the reply stops, the run goes on."""
+    fake = FakeHermes(API_KEY, deltas=(), hang=True)
+    _patch_speech(monkeypatch, _FakeStreamer([b'\x01\x02']))
+    async with Harness(fake) as client:
+        ws, _ = await connect(client)
+        for frame in _speech_then_silence_pcm():
+            await ws.send_bytes(frame)
+        assert (await ws.receive_json(timeout=2))['state'] == 'thinking'
+        assert (await ws.receive_json(timeout=2))['type'] == 'thinking'
+        await ws.send_json({'type': 'heard', 'wake_word': 'Hey Arya'})
+        frames, _ = await _collect_turn(ws, timeout=3)
+        assert [f['type'] for f in frames] == ['interrupted', 'turn_done']
+        assert frames[-1]['next_action'] == 'listen' and not fake.stopped
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_heard_after_turn_done_ends_the_playback_tail(monkeypatch):
+    """The device stopped playing when it heard the wake word, so the next reply does not wait."""
+    _patch_speech(monkeypatch, _FakeStreamer([b'\x01\x02']))
+    async with Harness(FakeHermes(API_KEY)) as client:
+        ws, _ = await connect(client)
+        cid = device_conversation_id(client)
+        await publish(client, cid)
+        first, _ = await _collect_turn(ws, drain=False)
+        await publish(client, cid, event_id='second')
+        await ws.send_json({'type': 'heard', 'wake_word': 'cancel'})
+        seen = [await ws.receive_json(timeout=2), await ws.receive_json(timeout=2)]
+        assert [f['type'] for f in seen] == ['interrupted', 'turn_done']
+        assert {f['turn_id'] for f in seen} == {first[-1]['turn_id']} and seen[-1]['next_action'] == 'listen'
+        frames, _ = await _collect_turn(ws)
+        assert frames[0]['event_id'] == 'second'
+        await ws.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('phase', ['thinking', 'speaking'])
 async def test_voice_continuation_reaches_the_running_turn(monkeypatch, phase):
     """Barge-in is a message sent mid-run, as on Telegram: the run is not stopped, the words reach

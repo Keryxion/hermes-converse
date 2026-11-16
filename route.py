@@ -25,6 +25,8 @@ Protocol:
            ``bad_start`` — then binary PCM16 mono frames at ``input_rate`` (30 ms blocks preferred),
            ``{"stop": true}`` to end, ``{"commit": true}`` to force an endpoint,
            ``{"type":"cancel","turn_id":?}`` to cancel the current turn and keep the session,
+           ``{"type":"heard","wake_word":"..."}`` a wake word heard during an activation (the
+           reply stops and the server listens; the turn is not cancelled),
            ``{"type":"state","turn_id":?,"state":...}`` the state the device now shows (leaving
            ``speaking`` means the reply's audio has played or been discarded), ``{"type":"countdown",
            "countdown_id":...,"ringing":true}`` or ``..."ended":true}`` a countdown ringing or ended,
@@ -578,6 +580,10 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                         session.cancel(frame.get("turn_id"))
                         if adopted is not None:  # a turn carried over from the previous connection
                             adopted.session.cancel(frame.get("turn_id"))
+                    if frame.get("type") == "heard":
+                        session.heard()
+                        if adopted is not None:  # a turn carried over from the previous connection
+                            adopted.session.heard()
                     if frame.get("type") == "say":
                         text = _say_text(frame.get("text"))
                         if text:

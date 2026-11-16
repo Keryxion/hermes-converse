@@ -126,7 +126,7 @@ interruption:
 
 | Attribute | Value |
 |---|---|
-| `interrupt.cause` | `speech` when the server heard the person, `cancel` when the client sent `cancel`. |
+| `interrupt.cause` | `speech` when the server heard the person, `cancel` when the client sent `cancel`, `heard` when the client sent `heard`. |
 | `interrupt.phase` | Where the reply was: `thinking`, `speaking`, or `drain` (sent, still playing on the device). |
 | `interrupt.result` | What the speech turned out to be: `request` (a new turn) or `empty` (nothing was transcribed). |
 | `interrupt.next_turn_id` | The turn the speech became, for `request`. |

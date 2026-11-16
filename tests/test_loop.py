@@ -918,6 +918,29 @@ def test_session_cancel_stops_matching_turn_without_creating_another_turn():
     assert session.transcripts.empty()
 
 
+def test_session_heard_stops_the_reply_but_not_the_run_and_leaves_no_tail():
+    session = ConverseSession(np)
+    tts_stop, stop_run = threading.Event(), []
+    session.begin_turn("turn-abc", tts_stop=tts_stop, on_interrupt=stop_run.append)
+    session.set_playing(True, tts_stop=tts_stop)
+    session.heard()
+    assert tts_stop.is_set() and stop_run == [False] and not session.playing()
+    assert not session._cancelled.is_set()
+    # The device stopped playing by itself, so nothing is left to protect against.
+    assert session.finish_turn("turn-abc", 45.0) is False and not session._tail_active
+
+
+def test_session_heard_changes_nothing_when_idle_or_waiting_on_an_approval():
+    session = ConverseSession(np)
+    session.heard()
+    assert session.transcripts.empty() and not session._cancelled.is_set()
+    tts_stop = threading.Event()
+    session.begin_turn("turn-abc", tts_stop=tts_stop)
+    session.answer_hook = lambda text: True
+    session.heard()
+    assert not tts_stop.is_set()
+
+
 def test_session_cancel_idle_does_not_queue_marker():
     # Nothing playing and nothing capturing: cancel aborts nothing and emits nothing.
     session = ConverseSession(np)
