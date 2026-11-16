@@ -99,7 +99,7 @@ An untargeted cancel also abandons a capture in progress. Stop the agent and TTS
 discard that cancelled capture, emit the existing interruption/terminal frames,
 and leave the socket and conversation usable. `stop` closes the attachment.
 
-`heard` says the device detected a wake word during a turn. It is neither
+`heard` says the device detected the `cancel` wake word during a turn. It is neither
 cancellation nor barge-in: log it with the session, the turn, and the wake
 word, and change nothing else.
 
@@ -591,10 +591,10 @@ rings again.
 
 ### Stopping by voice
 
-A ringing countdown is ended on the device, by its `cancel` wake word (client
-spec, section 10). The server does not listen for a stop phrase and sends
-nothing to end a countdown by voice; it learns the countdown ended from the
-device's `countdown` with `ended`.
+The `cancel` wake word does not end a countdown (client spec, section 10).
+The server does not listen for a stop phrase. A person ends a ringing
+countdown with the device's button or tap, which the server learns from the
+device's `countdown` with `ended`, or by asking the assistant.
 
 The assistant's wake word followed by a request is an ordinary turn. The
 countdown keeps its place: the agent ends it with `cancel` or `snooze`, or leaves it
@@ -603,7 +603,7 @@ ringing.
 Acceptance scenarios: a countdown set in the Kitchen counts down and rings only in
 the Kitchen. Exercise a call from a chat that is not a device, a device that is
 not attached, a reconnect before the deadline, a device that is off at the
-deadline, local dismissal, the `cancel` wake word, other speech while ringing, a
+deadline, local dismissal, the `cancel` wake word while ringing (it does not end the countdown), other speech while ringing, a
 reply and a wake word while ringing, snooze while pending and while ringing,
 cancel while ringing, still-ringing turns at 1, 2, 4 and 8 minutes and none
 after `ended`, two countdowns ringing at once (one turn naming both, a
