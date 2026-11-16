@@ -335,7 +335,7 @@ class InputReady:
 class ConversationOutput:
     """A completed conversation response, not a synthetic user transcript."""
 
-    def __init__(self, text: str, event_id: str, *, next_action: str = "standby",
+    def __init__(self, text: str, event_id: str, *, next_action: Optional[str] = None,
                  unheard: bool = False) -> None:
         self.text, self.event_id, self.next_action = text, event_id, next_action
         self.unheard = unheard  # a reply barge-in cut before any of it played: spoken before the next request
@@ -424,6 +424,7 @@ class ConverseSession:
         # Trace bookkeeping: the wake claim the current exchange belongs to, the live turn trace,
         # the barge-in counters of the reply being played, and how its playback tail ended.
         self._claim_id: Optional[str] = None
+        self._exchange_listening = False
         self._claim_granted = False
         self._claim_used = False
         self._turn_trace: Optional[tuple[str, Any]] = None
@@ -572,6 +573,16 @@ class ConverseSession:
     @_session_state
     def end_exchange(self) -> None:
         self._claim_id, self._claim_granted, self._claim_used = None, False, False
+        self._exchange_listening = False
+
+    @_session_state
+    def output_next_action(self, requested: Optional[str]) -> str:
+        """An unsolicited reply must not end an exchange already listening for follow-ups."""
+        return requested or ("listen" if self._exchange_listening else "standby")
+
+    @_session_state
+    def record_next_action(self, action: str) -> None:
+        self._exchange_listening = action == "listen"
 
     @_session_state
     def take_barge_summary(self, turn_id: str) -> dict[str, Any]:
@@ -1610,7 +1621,9 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
         else "listen"
     )
     if completed and turn.output:
-        next_action = turn.output.next_action
+        choose_output = getattr(session, "output_next_action", None)
+        next_action = (choose_output(turn.output.next_action) if choose_output is not None
+                       else turn.output.next_action or "standby")
     if d.message_ids is not None and turn.agent_started and not (barged or turn_err or turn.timed_out):
         turn.assistant_id = await d.message_ids.assistant_id()
     if d.transcripts and turn.spoken_parts and turn.assistant_id is not None:
@@ -1621,6 +1634,11 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
     # Arm before turn_done so an immediate state report cannot be lost.
     if session.finish_turn(turn.turn_id, d.tail_fallback if turn.pcm_chunks else 0):
         next_action = "listen"
+    record_action = getattr(session, "record_next_action", None)
+    if record_action is not None:
+        record_action(next_action)
+    action_source = ("server_output" if turn.output is not None else
+                     "standby_tool" if next_action == "standby" else "user_turn")
     # One line per turn that says which turn it was and why it was (or was not) heard. Lengths
     # only: never the transcript or reply text. reply_chars counts streamed deltas, final_chars the
     # run's final reply, spoken_chars what reached TTS.
@@ -1629,11 +1647,11 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
     logger.info(
         "converse timing: first_delta=%sms first_sentence=%sms first_pcm=%sms total=%sms "
         "deltas=%d reply_chars=%d session=%s turn=%s outcome=%s final_chars=%d spoken_chars=%d "
-        "pcm_chunks=%d next_action=%s",
+        "pcm_chunks=%d next_action=%s action_source=%s",
         turn.ms("first_delta"), turn.ms("first_sentence"), turn.ms("first_pcm"),
         turn.ms("pcm_done"), len(turn.reply_parts), sum(len(p) for p in turn.reply_parts),
         getattr(session, "session_id", None), turn.turn_id, outcome, len(turn.result.get("reply") or ""),
-        sum(len(p) for p in turn.spoken_parts), turn.pcm_chunks, next_action)
+        sum(len(p) for p in turn.spoken_parts), turn.pcm_chunks, next_action, action_source)
     turn_done: dict[str, Any] = {"type": "turn_done", "turn_id": turn.turn_id,
                                 "next_action": next_action}
     await d.send_json(turn_done)
