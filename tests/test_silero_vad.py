@@ -255,7 +255,7 @@ def test_generation_continuation_is_captured_with_one_evaluation_per_block(monke
     session = ConverseSession(np, vad_model='energy',
                               transcribe=lambda path: 'continued speech')
     session._detector = detector
-    session.begin_turn('test-turn', on_interrupt=interrupted.set)
+    session.begin_turn('test-turn', on_interrupt=lambda _stop_run: interrupted.set())
     monkeypatch.setattr(speech, 'spawn_context_thread',
                         lambda target, **kw: threading.Thread(target=target, daemon=True))
     session.start()

@@ -324,6 +324,10 @@ the user may add “and make it warm white” while the reply is thinking. Expec
 then a new reply turn for the additional instruction (and a `transcript` if enabled). The
 new turn uses the same conversation and includes the original request as context.
 
+If the old reply had finished but none of it had played, it is not lost: it
+arrives first as a server-started reply turn (it carries `event_id`, and
+`next_action` is `"listen"`), then the reply to the additional instruction.
+
 The assistant's wake word heard during an activation, such as "Hey Arya,
 actually make it the kitchen" while the reply plays, is barge-in like any other
 speech. Do not send `cancel` and do not send another `wake`: the device is

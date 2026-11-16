@@ -55,6 +55,7 @@ class FakeHermes:
         # Every voice turn the gateway admitted, in order.
         self.turns: list[dict[str, Any]] = []
         self.commands: list[str] = []
+        self._redirects: list[str] = []  # words that arrived while a turn ran, not yet folded into it
 
     # ── API server ──
     def routes(self) -> list:
@@ -82,6 +83,17 @@ class FakeHermes:
         self.adapter = adapter
         adapter.set_session_store(self.store)
         adapter.set_message_handler(self.handle)
+        adapter.set_busy_session_handler(self.busy)
+
+    async def busy(self, event: Any, session_key: str) -> bool:
+        """``busy_input_mode: interrupt`` on a runtime that supports it: text that arrives while a
+        turn runs redirects that turn, which goes on to answer it."""
+        running = next((t for t in reversed(self.turns) if t["status"] == "running"), None)
+        if running is None or event.get_command():
+            return False
+        running["redirects"].append(event.text)
+        self._redirects.append(event.text)
+        return True
 
     async def handle(self, event: Any) -> Optional[str]:
         adapter = self.adapter
@@ -96,7 +108,7 @@ class FakeHermes:
         turn = {"text": event.text, "instructions": event.channel_prompt, "chat_id": event.source.chat_id,
                 "chat_name": event.source.chat_name, "user_id": event.source.user_id,
                 "user_name": event.source.user_name, "model": override.get("model"),
-                "provider": override.get("provider"), "status": "running", "output": ""}
+                "provider": override.get("provider"), "status": "running", "output": "", "redirects": []}
         self.turns.append(turn)
         self.begin(turn)
         if self.fail is not None:
@@ -111,14 +123,19 @@ class FakeHermes:
             adapter.on_tool_call(session_id=sid)
         for count in self.reasoning_tokens:
             adapter.on_api_request(session_id=sid, usage={"reasoning_tokens": count})
-        adapter.on_stream_start(session_id=sid)
-        for delta in self.deltas:
-            if interrupted():
+        while True:
+            adapter.on_stream_start(session_id=sid)
+            for delta in self.deltas:
+                if interrupted() or self._redirects:
+                    break
+                adapter.on_stream_delta(delta=delta, kind="text", session_id=sid)
+                await asyncio.sleep(0)
+            while self.hang and not interrupted() and not self._redirects:
+                await asyncio.sleep(0.01)
+            if not self._redirects or interrupted():
                 break
-            adapter.on_stream_delta(delta=delta, kind="text", session_id=sid)
-            await asyncio.sleep(0)
-        while self.hang and not interrupted():
-            await asyncio.sleep(0.01)
+            self._redirects.clear()
+            self.redirected(turn)  # the model request starts over with the words appended
         if interrupted():
             turn["status"] = "interrupted"
             return None
@@ -127,6 +144,9 @@ class FakeHermes:
 
     def begin(self, turn: dict[str, Any]) -> None:
         """Called as each voice turn starts; a test overrides it to change the script mid-test."""
+
+    def redirected(self, turn: dict[str, Any]) -> None:
+        """Called when words that arrived mid-turn redirect it; a test overrides it to change the script."""
 
     @property
     def stopped(self) -> list[dict[str, Any]]:

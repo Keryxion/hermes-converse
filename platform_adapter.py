@@ -11,7 +11,9 @@ How a turn maps onto the adapter contract:
 * Speech: ``on_stream_delta`` plugin hooks carry the reply as it is generated. The final ``send``
   (marked ``notify``) completes anything the deltas did not carry, so a non-streaming provider or
   a transformed final is still spoken once.
-* Barge-in: ``interrupt_session_activity`` — the runner's interrupt monitor stops the agent.
+* Barge-in: the person's next words go to ``handle_message`` while the run is still going, as a
+  Telegram message typed mid-run does; Hermes's ``busy_input_mode`` decides what they do to it.
+* ``cancel`` and ``stop``: ``interrupt_session_activity`` — the runner's interrupt monitor stops the agent.
 * Output nobody asked for by voice (a Cadence wake, a finished background process, a
   ``send_message``) arrives through ``send`` with no voice turn in flight and is spoken through the
   hub, exactly like any other proactive output.
@@ -80,6 +82,10 @@ class _VoiceTurn:
     detached: bool = False  # held on a pending approval after its device left; its speech is published
     held_text: str = ""
     admitted_id: str = ""  # the gateway's id for this input when its busy queue replayed it
+    barged: bool = False  # the person spoke over it; the run goes on until their words reach Hermes
+    heard: bool = False  # some of its audio had played when they did
+    skip_stream: bool = False  # followed mid-response: that response answered the earlier words only
+    after: Optional["_VoiceTurn"] = None  # the request admitted behind this run, which follows it
 
 
 @dataclass
@@ -226,16 +232,19 @@ class ConverseAdapter(BasePlatformAdapter):
     def _own(self, event: MessageEvent) -> Optional[_VoiceTurn]:
         source = getattr(event, "source", None)
         turn = self._turns.get(getattr(source, "chat_id", "") or "")
-        if turn is not None:
-            if turn.event is event or (event.message_id and event.message_id in (
-                    turn.event.message_id, turn.admitted_id)):
-                return turn
+        for candidate in (turn, turn.after if turn is not None else None):
+            if candidate is None:
+                continue
+            if candidate.event is event or (event.message_id and event.message_id in (
+                    candidate.event.message_id, candidate.admitted_id)):
+                return candidate
+        for candidate in (turn, turn.after if turn is not None else None):
             # Some Hermes queue paths reconstruct the event with an admission id.
             # Keep ownership of a matching replay until it completes or is abandoned.
-            if (not turn.started and not turn.admitted_id and event.message_id
-                    and not event.get_command() and event.text == turn.event.text):
-                turn.admitted_id = str(event.message_id)
-                return turn
+            if (candidate is not None and not candidate.started and not candidate.admitted_id
+                    and event.message_id and not event.get_command() and event.text == candidate.event.text):
+                candidate.admitted_id = str(event.message_id)
+                return candidate
         return self._abandoned.get(event.message_id or "")
 
     def abandon(self, turn: _VoiceTurn) -> None:
@@ -286,11 +295,21 @@ class ConverseAdapter(BasePlatformAdapter):
             self._complete_voice_turn(turn, outcome)
 
     def _complete_voice_turn(self, turn: _VoiceTurn, outcome: ProcessingOutcome) -> None:
+        chat_id = turn.event.source.chat_id
         turn.outcome = outcome
         turn.done.set()
+        if turn.after is not None and self._turns.get(chat_id) is turn:
+            self._turns[chat_id] = turn.after  # the request behind it runs next
         if turn.detached and turn.held_text.strip():
-            self._hub.publish(turn.event.source.chat_id, turn.held_text.strip(), f"held:{uuid.uuid4().hex}",
+            self._hub.publish(chat_id, turn.held_text.strip(), f"held:{uuid.uuid4().hex}",
                               expires_at=time.time() + OUTPUT_TTL)
+        elif turn.barged and not turn.heard and outcome is ProcessingOutcome.SUCCESS:
+            # Nobody's words followed it and none of it was heard: it is delivered, as a Telegram
+            # reply is, before the answer to what the person said.
+            reply = (turn.final or "").strip()
+            if reply and reply.upper() != SILENT:
+                self._hub.publish(chat_id, reply, f"unheard:{turn.event.message_id}",
+                                  expires_at=time.time() + OUTPUT_TTL, next_action="listen", unheard=True)
         for key in (str(turn.event.message_id or ""), turn.admitted_id):
             self._abandoned.pop(key, None)
 
@@ -331,6 +350,9 @@ class ConverseAdapter(BasePlatformAdapter):
         if turn.exclusive:
             return
         if not text or text.upper() == SILENT:
+            return
+        if turn.skip_stream:  # none of this response was spoken
+            turn.on_delta(final)
             return
         # Another model call can start between the reply's last delta and this send (Hermes's
         # background review does), so the reply may be the response before the current one.
@@ -395,6 +417,7 @@ class ConverseAdapter(BasePlatformAdapter):
             if turn.streamed.strip():
                 turn.earlier = turn.streamed
             turn.streamed = ""
+            turn.skip_stream = False
 
     def on_stream_delta(self, *, delta=None, kind="text", session_id=None, **_: Any) -> None:
         turn = self._turn_for_session(session_id)
@@ -406,7 +429,8 @@ class ConverseAdapter(BasePlatformAdapter):
         if turn.stopped or turn.final is not None or turn.exclusive:
             return
         turn.streamed += delta
-        turn.on_delta(delta)
+        if not turn.skip_stream:
+            turn.on_delta(delta)
 
     def on_tool_call(self, *, session_id=None, **_: Any) -> None:
         turn = self._turn_for_session(session_id)
@@ -451,6 +475,7 @@ class GatewayTurns:
         self._chat_id = source.chat_id
         self._settle_timeout = settle_timeout
         self._turn: Optional[_VoiceTurn] = None
+        self._following: Optional[_VoiceTurn] = None  # the earlier run the turn in flight follows
         self._model: Optional[tuple[Optional[str], Optional[str]]] = None
 
     @property
@@ -463,22 +488,31 @@ class GatewayTurns:
         """The platform message id of the turn in flight, which Hermes stores with its user message."""
         return str(self._turn.event.message_id) if self._turn is not None else None
 
+    def _run(self) -> Optional[_VoiceTurn]:
+        """The run the turn in flight is hearing: an earlier one it follows, else its own."""
+        following = self._following
+        if following is not None and not following.done.is_set():
+            return following
+        return self._turn
+
     @property
     def tool_calls(self) -> int:
-        return self._turn.tool_calls if self._turn is not None else 0
+        run = self._run()
+        return run.tool_calls if run is not None else 0
 
     @property
     def standby(self) -> bool:
-        return self._turn is not None and self._turn.standby
+        return any(t is not None and t.standby for t in (self._following, self._turn))
 
     @property
     def reasoning_tokens(self) -> Optional[int]:
-        return self._turn.reasoning_tokens if self._turn is not None else None
+        run = self._run()
+        return run.reasoning_tokens if run is not None else None
 
     @property
     def last_progress(self) -> float:
         """Monotonic time the turn in flight last made progress; 0 before it has."""
-        return self._turn.progress_at if self._turn is not None else 0.0
+        return max((t.progress_at for t in (self._following, self._turn) if t is not None), default=0.0)
 
     @property
     def settled(self) -> bool:
@@ -488,32 +522,51 @@ class GatewayTurns:
                        instructions: Optional[str] = None, model: Optional[str] = None,
                        provider: Optional[str] = None) -> TurnResult:
         adapter = self._adapter
-        if self._turn is not None:
-            # A stopped turn the gateway has not finished. The gateway serializes the session, so
-            # this request is admitted behind it instead of refusing the device.
-            adapter.abandon(self._turn)
-        if self._model != (model, provider):  # the first turn also clears a stale earlier choice
-            await adapter.set_model(self._source, self._session_key, model, provider)
-            self._model = (model, provider)
         turn_id = uuid.uuid4().hex
         event = MessageEvent(
             text=text, message_type=MessageType.TEXT, source=self._source, message_id=turn_id,
             channel_prompt=instructions,
             # A transcript is speech, never a gateway command.
             allow_gateway_control=False)
-        turn = self._turn = _VoiceTurn(event, on_delta, self._session_key)
-        adapter._turns[self._chat_id] = turn
+        turn = _VoiceTurn(event, on_delta, self._session_key)
+        if self._model != (model, provider):  # the first turn also clears a stale earlier choice
+            await adapter.set_model(self._source, self._session_key, model, provider)
+            self._model = (model, provider)
+        earlier, self._turn = self._run(), turn
+        self._following = None
+        if earlier is not None and not earlier.done.is_set():
+            if earlier.barged:
+                # The person spoke over a run that is still going. Their words go to Hermes while it
+                # runs, as a Telegram message typed mid-run does, and this turn speaks what the
+                # conversation says next: the run's next response, then this request's own run
+                # if Hermes admits it as one.
+                earlier.barged = False
+                earlier.on_delta = on_delta
+                earlier.skip_stream = True
+                earlier.after = turn
+                self._following = earlier
+            else:
+                # A stopped turn the gateway has not finished. The gateway serializes the session,
+                # so this request is admitted behind it instead of refusing the device.
+                adapter.abandon(earlier)
+        if self._following is None:
+            adapter._turns[self._chat_id] = turn
         try:
             await adapter.handle_message(event)
-            if not event._gateway_accepted and self._session_key not in adapter._active_sessions:
+            if (self._following is None and not event._gateway_accepted
+                    and self._session_key not in adapter._active_sessions):
                 turn.done.set()
                 return TurnResult("", "the gateway did not accept the request", "failed", turn_id)
-            waiters = [asyncio.ensure_future(turn.done.wait()), asyncio.ensure_future(turn.released.wait())]
-            try:
-                await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
-            finally:
-                for waiter in waiters:
-                    waiter.cancel()
+            following = self._following
+            if following is not None:
+                await self._wait(following.done, turn.released)
+                if (following.done.is_set() and not turn.released.is_set()
+                        and not (event._gateway_accepted or turn.started or turn.admitted_id)):
+                    # Hermes folded the words into the run (busy_input_mode redirect or steer):
+                    # its reply answers them.
+                    turn.final, turn.outcome = following.final, following.outcome
+                    turn.done.set()
+            await self._wait(turn.done, turn.released)
         except asyncio.CancelledError:
             # The host abandoned the turn (deadline / socket closed): never leave it running.
             await asyncio.shield(self.stop())
@@ -521,6 +574,8 @@ class GatewayTurns:
         finally:
             if turn.done.is_set() and adapter._turns.get(self._chat_id) is turn:
                 adapter._turns.pop(self._chat_id, None)
+        if turn.barged:  # its run goes on; what it says next is spoken by whoever follows it
+            return TurnResult("", None, "interrupted", turn_id)
         if turn.stopped or not turn.done.is_set():
             return TurnResult(turn.final or "", None, "interrupted", turn_id)
         if turn.outcome is ProcessingOutcome.SUCCESS or turn.final:
@@ -528,6 +583,27 @@ class GatewayTurns:
         if turn.outcome is ProcessingOutcome.CANCELLED:
             return TurnResult("", "agent run was cancelled", "cancelled", turn_id)
         return TurnResult("", "agent run failed", "failed", turn_id)
+
+    @staticmethod
+    async def _wait(*events: asyncio.Event) -> None:
+        waiters = [asyncio.ensure_future(e.wait()) for e in events]
+        try:
+            await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for waiter in waiters:
+                waiter.cancel()
+
+    def release(self, heard: bool) -> None:
+        """Barge-in: the person took the floor. Stop listening to the turn in flight without
+        stopping its run, so the words they are saying reach Hermes while it runs. *heard*: some
+        of the reply's audio had played. A run nobody's words follow is delivered when it ends,
+        unless some of it was heard."""
+        for turn in (self._following, self._turn):
+            if turn is None or turn.done.is_set() or turn.stopped or turn.barged:
+                continue
+            turn.barged, turn.heard = True, heard
+            turn.on_delta = lambda _text: None
+            turn.released.set()
 
     def commands(self) -> list[dict[str, Any]]:
         """The gateway commands this device may name in a ``command`` frame."""
@@ -544,7 +620,7 @@ class GatewayTurns:
         return await self._adapter.run_command(self._source, text)
 
     async def stop(self) -> None:
-        """Interrupt the turn in flight (barge-in, socket close) and wait — bounded — for it to settle."""
+        """Interrupt the turn in flight (``cancel``, socket close) and wait — bounded — for it to settle."""
         turn = self._turn
         if turn is None or turn.done.is_set():
             return
@@ -554,9 +630,16 @@ class GatewayTurns:
             turn.on_delta = lambda text, _t=turn: setattr(_t, "held_text", _t.held_text + text)
             return
         turn.stopped = True
-        if turn.started:
+        following = self._following
+        if following is not None and not following.done.is_set():
+            following.stopped = True
+        if turn.started or following is not None:
             await self._adapter.interrupt_session_activity(self._session_key, self._chat_id)
         try:
+            if following is not None and not turn.started:
+                await asyncio.wait_for(following.done.wait(), self._settle_timeout)
+                if not (turn.event._gateway_accepted or turn.started or turn.admitted_id):
+                    turn.done.set()  # its words went into the run that just ended
             await asyncio.wait_for(turn.done.wait(), self._settle_timeout)
         except TimeoutError:
             logger.warning("converse: turn %s did not settle after stop; detaching", turn.event.message_id)

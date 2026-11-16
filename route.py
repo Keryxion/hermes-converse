@@ -668,7 +668,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
         return result.reply, result.error
 
     def _interrupt_turn() -> None:
-        # Barge-in: stop the turn in flight so the barge utterance isn't queued behind it.
+        # `cancel`: stop the turn in flight.
         loop.create_task(client.stop())
 
     async def _drive_turns() -> None:
@@ -677,7 +677,8 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
             send_json=relay.send_json, send_bytes=relay.send_bytes, run_turn=_run_turn, history=history,
             message_ids=MessageIds(client) if hasattr(client, "history") else None,
             present=lambda: relay.attached,
-            quiet_interval=quiet_interval, interrupt_turn=_interrupt_turn, transcripts=transcripts,
+            quiet_interval=quiet_interval, interrupt_turn=_interrupt_turn,
+            release_turn=getattr(client, "release", None), transcripts=transcripts,
             tool_calls=lambda: client.tool_calls,
             reasoning_tokens=lambda: client.reasoning_tokens,
             last_progress=lambda: client.last_progress,

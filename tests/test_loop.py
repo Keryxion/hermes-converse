@@ -295,15 +295,13 @@ def test_transcribe_failure_is_nothing_heard():
 
 # ── ConverseSession barge-in / playing flag ──
 
-def test_converse_session_barge_in_sets_interrupt_and_stops_tts(monkeypatch):
-    marked = []
-    monkeypatch.setattr(speech, "mark_speech_interrupted", lambda: marked.append(True))
+def test_converse_session_barge_in_sets_interrupt_and_stops_tts():
     session = ConverseSession(np)
     tts_stop = threading.Event()
     session.set_playing(True, tts_stop=tts_stop)
     assert session.playing() is True
     session._trigger_barge_in()
-    assert tts_stop.is_set() and marked == [True]
+    assert tts_stop.is_set()
     assert session.take_interrupted() is True
     assert session.take_interrupted() is False
     assert session.playing() is False
@@ -626,6 +624,27 @@ def test_driver_barge_in_interrupts_the_in_flight_turn():
                        interrupt_turn=lambda: calls.append(True))
     assert calls == [True]
     assert _spoken_bytes(sent) == b""  # cancellation also discards already queued PCM
+    assert "interrupted" in _types(sent) and _types(sent)[-1] == "turn_done"
+
+
+@pytest.mark.parametrize("stop_run", [False, True])
+def test_driver_speech_barge_in_releases_the_run_and_cancel_stops_it(stop_run):
+    """Speech leaves the agent run going for the words to reach (``release_turn``); ``cancel``
+    stops it (``interrupt_turn``)."""
+    class _BargingSession(_FakeConverseSession):
+        def begin_turn(self, turn_id=None, *, tts_stop=None, on_interrupt=None):
+            super().begin_turn(turn_id)
+            self.tts_stop, self.on_interrupt = tts_stop, on_interrupt
+
+        def set_playing(self, value, *, tts_stop=None):
+            if value and self.on_interrupt is not None:
+                self.on_interrupt(stop_run)  # heard the moment the reply began playing
+                self.tts_stop.set()
+
+    stopped, released = [], []
+    sent = _run_driver(_BargingSession(["turn it on"]), [], ["Sure, turning it — "], quiet_interval=1.0,
+                       interrupt_turn=lambda: stopped.append(True), release_turn=released.append)
+    assert (stopped, released) == (([], [False]) if not stop_run else ([True], []))
     assert "interrupted" in _types(sent) and _types(sent)[-1] == "turn_done"
 
 
@@ -1001,11 +1020,10 @@ def test_standby_preserves_playback_tail_until_matching_drain():
 @pytest.mark.parametrize('phase', ['thinking', 'speaking', 'tail'])
 def test_accepted_barge_in_is_captured_in_every_phase(monkeypatch, phase):
     calls = []
-    monkeypatch.setattr(speech, 'mark_speech_interrupted', lambda: None)
     session = ConverseSession(np, transcribe=lambda path: calls.append(path) or 'continued request')
     stop = threading.Event()
     interrupted = threading.Event()
-    session.begin_turn('active', tts_stop=stop, on_interrupt=interrupted.set)
+    session.begin_turn('active', tts_stop=stop, on_interrupt=lambda _stop_run: interrupted.set())
     if phase == 'speaking':
         session.set_playing(True, tts_stop=stop)
     elif phase == 'tail':
@@ -1055,7 +1073,7 @@ def test_stale_cancel_does_not_touch_newer_thinking_turn():
     session = ConverseSession(np)
     stop = threading.Event()
     interrupted = []
-    session.begin_turn('newer', tts_stop=stop, on_interrupt=lambda: interrupted.append(True))
+    session.begin_turn('newer', tts_stop=stop, on_interrupt=lambda _stop_run: interrupted.append(True))
     assert not session.cancel('older')
     assert not stop.is_set() and interrupted == []
     assert session.cancel('newer')
@@ -1076,11 +1094,10 @@ def test_thinking_completion_keeps_candidate_input_before_onset():
 
 
 def test_continuation_and_later_fresh_input_are_both_preserved(monkeypatch):
-    monkeypatch.setattr(speech, 'mark_speech_interrupted', lambda: None)
     called = []
     tripped = threading.Event()
     session = ConverseSession(np, transcribe=lambda path: called.append(path) or 'fresh request')
-    session.begin_turn('busy', tts_stop=threading.Event(), on_interrupt=tripped.set)
+    session.begin_turn('busy', tts_stop=threading.Event(), on_interrupt=lambda _stop_run: tripped.set())
     session.start()
     try:
         for pcm in (calibration(), speech_like(5000, seed=4)):

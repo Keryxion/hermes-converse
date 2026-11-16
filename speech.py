@@ -139,13 +139,6 @@ def _drop_empty_brackets(text: str) -> str:
     return _EMPTY_BRACKETS_RE.sub("", text)
 
 
-def mark_speech_interrupted() -> None:
-    """Latch the "user interrupted your spoken reply" note the next turn's prompt picks up."""
-    from tools.tts_streaming import mark_speech_interrupted as _mark
-
-    _mark()
-
-
 # ── threads ──
 
 def spawn_context_thread(target: Callable[..., Any], *, name: str, args: tuple = ()) -> Any:

@@ -51,21 +51,31 @@ not hold the shared state lock.
 |---|---|
 | No reply | Preserve pre-roll, capture through endpoint, transcribe, admit a request. |
 | Request queued or being transcribed | Preserve further speech; supersede an unstarted reply without losing the original request. |
-| Thinking | Cancel obsolete generation immediately; capture and transcribe the continuation. |
+| Thinking | Stop the reply's output and leave its agent run going; capture and transcribe the continuation. |
 | Speaking | Apply playback echo rejection before accepting onset; stop old output and capture genuine user speech. |
 | Sent, awaiting speaker drain | Keep playback echo rejection; interrupt queued playback and capture genuine user speech. |
 
 ### Barge-in means continuation
 
 Barge-in gives the user the floor. It does not mean “cancel and discard what the
-user says.” Capture onset pre-roll and the rest of the utterance exactly once,
-including the interval while the old agent run settles. Endpoint and transcribe
-that capture normally. Admit it only after the old run has settled, in the same
-Hermes conversation with the original request, prior context, and available tool
-results. For example, “turn on the light” followed during thinking by “and make
+user says.” Capture onset pre-roll and the rest of the utterance exactly once.
+Endpoint and transcribe that capture normally. Barge-in stops the reply's audio, not
+its agent run: the continuation goes to the same Hermes conversation as a message
+sent while the run is going, exactly as a Telegram message typed mid-run does, and
+Hermes's `busy_input_mode` decides what it does to the run. With the default,
+`interrupt`, Hermes redirects the run: the words are appended as a user message
+and the run's next response answers the original request and the continuation
+together. For example, “turn on the light” followed during thinking by “and make
 it warm white” must retain both instructions. If an earlier request never reached
-Hermes, carry its text into the next admitted request in order. Do not replay
-completed tool actions; cancelling generation cannot undo their side effects.
+Hermes, carry its text into the next admitted request in order.
+
+The continuation's turn speaks what the conversation says next: the redirected
+run's next response, or, when Hermes admits the continuation as its own run
+(`queue`), the old run's reply and then that run's. A reply none of which had
+played when the speech began is still the conversation's reply, as a Telegram
+reply would be on screen: speak it before the answer to the continuation, or
+once the capture ends with nothing to answer. A reply some of which was heard is
+not repeated.
 
 Use Silero speech probability with the existing sustained active-turn energy
 check. While output or its playback tail is active, also apply the playback echo
@@ -78,8 +88,8 @@ socket. Onset acceptance is separate from the decision to capture its words.
 Once capture owns input, old completion, cancellation, the client's state report, and tail timeout
 must not clear its audio, pre-roll, or pending transcript. An old `standby` call must not
 put a client into standby over an accepted continuation. Fence discarded or
-superseded output: it must not send more PCM or create another agent run. Settle
-old work before admitting the next run; never execute both concurrently.
+superseded output: it must not send more PCM or create another agent run. The
+conversation never has two agent runs at once; Hermes orders them.
 
 ### Cancellation controls
 
@@ -338,7 +348,8 @@ and API-key authentication stay on the API server.
 | Reply text as it is generated | `on_stream_delta` plugin hook |
 | Final reply | `send` marked `notify`; speaks only what the stream did not carry |
 | Turn settled | `on_processing_complete` |
-| Barge-in, `cancel`, `stop` | `interrupt_session_activity`, then wait for the turn to settle |
+| Barge-in | the continuation goes to `handle_message` while the run is going; the run is not interrupted |
+| `cancel`, `stop` | `interrupt_session_activity`, then wait for the turn to settle |
 | Tool and reasoning progress | `pre_tool_call` and `post_api_request` plugin hooks |
 | `command` from the client | the gateway command named in `name`, with `args`, after stopping any turn in flight; its reply is not spoken and goes back to the client in a `command` frame |
 | Model selection | the gateway `/model` command, sent only when the choice differs from the session's; its confirmation is not spoken |
