@@ -480,8 +480,8 @@ a replayed frame never starts a turn on the client.
 
 ## Voice tools
 
-The agent has three tools for controlling the device it is talking through.
-They act only on the device whose conversation calls them.
+The agent has four tools for controlling the device it is talking through and
+its conversation. They act only on the device whose conversation calls them.
 
 A tool call always happens inside a turn, and the tools act on that turn however
 it started: by speech, or by the server for a reminder, a still-ringing alarm,
@@ -493,6 +493,7 @@ being connected with no turn for a tool to act on.
 | `speak_this` | `text` | The device says exactly `text`, and nothing else the turn produces is spoken. |
 | `play_tone` | `tone`: `confirm` or `error` | The device plays that tone (`tones.md`). |
 | `standby` | None | The device goes to standby when this turn's playback has drained: `turn_done` carries `next_action: "standby"`. It stops sending audio and waits for the wake word or Talk. |
+| `command` | `text`: a gateway command with its slash, such as `/new` or `/compress` | Runs the command in this conversation and returns its reply to the agent. |
 
 ### `speak_this`
 
@@ -543,6 +544,27 @@ on cancellation, interruption, error, and timeout paths too.
 | `ok` | Accepted. |
 | `not_a_device` | The call was made from a chat that is not a voice device. Nothing happens. |
 | `not_attached` | No device is connected to this conversation. Nothing is sent or queued. It has no other meaning. |
+
+### `command`
+
+A person at a device with no screen cannot type a command or tap a button for
+one, so they ask: "start over", "compress this, you're getting slow". The agent
+runs the command for its own conversation, as a `command` frame from the device
+would (Commands from a device): any command a chat user can run, no list of
+allowed ones, the slash-access policy applied by the gateway. The reply is the
+tool result, not speech; the agent says what matters in its own words.
+
+A command that starts a new conversation (`new`, or any alias of it) waits for
+the turn: once the turn's reply has played (the device's `state` leaves
+`speaking`, or the playback tail ends), close the socket with
+`4410 conversation_changed`, as after the frame. Every other command runs at
+once, inside the turn.
+
+| Tool result | Meaning |
+|---|---|
+| The command's reply | It ran, or, for a new conversation, runs when the turn's reply has played. |
+| `unknown_command` | Not one of Hermes's commands or aliases. Nothing runs. |
+| `not_a_device` | The call was made from a chat that is not a voice device. Nothing runs. |
 
 ## Countdowns
 
