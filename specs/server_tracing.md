@@ -128,7 +128,7 @@ interruption:
 |---|---|
 | `interrupt.cause` | `speech` when the server heard the person, `cancel` when the client sent `cancel`. |
 | `interrupt.phase` | Where the reply was: `thinking`, `speaking`, or `drain` (sent, still playing on the device). |
-| `interrupt.result` | What the speech turned out to be: `request` (a new turn) or `empty` (nothing was transcribed). |
+| `interrupt.result` | What the speech turned out to be: `request` (a new turn), `empty` (nothing was transcribed), or `echo` (the reply's own words came back). |
 | `interrupt.next_turn_id` | The turn the speech became, for `request`. |
 
 For `speech`, also record what the detector saw when it accepted the onset:
@@ -142,7 +142,8 @@ For `speech`, also record what the detector saw when it accepted the onset:
 | `input.gain_db` | The session's input gain ([audio.md](audio.md)); also on each capture. |
 
 An `empty` result is a false trigger: something was loud and speech-like enough
-to stop the reply, and it was not speech.
+to stop the reply, and it was not speech. An `echo` result is the device's
+speaker in its microphone: the reply stopped itself.
 
 ### Why it didn't stop
 
