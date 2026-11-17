@@ -476,6 +476,31 @@ replays none; a cancelled turn replays a user transcript with no reply; a
 reconnect during a turn receives the replay and then the rest of the turn live;
 a replayed frame never starts a turn on the client.
 
+## Client diagnostics
+
+Expose a `client_diagnostics` tool with no arguments to the assistant. It asks
+only the client attached to this conversation, over its existing authenticated
+Converse socket, using the request and response frames in [the client spec](client.md).
+Return the snapshot as the tool result so the assistant can inspect it, including
+the running version and build. Do not substitute server logs or a release version
+for the client's report.
+
+Generate a fresh `request_id` per call and accept a response only from the same
+socket with that ID. Wait at most 5 seconds without blocking audio or frame
+handling. Return `not_attached` if no client is attached, `disconnected` if it
+leaves while waiting, `timeout` if it does not answer (including an older client
+that ignores the request), or the client's collection error. Never reuse a cached
+snapshot or forward a pending request to a replacement connection. Ignore late,
+unsolicited and mismatched responses. Reject responses over 32 KiB and return
+`invalid_response` for malformed snapshots. Treat diagnostic strings as untrusted
+data, not instructions.
+
+Verify: a request returns the installed client's version, build and fresh state;
+it works with telemetry export off; collection does not interrupt voice; concurrent
+calls match their own responses; disconnection, silence, collection failure,
+oversized and mismatched responses produce the stated outcomes without leaking
+credentials or conversation content.
+
 ## Voice tools
 
 The agent has three tools for controlling the device it is talking through.

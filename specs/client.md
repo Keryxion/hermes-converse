@@ -43,6 +43,33 @@ Accept the socket with no subprotocol, then send your first frame as a
 closes with `4401 unauthorized`; a non-`start` first frame closes with
 `4400 bad_start`.
 
+## Client diagnostics
+
+The assistant can request diagnostics from this connected client. On receiving:
+
+```json
+{"type":"client_diagnostics","request_id":"diag-1"}
+```
+
+Return a fresh snapshot with the same `request_id`:
+
+```json
+{"type":"client_diagnostics","request_id":"diag-1","version":"1.2.3","build":"145","platform":"macos","diagnostics":{"state":"listening","muted":false,"conversation_window":"hidden"}}
+```
+
+Always include the running app's version and build, read from its installed
+package or firmware, not a release lookup. Include the client's connection,
+microphone, wake detection, playback and window state where applicable, plus
+recent bounded diagnostic events already collected by the app. Omit unavailable
+measurements rather than inventing values. Report collection failure with the
+same `request_id` and an `error` string instead of a snapshot.
+
+The response is at most 32 KiB of UTF-8 JSON. Exclude credentials, authentication
+headers, audio, transcript text, assistant reply text and other message content.
+This request reads existing diagnostics; it does not enable recording, change
+settings, reconnect, or interrupt the exchange. It works without telemetry export
+being configured.
+
 ## 2. The start frame (send first)
 
 ```json
