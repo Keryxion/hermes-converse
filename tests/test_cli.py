@@ -10,7 +10,7 @@ from hermes_converse import cli, turn_detector
 @pytest.fixture
 def doctor_config(monkeypatch):
     cfg = {'plugins': {'entries': {'hermes-converse': {'settings': {
-        'endpoint_model': 'smart-turn-v3', 'endpoint_threshold': 0.7, 'vad_model': 'energy',
+        'smart_turn_enabled': True, 'endpoint_threshold': 0.7, 'vad_model': 'energy',
     }}}}}
 
     def module(name, **attributes):
@@ -31,7 +31,7 @@ def doctor_config(monkeypatch):
 
 
 def test_disabled_smart_turn_does_not_load_or_check_model(doctor_config, monkeypatch, capsys):
-    doctor_config['endpoint_model'] = ''
+    doctor_config['smart_turn_enabled'] = False
 
     def unexpected(*args):
         pytest.fail('Smart Turn must stay lazy when disabled')
@@ -74,7 +74,7 @@ def test_doctor_checks_real_model_readiness(doctor_config, monkeypatch, capsys, 
 
 @pytest.mark.parametrize('loaded', [True, False])
 def test_doctor_reports_silero_and_energy_fallback(doctor_config, monkeypatch, capsys, loaded):
-    doctor_config.update(vad_model='silero', endpoint_model='')
+    doctor_config.update(vad_model='silero', smart_turn_enabled=False)
     monkeypatch.setattr('hermes_converse.silero_vad.load_silero_session',
                         lambda: (object(), None) if loaded else (None, 'weights unavailable'))
     assert cli.doctor() == (0 if loaded else 1)
@@ -83,7 +83,7 @@ def test_doctor_reports_silero_and_energy_fallback(doctor_config, monkeypatch, c
 
 
 def test_energy_doctor_does_not_load_silero(doctor_config, monkeypatch):
-    doctor_config.update(vad_model='energy', endpoint_model='')
+    doctor_config.update(vad_model='energy', smart_turn_enabled=False)
     monkeypatch.setattr('hermes_converse.silero_vad.load_silero_session',
                         lambda: pytest.fail('energy must not load the model'))
     assert cli.doctor() == 0

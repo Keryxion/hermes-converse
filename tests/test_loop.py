@@ -43,7 +43,7 @@ class _ScriptedDetector:
 
 
 def _adaptive_session(detector, *, endpoint_blocks=2, max_silence_blocks=8, max_blocks=500, transcribe=None):
-    session = ConverseSession(np, transcribe=transcribe)  # endpoint_model off -> no model load
+    session = ConverseSession(np, transcribe=transcribe)  # smart_turn_enabled off -> no model load
     session._turn_detector = detector
     if detector is not None:
         session._endpoint_threshold = detector.threshold
