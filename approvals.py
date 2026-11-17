@@ -94,10 +94,6 @@ class _Pending:
     settled: bool = False
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     tasks: list = field(default_factory=list)
-    # The plugin's own question (the ``command`` tool), not Hermes's: the choice goes here, None
-    # when nobody answered by *deadline* (monotonic).
-    answer: Optional[asyncio.Future] = None
-    deadline: float = 0.0
 
 
 class Approvals:
@@ -129,24 +125,6 @@ class Approvals:
         self._pending[p.chat_id] = p
         p.tasks = [asyncio.ensure_future(self._prepare(p)), asyncio.ensure_future(self._watch(p))]
 
-    async def ask(self, chat_id: str, command: str, summary: str, timeout: float) -> Optional[str]:
-        """Ask the person about the plugin's own *command* as a Hermes request is asked, whatever
-        ``approval_choice`` says, with choices once and deny. Their choice, or None with no answer
-        within *timeout* seconds (``approvals.timeout``)."""
-        self._loop = asyncio.get_running_loop()
-        p = _Pending(f"command-{uuid.uuid4().hex}", "", chat_id, command, summary, ["once", "deny"],
-                     summary=summary, answer=self._loop.create_future(), deadline=time.monotonic() + timeout)
-        old = self._pending.get(chat_id)
-        if old is not None:
-            self._settle(old, "deny", "denied")
-        self._pending[chat_id] = p
-        p.tasks = [asyncio.ensure_future(self._watch(p))]
-        self._ask(p)
-        try:
-            return await p.answer
-        finally:
-            self._settle(p, "deny", "cancelled")  # the tool call went away; nothing if already settled
-
     async def _prepare(self, p: _Pending) -> None:
         user = f"Command:\n{p.command}\n\nDescription:\n{p.description}"
         try:
@@ -161,20 +139,15 @@ class Approvals:
             self._ask(p)
 
     async def _watch(self, p: _Pending) -> None:
-        """Hermes's own timeout ends the request (ours: its deadline); notice it. Keep the waiting turn
-        alive meanwhile."""
+        """Hermes's own timeout ends the request; notice it. Keep the waiting turn alive meanwhile."""
         from tools.approval import list_gateway_approvals
 
         while not p.settled:
             await asyncio.sleep(WATCH_SECONDS)
             if p.settled:
                 return
-            if p.answer is not None:
-                expired = time.monotonic() >= p.deadline
-            else:
-                expired = p.request_id not in {entry.get("request_id")
-                                               for entry in list_gateway_approvals(p.session_key)}
-            if expired:
+            ids = {entry.get("request_id") for entry in list_gateway_approvals(p.session_key)}
+            if p.request_id not in ids:
                 self._settle(p, None, "expired")
                 return
             turn = self._adapter._turns.get(p.chat_id)
@@ -290,10 +263,7 @@ class Approvals:
         if p.settled:
             return
         p.settled = True
-        if p.answer is not None:
-            if not p.answer.done():
-                p.answer.set_result(choice)
-        elif choice is not None:
+        if choice is not None:
             self._resolve(p, choice)
         if self._pending.get(p.chat_id) is p:
             del self._pending[p.chat_id]

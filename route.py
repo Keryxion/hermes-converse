@@ -50,7 +50,6 @@ from typing import Any, Awaitable, Callable, Optional
 
 from aiohttp import ClientError, ClientSession, ClientTimeout, web
 
-from .approvals import phrase, summary
 from .arbitrate import Arbitrator
 from .audio_transport import AudioTransport, audio_format
 from .opus import OpusError
@@ -513,8 +512,6 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
     if attachment is not None:
         # Tools run on worker threads; frames go out through the socket's own loop.
         attachment.send = lambda frame: asyncio.run_coroutine_threadsafe(ws.send_json(frame), loop)
-        attachment.command = lambda text, timeout: asyncio.run_coroutine_threadsafe(
-            _command_tool(text, timeout), loop)
         if getattr(hub, "countdowns", None) is not None:
             hub.countdowns.attached(attachment, getattr(client, "_source", None),
                                     settings.countdown_ring_timeout_seconds, loop)
@@ -523,7 +520,6 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
     default_model = (settings.model, settings.provider)
     selected_model = default_model
     wake_tasks: set[asyncio.Task] = set()
-    after_reply: list[str] = []  # a new conversation the `command` tool asked for, once the reply has played
     relay = relay or Relay(ws)
     explicit_stop = False
     async def _reply_wake(frame: dict) -> None:
@@ -667,44 +663,9 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
         if not ws.closed:
             await ws.send_json(reply)
             if "reply" in reply and command == "new":  # or an alias of it, such as reset
-                await _conversation_changed()
-
-    async def _conversation_changed() -> None:
-        # The client reconnects and finds the fresh conversation with a normal start.
-        _mark_closed(ws, "server", 4410)
-        await ws.close(code=4410, message=b"conversation_changed")
-
-    async def _command_tool(text: str, timeout: float) -> str:
-        """The `command` voice tool (specs/server.md): asked as an approval, then run in the turn."""
-        name, _, args = text.removeprefix("/").partition(" ")
-        args = " ".join(args.split())
-        gateway = getattr(hub, "gateway", None)
-        if gateway is None or not hasattr(client, "run_command"):
-            return "not_attached"
-        if not re.fullmatch(r"[a-z0-9_-]{1,40}", name) or (
-                command := await asyncio.to_thread(client.canonical_command, name)) is None:
-            return "unknown_command"
-        what = phrase(await asyncio.to_thread(client.describe_command, command))
-        question = summary(attachment.assistant_name,
-                           f"run a command for you: {what}" + (f", {args}" if args else ""))
-        if await gateway.approvals.ask(attachment.conversation_id, text, question, timeout) != "once":
-            return "denied"
-        if command == "new":  # or an alias of it: not mid-turn, after the reply has played
-            after_reply.append(text)
-            return "Approved. The new conversation starts when this reply has played."
-        result = await client.run_command(text, stop=False)
-        return "failed" if result is None else result
-
-    async def _after_turn() -> None:
-        """The turn's reply has played: run the new conversation the `command` tool asked for."""
-        if not after_reply or ws.closed:
-            return
-        text = after_reply.pop()
-        after_reply.clear()
-        if await client.run_command(text) is None:
-            logger.warning("converse: command tool %r failed after the reply", text)
-        elif not ws.closed:
-            await _conversation_changed()
+                # The client reconnects and finds the fresh conversation with a normal start.
+                _mark_closed(ws, "server", 4410)
+                await ws.close(code=4410, message=b"conversation_changed")
 
     async def _run_turn(transcript: str, on_delta, *, interrupted: bool) -> tuple[str, Optional[str]]:
         model, provider = selected_model  # Snapshot once; do not alter a turn already in flight.
@@ -733,7 +694,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
             last_progress=lambda: client.last_progress,
             turn_timeout=settings.turn_timeout, tail_fallback=settings.tail_fallback,
             max_tts_chars=settings.max_tts_chars,
-            standby=lambda: client.standby, after_turn=_after_turn,
+            standby=lambda: client.standby,
         )
 
     detached = False

@@ -549,36 +549,57 @@ on cancellation, interruption, error, and timeout paths too.
 
 A person at a device with no screen cannot type a command or tap a button for
 one, so they ask: "start over", "compress this, you're getting slow". The agent
-runs the command for its own conversation, as a `command` frame from the device
-would (Commands from a device): any command a chat user can run, no list of
-allowed ones, the slash-access policy applied by the gateway. The reply is the
-tool result, not speech; the agent says what matters in its own words.
+runs a gateway command for its own conversation. `text` includes the slash and
+any arguments, for example `{"text":"/new"}`. The commands and aliases are the
+ones listed by the `commands` frame (Commands from a device), including plugin
+commands; there is no separate allowlist. Unknown commands return
+`unknown_command` without asking for approval or sending them to the gateway.
+The gateway's slash-access policy still applies. The reply is the tool result,
+not speech; the agent says what matters in its own words.
 
 The person approves every call before it runs. The agent does not decide what a
 command does to the conversation: it is asked as for a Hermes approval
 (Approvals) with `approval_choice` `ask`, whatever the device's setting. The
 `approval` tone plays, then the server, not the agent, says what will happen,
-from the command's description in Hermes's registry (the one a `commands` frame
-lists) and its `args`:
+from the description listed by the `commands` frame and any arguments in
+`text`:
 
-> Arya wants to run a command for you: start a new session, with a fresh
-> history. Okay?
+> Arya wants to run a command for you: start a new session, with fresh
+> session ID + history. Okay?
 
 `approval_request` carries the same summary, the command as given, and choices
-`once` and `deny`. `once` runs it; any other answer, or none before
-`approvals.timeout`, runs nothing.
+`once` and `deny`. Answers use the spoken or on-screen flow under Approvals;
+approval applies only to this call. Only `once` accepted before the
+`approvals.timeout` deadline permits submission to the gateway. Denial,
+cancellation, or expiry returns `denied` and runs nothing. Late answers do not
+revive the request. This question does not resolve a Hermes execution approval.
 
-A command that starts a new conversation (`new`, or any alias of it) waits for
-the turn: once the turn's reply has played (the device's `state` leaves
-`speaking`, or the playback tail ends), close the socket with
-`4410 conversation_changed`, as after the frame. Every other command runs at
-once, inside the turn.
+A command that starts a new conversation (`new`, or any alias of it) returns
+`{"result":"Approved. The new conversation starts when this reply has played."}`
+after approval. This acknowledges deferral, not execution. Wait until the
+calling turn's final reply has played (the device's `state` leaves `speaking`
+for that reply, or its playback tail ends), then submit the command and close
+the socket with `4410 conversation_changed` after its reply, as after the
+frame. Playback of the approval question or another turn does not trigger it.
+If the socket disconnects before the final reply has played, drop the deferred
+command.
+
+Other commands are submitted while the turn is running, without first stopping
+it. Hermes's mid-run command policy applies: approval does not override a busy
+refusal. For example, `/compress` can return a busy reply instead of compressing
+the conversation. A command queued by the gateway can execute after the turn;
+`failed` means no reply was obtained, not that an accepted command was undone.
+
+Tool results are JSON objects with a `result` string, for example
+`{"result":"denied"}`:
 
 | Tool result | Meaning |
 |---|---|
-| The command's reply | It ran, or, for a new conversation, runs when the turn's reply has played. |
-| `unknown_command` | Not one of Hermes's commands or aliases. Nothing runs. |
+| The command's reply | The gateway's response, including any access or busy refusal. |
+| `Approved. The new conversation starts when this reply has played.` | A new-conversation command is approved and deferred as above. |
+| `unknown_command` | Not a command or alias listed by `commands`. Nothing runs. |
 | `denied` | The person did not approve it. Nothing runs. |
+| `failed` | No command reply could be obtained. |
 | `not_attached` | No device is connected to ask. Nothing runs. |
 | `not_a_device` | The call was made from a chat that is not a voice device. Nothing runs. |
 

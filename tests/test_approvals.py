@@ -101,17 +101,3 @@ async def test_no_assistant_name_and_the_re_ask(rig, monkeypatch):
     assert session.outputs[-1].text == ("Sorry, I did not catch that. The assistant wants to run the tests. Okay? "
                                         "Say yes or no.")
     rig.approvals._settle(pending, "deny", "denied")
-
-
-async def test_the_plugins_own_question_is_held_until_a_device_attaches(rig):
-    """The ``command`` tool's question: asked as Hermes's are, held while no device is there."""
-    asking = asyncio.ensure_future(rig.approvals.ask("den", "/new", "Arya wants to start over. Okay?", 30))
-    await asyncio.sleep(0.01)
-    session, frames = attach(rig)
-    rig.approvals.attached(rig.hub.attachment("den"))
-    request = frames[0]
-    assert request["summary"] == "Arya wants to start over. Okay?" and request["choices"] == ["once", "deny"]
-    assert request["command"] == "/new" and [o.text for o in session.outputs] == [
-        "Arya wants to start over. Okay? Say yes or no."]
-    rig.approvals.respond(rig.hub.attachment("den"), {"approval_id": request["approval_id"], "choice": "once"})
-    assert await asking == "once" and rig.resolved == []  # nothing goes to Hermes

@@ -55,7 +55,6 @@ class FakeHermes:
         # Every voice turn the gateway admitted, in order.
         self.turns: list[dict[str, Any]] = []
         self.commands: list[str] = []
-        self.command_replies: dict[str, str] = {}  # commands this gateway answers itself, by name
         self._redirects: list[str] = []  # words that arrived while a turn ran, not yet folded into it
 
     # ── API server ──
@@ -105,9 +104,6 @@ class FakeHermes:
             self.store.models[key] = None if args == ["reset"] else {
                 "model": args[0], **({"provider": args[2]} if len(args) > 2 else {})}
             return "Model switched."
-        if event.get_command() in self.command_replies:
-            self.commands.append(event.text)
-            return self.command_replies[event.get_command()]
         override = self.store.models.get(key) or {}
         turn = {"text": event.text, "instructions": event.channel_prompt, "chat_id": event.source.chat_id,
                 "chat_name": event.source.chat_name, "user_id": event.source.user_id,
