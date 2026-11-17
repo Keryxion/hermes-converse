@@ -54,7 +54,8 @@ class ConversationHub:
 
     def publish(self, conversation_id: str, text: str, event_id: str, *,
                 expires_at: float, next_action: Optional[str] = None, unheard: bool = False,
-                after_playback: Optional[Callable[[], Awaitable[None]]] = None) -> str:
+                after_playback: Optional[Callable[[], Awaitable[None]]] = None,
+                transient: bool = False) -> str:
         with self._lock:
             item = self._attachments.get(conversation_id)
             if item is None or item.session.stopped:
@@ -69,7 +70,8 @@ class ConversationHub:
             if len(item.seen) > 1024:
                 item.seen.popitem(last=False)
             item.pending += 1
-            output = ConversationOutput(text, event_id, next_action=next_action, unheard=unheard)
+            output = ConversationOutput(text, event_id, next_action=next_action, unheard=unheard,
+                                        transient=transient)
             output.after_playback = after_playback
             def consumed():
                 with self._lock:

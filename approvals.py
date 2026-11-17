@@ -221,7 +221,8 @@ class Approvals:
         if turn is not None and turn.started and turn.outcome is None and not turn.stopped and not turn.detached:
             turn.on_delta(Aside(text + "\n"))  # the waiting turn says it; it is not part of the reply
         else:
-            self._hub.publish(p.chat_id, text, f"approval:{uuid.uuid4().hex}", expires_at=time.time() + SPEECH_TTL)
+            self._hub.publish(p.chat_id, text, f"approval:{uuid.uuid4().hex}", expires_at=time.time() + SPEECH_TTL,
+                              transient=True)  # a question, not a message of the conversation
 
     @staticmethod
     def _send(attachment: Any, frame: dict) -> None:
