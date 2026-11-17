@@ -99,7 +99,7 @@ An untargeted cancel also abandons a capture in progress. Stop the agent and TTS
 discard that cancelled capture, emit the existing interruption/terminal frames,
 and leave the socket and conversation usable. `stop` closes the attachment.
 
-`heard` says the device detected the `cancel` wake word during a turn. It is neither
+`heard` says the device detected a wake word during a turn. It is neither
 cancellation nor barge-in: log it with the session, the turn, and the wake
 word, and change nothing else.
 
