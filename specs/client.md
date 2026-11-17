@@ -194,6 +194,7 @@ All are JSON text frames:
 | `{"type": "commands"}` | Ask which commands the server runs; see "Commands" below. |
 | `{"type": "command", "name": "new"}` | Run a Hermes command for this device's conversation, such as starting a fresh one; see "Commands" below. |
 | `{"type": "say", "text": "..."}` | Speaks the given text (trimmed, at most 400 characters) as a reply of its own: `thinking`, `speaking` + PCM, then `turn_done` with `next_action: "standby"`. No agent turn runs, nothing is added to the conversation, and no `transcript` frame is sent for it. For fixed device prompts such as a spoken help reminder. Empty or non-string text is ignored. |
+| `{"type":"text","text":"...","request_id":"draft-1"}` | Submits a typed user message to the same device conversation and agent as speech. See "Typed messages" below. |
 | `{"type": "approval_response", "approval_id": "...", "choice": "once"}` | Answer a pending approval from a screen with one of its `choices`; see "Approvals" in section 4. |
 
 **`cancel` vs `stop`:** `stop` tears down the session; `cancel` only kills the
@@ -223,7 +224,34 @@ a bad Opus packet.
 | `wake` without a nonempty string `claim_id` and `wake_word` | `{"type":"error","error":"bad_wake"}` (section 8). |
 | `command` with a bad `name` or `args` | `command` with `error` ("Commands" below). |
 | `set_model` with a bad `request_id`, `model`, or `provider` | `model_error` (section 11). |
+| `text` with a bad `text` or `request_id`, or a `request_id` already used on this socket | `text_ack` with `"accepted": false` ("Typed messages" below). |
 | A malformed, non-mono, or non-20-ms Opus packet | `4400 bad_audio` |
+
+### Typed messages
+
+After `ready`, send `{"type":"text","text":"...","request_id":"draft-1"}`.
+`request_id` is a nonempty ASCII identifier of 1–80 characters (`A–Z`, `a–z`,
+`0–9`, `_`, `-`), chosen uniquely per submission on this socket. `text` is a
+nonempty string after trimming surrounding whitespace, at most 65536 UTF-8
+bytes after trimming. The server does not truncate it. It responds once per
+frame with `{"type":"text_ack","request_id":"draft-1","accepted":true}`
+when queued for the agent, or `{"type":"text_ack","request_id":"draft-1","accepted":false,"error":"bad_text"}`
+for invalid text. Reusing an identifier on the same socket returns
+`"accepted":false,"error":"duplicate_request_id"` without submitting again.
+A valid identifier accompanies rejection; if the identifier
+is invalid or missing, the rejection has `"request_id":""` and
+`"error":"bad_request_id"`. Only accepted messages enter the device's
+conversation. `accepted` means queued, **not** that the agent has finished,
+performed an action, or even started. Keep a draft until its matching positive
+acknowledgement; if the socket drops without it, show the outcome as unknown
+and do not automatically retry (the agent may already have received it).
+
+A typed message takes the ordinary agent-turn path and is sent as a user
+`transcript` when transcripts are enabled, with the usual `thinking`, reply,
+and `turn_done` frames. It is not a `say` prompt. Sending text does not open the
+microphone, synthesize an input utterance, or switch the client to listening;
+any reply audio is still played as normal. The client controls its listening
+state independently of this exchange.
 
 ### Push to talk
 
