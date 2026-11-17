@@ -300,7 +300,7 @@ Countdowns are unaffected by a command.
 | `approval_request`, `approval_resolved` | the assistant needs permission before it acts, and when that is settled; see "Approvals" below |
 | `speaking` + binary frames | mono reply audio in `ready.output.format` at `output_rate` |
 | `interrupted` | the turn was cancelled (you barged in or sent `cancel`); stop playing |
-| `turn_done` | the reply is fully sent; `next_action` is usually absent; `standby` ends the exchange and `listen` switches the client into listening, after drain |
+| `turn_done` | the reply is fully sent; `next_action` is usually absent; `standby` ends the exchange and `listen` switches the client into listening, after drain; `mute` mutes it at once |
 | `quiet` | session mode: the stream has been silent for another `quiet_interval` seconds |
 | `error` | the turn failed (spoken-safe text) |
 | `{"type":"tone","tone":"confirm"}` | Play the named tone (see `tones.md`): `confirm` or `error` when the assistant chooses to, `approval` just before the server asks for an approval. It is not a reply: no `turn_id`, and the device reports no state for it. |
@@ -440,7 +440,7 @@ detection; do not cut off barge-in monitoring during the playback tail.
 The server binds interruption to the old turn before announcing `thinking`.
 If accepted speech interrupts playback after `turn_done`, expect `interrupted`
 followed by an updated `turn_done` without `next_action` for the same
-turn, replacing its pending standby or mute action. A continuation receives its own
+turn, replacing its pending standby action. A continuation receives its own
 turn ID. Report the state for the old turn's playback only; it must not
 discard the continuation. A bounded playback-tail timeout handles a missing
 report.
@@ -485,7 +485,7 @@ a completed, cancelled, or stale turn.
 Nothing else changes the state during a turn: `thinking` frames carry liveness
 and counters, approval frames open and close the on-screen box, and `speaking`
 marks where the audio begins. After `turn_done`, preserve the interaction mode
-unless `next_action: "standby"` ends the exchange, as below. States the device
+unless `next_action` says otherwise, as below. States the device
 knows by itself, such as
 connecting, arbitrating, or muted, are the device's own (`animations.md`).
 
@@ -638,19 +638,19 @@ To switch a client that is not listening into listening, the server sends:
 {"type":"turn_done","turn_id":"turn-42","next_action":"listen"}
 ```
 
-| `next_action` | client behavior after playback drain |
+| `next_action` | client behavior |
 |---|---|
-| absent | Preserve the interaction mode: hands-free continues streaming for a follow-up; released push-to-talk stays in standby and sends no PCM. |
-| `standby` | Stop upstream PCM and return to local wake detection (or the non-wake client's idle UI). Keep the socket/session open for outbound events. |
-| `mute` | Mute exactly as the device's own mute control does: stop upstream PCM, stop answering the wake word, and show the mute indication. Keep the socket/session open; replies still play. Only the person unmutes, on the device. |
-| `listen` | Enter listening: open an activation and stream microphone PCM for the next utterance, as after a wake grant (no wake claim), subject to explicit user mute. A client already listening keeps listening. |
+| absent | After playback drains, preserve the interaction mode: hands-free continues streaming for a follow-up; released push-to-talk stays in standby and sends no PCM. |
+| `standby` | After playback drains, stop upstream PCM and return to local wake detection (or the non-wake client's idle UI). Keep the socket/session open for outbound events. |
+| `mute` | On receipt, without waiting for playback to drain: mute, as the device's own mute control does. The reply keeps playing. Only the person unmutes, on the device. A device the person cannot unmute ignores `mute`. |
+| `listen` | After playback drains, enter listening: open an activation and stream microphone PCM for the next utterance, as after a wake grant (no wake claim), subject to explicit user mute. A client already listening keeps listening. |
 
 `next_action` is optional and absent most of the time. `standby`, `mute`, and
 `listen` are the only values; ignore any other. `listen` is the exception: the server
 sends it only when it wants the person's answer from a client that would not
 otherwise be listening, such as a server-started reply that asks a question, or
 released push-to-talk. Completing a reply does not otherwise open microphone
-capture. Continue playback/drain handling, then apply the
+capture. Apply `mute` on receipt. Otherwise continue playback/drain handling, then apply the
 latest completion's action and report the state it leads to. An updated
 `turn_done` without `next_action` clears an earlier pending standby or listen
 action for that turn; it still preserves the client's interaction mode. Do not apply a
