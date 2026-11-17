@@ -529,6 +529,29 @@ async def test_server_turn_explicit_standby_survives_publish(rig, monkeypatch):
     assert [(o.text, o.next_action) for o in device.outputs] == [("Going to standby.", "standby")]
 
 
+async def test_server_turn_mute_survives_publish_and_last_call_wins(rig, monkeypatch):
+    from hermes_converse.server_turn import ServerTurn
+    from hermes_converse.voice_tools import make_handlers
+    import json
+    from gateway import session_context
+
+    device = Device()
+    rig.hub.attach("den", device)
+    server_turn = ServerTurn()
+    rig.adapter._server_turns["den"] = server_turn
+    monkeypatch.setattr(session_context, "get_session_env", lambda key, default="": {
+        "HERMES_SESSION_PLATFORM": "converse", "HERMES_SESSION_CHAT_ID": "den"}.get(key, default)
+    )
+    handlers = make_handlers(rig.hub)
+    assert json.loads(handlers["mute"]({})) == {"result": "ok"}
+    assert json.loads(handlers["standby"]({})) == {"result": "ok"}
+    assert server_turn.standby and not server_turn.mute
+    assert json.loads(handlers["mute"]({})) == {"result": "ok"}
+    assert server_turn.mute and not server_turn.standby
+    assert (await rig.adapter.send("den", "Muted.", metadata=NOTIFY)).success
+    assert [(o.text, o.next_action) for o in device.outputs] == [("Muted.", "mute")]
+
+
 async def test_server_standby_does_not_mark_earlier_voice_turn(rig, monkeypatch):
     from hermes_converse.server_turn import ServerTurn
     from hermes_converse.voice_tools import make_handlers

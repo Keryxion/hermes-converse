@@ -78,6 +78,7 @@ class _VoiceTurn:
     earlier: str = ""  # the last model response that carried text, once another has started
     exclusive: bool = False  # speak_this was called: only its text is spoken
     standby: bool = False  # the agent called standby
+    mute: bool = False  # the agent called mute
     tool_calls: int = 0
     reasoning_tokens: Optional[int] = None
     progress_at: float = 0.0  # monotonic time the agent last did anything
@@ -380,7 +381,8 @@ class ConverseAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=uuid.uuid4().hex)
         event_id = f"send:{uuid.uuid4().hex}"
         status = self._hub.publish(chat_id, text, event_id, expires_at=time.time() + OUTPUT_TTL,
-                                   next_action="standby" if server_turn is not None and server_turn.standby else None,
+                                   next_action=None if server_turn is None else "mute" if server_turn.mute
+                                   else "standby" if server_turn.standby else None,
                                    after_playback=server_turn.after_playback if server_turn is not None else None)
         if status == "accepted":
             return SendResult(success=True, message_id=event_id)
@@ -548,6 +550,10 @@ class GatewayTurns:
     @property
     def standby(self) -> bool:
         return any(t is not None and t.standby for t in (self._following, self._turn))
+
+    @property
+    def mute(self) -> bool:
+        return any(t is not None and t.mute for t in (self._following, self._turn))
 
     @property
     def reasoning_tokens(self) -> Optional[int]:

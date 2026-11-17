@@ -63,6 +63,16 @@ SCHEMAS = {
                         "too\"."),
         "parameters": {"type": "object", "properties": {}},
     },
+    "mute": {
+        "name": "mute",
+        "description": ("Voice devices only. Mutes the device's microphone once this turn's reply "
+                        "has been sent: it hears nothing, its wake word included, until the person "
+                        "unmutes it on the device. Call it only when the person asks the device to "
+                        "stop listening (\"stop listening\", \"mute yourself\"). Nothing can unmute "
+                        "by voice, so say that they unmute on the device. When they are simply "
+                        "done, call standby instead."),
+        "parameters": {"type": "object", "properties": {}},
+    },
 }
 
 
@@ -118,18 +128,21 @@ def make_handlers(hub: Any) -> dict[str, Callable[..., Any]]:
         attachment.send({"type": "tone", "tone": tone})
         return _result("ok")
 
-    def standby(args: dict, **kw: Any) -> str:
+    def end_with(mute: bool) -> str:
+        """standby or mute for the calling turn; the last call in a turn wins."""
         error, attachment = device()
         if attachment is None:
             return _result(error)
-        server_turn = server_turn_of(attachment)
-        if server_turn is not None:
-            server_turn.standby = True
-        else:
-            turn = turn_of(attachment)
-            if turn is not None:
-                turn.standby = True
+        turn = server_turn_of(attachment) or turn_of(attachment)
+        if turn is not None:
+            turn.standby, turn.mute = not mute, mute
         return _result("ok")
+
+    def standby(args: dict, **kw: Any) -> str:
+        return end_with(mute=False)
+
+    def mute(args: dict, **kw: Any) -> str:
+        return end_with(mute=True)
 
     async def command(args: dict, **kw: Any) -> str:
         error, attachment = device()
@@ -155,8 +168,8 @@ def make_handlers(hub: Any) -> dict[str, Callable[..., Any]]:
         result = await asyncio.wrap_future(attachment.diagnostics())
         return json.dumps(result, ensure_ascii=False)
 
-    return {"speak_this": speak_this, "play_tone": play_tone, "standby": standby, "command": command,
-            "client_diagnostics": client_diagnostics}
+    return {"speak_this": speak_this, "play_tone": play_tone, "standby": standby, "mute": mute,
+            "command": command, "client_diagnostics": client_diagnostics}
 
 
 def register_tools(ctx: Any, hub: Any) -> None:

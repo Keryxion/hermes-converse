@@ -669,7 +669,7 @@ def _turn_done_frame(sent):
     frame = next(f for f in sent if isinstance(f, dict) and f.get("type") == "turn_done")
     assert set(frame) in ({"type", "turn_id"}, {"type", "turn_id", "next_action"})
     if "next_action" in frame:
-        assert frame["next_action"] == "standby"
+        assert frame["next_action"] in ("standby", "mute")
     return frame
 
 
@@ -912,6 +912,11 @@ def test_driver_tail_barge_emits_interrupted_not_a_turn():
 def test_drive_converse_turns_standby_tool_requests_standby():
     sent = _run_driver(_FakeConverseSession(["are we done?"]), [], ["All set."], quiet_interval=1.0, standby=lambda: True)
     assert _turn_done_frame(sent)["next_action"] == "standby"
+
+
+def test_drive_converse_turns_mute_tool_requests_mute():
+    sent = _run_driver(_FakeConverseSession(["stop listening"]), [], ["Muted."], quiet_interval=1.0, mute=lambda: True)
+    assert _turn_done_frame(sent)["next_action"] == "mute"
 
 
 def test_drive_converse_turns_question_preserves_client_mode():
