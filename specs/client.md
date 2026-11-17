@@ -213,11 +213,15 @@ reach with a control, such as a "New conversation" button, that names one:
 {"type":"command","name":"new"}
 ```
 
-`name` is the command without its slash. `args`, when the command takes any, is
-the rest of what a chat user would type after it:
+`name` is the command without a leading slash. `args` is an array of strings,
+one per argument. Omit it for no arguments, the same as `[]`:
 
 ```json
-{"type":"command","name":"title","args":"Kitchen timers"}
+{"type":"command","name":"title","args":["Kitchen timers"]}
+```
+
+```json
+{"type":"command","name":"compress","args":["here","3"]}
 ```
 
 The server ends any turn in flight, runs the command for the device's
@@ -246,11 +250,11 @@ server answers with every command a chat can run, in Hermes's own order:
 | `description` | One line to show beside it. |
 | `aliases` | Other names for the same command. |
 | `args_hint` | How the command reads `args`, for display: `<x>` is required, `[x]` optional, `a\|b` a choice. Empty when it takes none. |
-| `subcommands` | Words `args` may start with, for completion. Often empty. |
+| `subcommands` | Values the first argument may take, for completion. Often empty. |
 
-Hermes has no stricter description of arguments than `args_hint`, so `args` is
-free text and the command itself says when it is wrong. Commands that only run
-in a terminal are not listed. The list is the same for every device, like
+Hermes has no stricter description of arguments than `args_hint`; each command
+validates its arguments and returns its own explanation when they are wrong.
+Commands that only run in a terminal are not listed. The list is the same for every device, like
 Hermes's Telegram command menu: when the server's slash-command access settings
 keep a command from a device, it is still listed, and running it brings Hermes's
 refusal back in `reply`. The list can change when the server's
@@ -273,7 +277,7 @@ nothing changes:
 
 | `error` | Meaning |
 |---|---|
-| `bad_command` | `name` is missing or is not lowercase letters, digits, `-` and `_` (at most 40), or `args` is not a string. |
+| `bad_command` | `name` is missing or is not lowercase letters, digits, `-` and `_` (at most 40), or a supplied `args` is not an array of strings. |
 | `unknown_command` | Hermes has no command by that name that runs outside a terminal. |
 | `failed` | The server did not accept the command, or it did not finish. |
 

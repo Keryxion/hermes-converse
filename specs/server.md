@@ -410,9 +410,12 @@ platform is not hosted, the connection is refused with `conversation_unavailable
 
 ## Commands from a device
 
-A `command` frame names any gateway command, without its slash, and may carry
-`args`. Pass `/<name> <args>` to the gateway for the device's conversation as a
-chat user's command would be, and return its
+A `command` frame names any gateway command in `name`, without a leading slash.
+`args` is an array of strings, defaulting to `[]` when omitted. Reject other
+argument types with `bad_command` before stopping a turn or sending a command.
+Join the arguments with spaces after `/<name>` and let the gateway's own
+command parser interpret the resulting text for the device's conversation,
+as it would a chat user's command. Return its
 reply in a `command` frame without speaking it. There is no list of allowed
 commands: a device holding the API key can run what a chat user can, including
 commands that change approvals.
@@ -562,8 +565,7 @@ no arguments, the same as `[]`. For example:
 ```
 
 The commands and aliases are the ones listed by the `commands` frame (Commands
-from a device), including plugin
-commands; there is no separate allowlist. Unknown commands return
+from a device), including plugin commands; there is no separate allowlist. Unknown commands return
 `unknown_command` without asking for approval or sending them to the gateway.
 The gateway's slash-access policy still applies. The reply is the tool result,
 not speech; the agent says what matters in its own words.

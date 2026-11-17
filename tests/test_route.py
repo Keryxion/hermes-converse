@@ -304,15 +304,50 @@ async def test_command_frame_runs_the_command_and_new_closes_the_socket(monkeypa
         await ws.send_json({"type": "commands"})
         listing = await ws.receive_json()
         assert listing["type"] == "commands" and "new" in {entry["name"] for entry in listing["commands"]}
-        await ws.send_json({"type": "command", "name": "compress", "args": "keep it short"})
+        await ws.send_json({"type": "command", "name": "compress", "args": ["keep", "it", "short"]})
         frame = await ws.receive_json()
-        assert frame["name"] == "compress" and frame["args"] == "keep it short" and "reply" in frame
+        assert frame["name"] == "compress" and frame["args"] == ["keep", "it", "short"] and "reply" in frame
         await ws.send_json({"type": "command", "name": "reset"})  # an alias of new closes the socket too
         frame = await ws.receive_json()
         assert frame["type"] == "command" and frame["name"] == "reset" and "reply" in frame
         await ws.receive()
         assert ws.close_code == 4410
     assert [turn["text"] for turn in fake.turns] == ["/compress keep it short", "/reset"]  # the fake gateway has no commands of its own
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("args", [[], ["Kitchen timers"], ["here", "3"]])
+async def test_command_argument_arrays_reach_the_gateway(monkeypatch, args):
+    fake = FakeHermes(API_KEY)
+    async with Harness(fake) as client:
+        ws = await client.ws_connect("/v1/audio/converse", protocols=(VOICE_PROTOCOL, _key_protocol()))
+        try:
+            await ws.send_str(_start_msg())
+            assert (await ws.receive_json())["type"] == "ready"
+            frame = {"type": "command", "name": "title", "args": args}
+            await ws.send_json(frame)
+            reply = await ws.receive_json()
+            assert reply == {**frame, "reply": "Turn it on."}
+            assert [turn["text"] for turn in fake.turns] == [f"/title {' '.join(args)}".strip()]
+        finally:
+            await _end(ws)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("args", ["Kitchen timers", None, 3, {}, ["here", 3], [None], [[]]])
+async def test_command_rejects_arguments_that_are_not_string_arrays(args):
+    fake = FakeHermes(API_KEY)
+    async with Harness(fake) as client:
+        ws = await client.ws_connect("/v1/audio/converse", protocols=(VOICE_PROTOCOL, _key_protocol()))
+        try:
+            await ws.send_str(_start_msg())
+            assert (await ws.receive_json())["type"] == "ready"
+            frame = {"type": "command", "name": "title", "args": args}
+            await ws.send_json(frame)
+            assert await ws.receive_json() == {**frame, "error": "bad_command"}
+            assert fake.turns == []
+        finally:
+            await _end(ws)
 
 
 @pytest.mark.asyncio

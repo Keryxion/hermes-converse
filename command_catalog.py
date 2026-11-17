@@ -3,7 +3,8 @@ for Telegram's command menu.
 
 Like that menu, the list is the same for every device: the gateway checks who may run a command
 when it runs. Arguments have no schema in Hermes: ``args_hint`` (such as ``[name]``) and
-``subcommands`` are all it knows, so ``args`` stays free text the command parses.
+``subcommands`` are all it knows. The server joins the device's argument strings into gateway
+command text for the command itself to parse.
 """
 
 from __future__ import annotations

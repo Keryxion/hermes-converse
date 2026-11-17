@@ -599,7 +599,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                         await ws.send_json({"type": "commands", "commands": await asyncio.to_thread(listing)}
                                            if listing else {"type": "commands", "error": "failed"})
                     if frame.get("type") == "command":
-                        task = asyncio.create_task(_command(frame.get("name"), frame.get("args")))
+                        task = asyncio.create_task(_command(frame))
                         wake_tasks.add(task)
                         task.add_done_callback(wake_tasks.discard)
                     if frame.get("type") == "set_model":
@@ -636,13 +636,15 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
             logger.debug("converse client pump ended", exc_info=True)
         session.stop()
 
-    async def _command(name: Any, args: Any) -> None:
+    async def _command(frame: dict) -> None:
+        name = frame.get("name")
+        args = frame.get("args", [])
         reply: dict[str, Any] = {"type": "command", "name": name}
         command: Optional[str] = None
-        if args is not None:
+        if "args" in frame:
             reply["args"] = args
         if (not isinstance(name, str) or not re.fullmatch(r"[a-z0-9_-]{1,40}", name)
-                or (args is not None and not isinstance(args, str))):
+                or not isinstance(args, list) or not all(isinstance(arg, str) for arg in args)):
             reply["error"] = "bad_command"
         elif not hasattr(client, "run_command"):
             reply["error"] = "failed"
@@ -650,7 +652,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
             reply["error"] = "unknown_command"
         else:
             session.cancel()
-            text = f"/{name} {args or ''}".strip()
+            text = f"/{name} {' '.join(args)}".strip()
             try:
                 result = await client.run_command(text)
             except Exception:
