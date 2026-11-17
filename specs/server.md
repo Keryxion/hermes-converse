@@ -249,7 +249,8 @@ person; `speaking` before the first PCM of each stretch of speech; `listening`
 when the turn waits on the person and their speech is being listened for.
 Ordinary, interrupted, failed, or superseded replies omit `next_action` from
 `turn_done`, preserving the device's interaction mode. Only an explicit standby
-decision sends `next_action: "standby"`. Send `next_action: "listen"` only to
+decision sends `next_action: "standby"`, and only an explicit mute decision
+sends `next_action: "mute"`. Send `next_action: "listen"` only to
 switch a device that is not listening into listening because the server wants
 the person's answer, such as a server-started reply that asks a question; leave
 it out otherwise, including for a device already listening.
@@ -281,7 +282,7 @@ context must not describe a generated or transmitted response as heard.
 After `turn_done`, retain playback protection until the client reports a state
 other than `speaking` for that turn, or the bounded fallback timeout. Ignore a
 report for another turn. A tail interruption sends an updated `turn_done`
-without `next_action` for the same turn, clearing its pending standby action
+without `next_action` for the same turn, clearing its pending standby or mute action
 while preserving the device's interaction mode;
 it does not create another reply for that turn. Quiet advisories count received
 idle silence, never wall time or time occupied by a reply/capture. Restart the
@@ -473,7 +474,7 @@ that is expected:
 
 - Do not synthesize speech for it. The reply is in the conversation's history
   and is replayed as a transcript when a client catches up.
-- `speak_this`, `play_tone`, `standby`, and `countdown` return `not_attached`,
+- `speak_this`, `play_tone`, `standby`, `mute`, and `countdown` return `not_attached`,
   so the agent can tell nobody is there and tell another room or chat instead.
 - Nothing is queued to be spoken later.
 - A pending approval is held, as described under Approvals.
@@ -516,7 +517,7 @@ credentials or conversation content.
 
 ## Voice tools
 
-The agent has five tools for controlling or inspecting the device it is talking through and
+The agent has six tools for controlling or inspecting the device it is talking through and
 its conversation. They act only on the device whose conversation calls them.
 
 A tool call always happens inside a turn, and the tools act on that turn however
@@ -529,6 +530,7 @@ being connected with no turn for a tool to act on.
 | `speak_this` | `text` | The device says exactly `text`, and nothing else the turn produces is spoken. |
 | `play_tone` | `tone`: `confirm` or `error` | The device plays that tone (`tones.md`). |
 | `standby` | None | The device goes to standby when this turn's playback has drained: `turn_done` carries `next_action: "standby"`. It stops sending audio and waits for the wake word or Talk. |
+| `mute` | None | The device mutes when this turn's playback has drained: `turn_done` carries `next_action: "mute"`. It stops sending audio and no longer answers its wake word until the person unmutes it on the device. |
 | `command` | `name`: a gateway command without a leading slash; `args`: an array of strings, default `[]` | Runs the command in this conversation and returns its reply to the agent. |
 | `client_diagnostics` | None | Returns a fresh diagnostic snapshot from the attached client, as described above. |
 
@@ -582,6 +584,18 @@ cancellation, interruption, error, and timeout paths too.
 | `ok` | Accepted. |
 | `not_a_device` | The call was made from a chat that is not a voice device. Nothing happens. |
 | `not_attached` | No device is connected to this conversation. Nothing is sent or queued. It has no other meaning. |
+
+### `mute`
+
+The agent calls `mute` when the person asks the device to stop listening, for
+example "stop listening" or "mute yourself". It is the device's own mute,
+reached by voice: the reply plays, then the microphone goes off and stays off,
+the wake word included, until the person unmutes on the device. Nothing can
+unmute by voice, because a muted device hears nothing. Standby is not this: after
+standby the device still hears its wake word. If the turn calls both, the last
+call wins. `mute` is pending in the same way as `standby`: accepted speech
+before playback drains interrupts the turn, and the updated `turn_done` without
+`next_action` clears it. Results are the same as for `standby`.
 
 ### `command`
 

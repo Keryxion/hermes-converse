@@ -440,7 +440,7 @@ detection; do not cut off barge-in monitoring during the playback tail.
 The server binds interruption to the old turn before announcing `thinking`.
 If accepted speech interrupts playback after `turn_done`, expect `interrupted`
 followed by an updated `turn_done` without `next_action` for the same
-turn, replacing its pending standby action. A continuation receives its own
+turn, replacing its pending standby or mute action. A continuation receives its own
 turn ID. Report the state for the old turn's playback only; it must not
 discard the continuation. A bounded playback-tail timeout handles a missing
 report.
@@ -626,6 +626,12 @@ To end the exchange, the server sends:
 {"type":"turn_done","turn_id":"turn-42","next_action":"standby"}
 ```
 
+When the person asks the device to stop listening, the server sends:
+
+```json
+{"type":"turn_done","turn_id":"turn-42","next_action":"mute"}
+```
+
 To switch a client that is not listening into listening, the server sends:
 
 ```json
@@ -636,10 +642,11 @@ To switch a client that is not listening into listening, the server sends:
 |---|---|
 | absent | Preserve the interaction mode: hands-free continues streaming for a follow-up; released push-to-talk stays in standby and sends no PCM. |
 | `standby` | Stop upstream PCM and return to local wake detection (or the non-wake client's idle UI). Keep the socket/session open for outbound events. |
+| `mute` | Mute exactly as the device's own mute control does: stop upstream PCM, stop answering the wake word, and show the mute indication. Keep the socket/session open; replies still play. Only the person unmutes, on the device. |
 | `listen` | Enter listening: open an activation and stream microphone PCM for the next utterance, as after a wake grant (no wake claim), subject to explicit user mute. A client already listening keeps listening. |
 
-`next_action` is optional and absent most of the time. `standby` and `listen`
-are the only values; ignore any other. `listen` is the exception: the server
+`next_action` is optional and absent most of the time. `standby`, `mute`, and
+`listen` are the only values; ignore any other. `listen` is the exception: the server
 sends it only when it wants the person's answer from a client that would not
 otherwise be listening, such as a server-started reply that asks a question, or
 released push-to-talk. Completing a reply does not otherwise open microphone
@@ -650,9 +657,10 @@ action for that turn; it still preserves the client's interaction mode. Do not a
 late completion from an abandoned turn to a newer activation.
 
 Cancellation, interruption, errors, and timeouts preserve the interaction mode;
-a partial or failed reply requests neither standby nor listen. Countdown tones restore the
+a partial or failed reply requests no `next_action`. Countdown tones restore the
 prior idle/listening state after drain (section 10). The server requests
-`standby` when the person has said they are done. Clients must not inspect
+`standby` when the person has said they are done, and `mute` when they have
+asked the device to stop listening. Clients must not inspect
 reply text or interpret whether the agent expects a follow-up.
 
 ### User and assistant transcripts
