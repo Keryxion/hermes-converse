@@ -252,7 +252,7 @@ class ConverseRoute:
                 synth, cap, session = await asyncio.to_thread(
                     _resolve_session, settings, input_rate, output_rate, quiet_interval)
                 connection.session = session
-                attachment = self.hub.attach(conversation_id, session)
+                attachment = self.hub.attach(conversation_id, session, device.assistant_name)
                 self._named_connections[device.recipient_id] = connection
             await self._connected(ws, session, api_key, http, base_url, synth, cap, names[0],
                                   quiet_interval, settings, attachment, recv_ms, input_rate, output_rate,

@@ -522,7 +522,7 @@ When the assistant needs permission before it acts, the turn waits. The server
 plays the `approval` tone, asks out loud with a short summary, and also sends:
 
 ```json
-{"type":"approval_request","turn_id":"turn-42","approval_id":"approval-7","summary":"Open a network connection to the Kitchen speaker to read its logs. OK?","command":"nc 10.0.4.17 6053","choices":["once","session","always","deny"]}
+{"type":"approval_request","turn_id":"turn-42","approval_id":"approval-7","summary":"Arya wants to open a network connection to the Kitchen speaker to read its logs. Okay?","command":"nc 10.0.4.17 6053","choices":["once","session","always","deny"]}
 ```
 
 `thinking` frames continue while it waits. The person can answer by voice on any
