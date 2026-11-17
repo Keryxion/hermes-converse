@@ -26,10 +26,8 @@ DEFAULT_POLICY = POLICY_WAKE_SIGNAL
 DEFAULT_WAKE_WINDOW = 0.75
 # An election stops waiting for a device once its chance of claiming falls below this.
 LIKELY_TO_CLAIM = 0.1
-# Allowed beyond the largest recent gap between two devices' claims for one utterance.
-SKEW_MARGIN = 0.1
-# How many of a pair's latest gaps count.
-RECENT_GAPS = 20
+# How many of a pair's latest gaps between claims are kept.
+RECENT_GAPS = 100
 
 
 @dataclass(frozen=True)
@@ -160,7 +158,7 @@ class Arbitrator:
         self._recent: list[tuple[str, str, float]] = []  # (wake word, device, claimed at)
         self._claimed: dict[str, int] = {}
         self._together: dict[tuple[str, str], int] = {}
-        # Each pair's latest gaps between claims; the oldest drops out, so one late claim passes.
+        # Each pair's latest gaps between their claims for one utterance.
         self._skew: dict[frozenset[str], deque[float]] = {}
 
     async def register(self, device_id: str, *, device_name: Optional[str] = None,
@@ -202,22 +200,34 @@ class Arbitrator:
     def _likelihood(self, claimant: str, other: str) -> float:
         """Chance *other* claims an utterance *claimant* claimed: its share of the claimant's
         claims, starting from an even prior."""
-        return (self._together.get((claimant, other), 0) + 1) / (self._claimed.get(claimant, 0) + 2)
+        claims = self._claimed.get(claimant, 0)
+        return (min(self._together.get((claimant, other), 0), claims) + 1) / (claims + 2)
+
+    def _wait_for(self, claimant: str, other: str) -> float:
+        """How long after *claimant*'s claim *other* stays likely to claim. Each of the pair's
+        past gaps that goes by without a claim makes one less likely; with none to go by, a
+        claim could come at any point in the window."""
+        claims = self._likelihood(claimant, other)
+        gaps = sorted(self._skew.get(frozenset((claimant, other)), ()))
+        for passed in range(len(gaps) + 1):
+            later = (len(gaps) - passed + 1) / (len(gaps) + 1)  # chance its gap is longer still
+            if claims * later / (claims * later + 1 - claims) < LIKELY_TO_CLAIM:
+                return gaps[passed - 1] if passed else 0.0
+        return self.wake_window
 
     def _reschedule(self, election: _WakeElection) -> None:
         """Collect only until no connected device that has yet to claim is still likely to."""
         if not election.claims:
             return
         claimed = {c.device_name or c.device_id for c in election.claims}
+        # A device whose claim for this utterance went to an earlier election has claimed too.
+        claimed |= {other for word, other, _ in self._recent if word == election.wake_word}
         waiting = {name or device_id for device_id, (name, _) in self._labels.items()} - claimed
         until = election.created_at
         for claim in election.claims:
             me = claim.device_name or claim.device_id
             for other in waiting:
-                if self._likelihood(me, other) >= LIKELY_TO_CLAIM:
-                    skew = self._skew.get(frozenset((me, other)))
-                    until = max(until, claim.claimed_at + (
-                        self.wake_window if skew is None else max(skew) + SKEW_MARGIN))
+                until = max(until, claim.claimed_at + self._wait_for(me, other))
         election.deadline = min(election.created_at + self.wake_window, until)
         election.moved.set()
 
