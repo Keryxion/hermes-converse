@@ -493,7 +493,7 @@ being connected with no turn for a tool to act on.
 | `speak_this` | `text` | The device says exactly `text`, and nothing else the turn produces is spoken. |
 | `play_tone` | `tone`: `confirm` or `error` | The device plays that tone (`tones.md`). |
 | `standby` | None | The device goes to standby when this turn's playback has drained: `turn_done` carries `next_action: "standby"`. It stops sending audio and waits for the wake word or Talk. |
-| `command` | `text`: a gateway command with its slash, such as `/new` or `/compress` | Runs the command in this conversation and returns its reply to the agent. |
+| `command` | `text`: a gateway command without a leading slash, such as `new` or `compress` | Runs the command in this conversation and returns its reply to the agent. |
 
 ### `speak_this`
 
@@ -549,8 +549,9 @@ on cancellation, interruption, error, and timeout paths too.
 
 A person at a device with no screen cannot type a command or tap a button for
 one, so they ask: "start over", "compress this, you're getting slow". The agent
-runs a gateway command for its own conversation. `text` includes the slash and
-any arguments, for example `{"text":"/new"}`. The commands and aliases are the
+runs a gateway command for its own conversation. `text` contains the command
+without a leading slash and any arguments, for example `{"text":"new"}` or
+`{"text":"compress here 3"}`. The commands and aliases are the
 ones listed by the `commands` frame (Commands from a device), including plugin
 commands; there is no separate allowlist. Unknown commands return
 `unknown_command` without asking for approval or sending them to the gateway.
@@ -586,7 +587,7 @@ command.
 
 Other commands are submitted while the turn is running, without first stopping
 it. Hermes's mid-run command policy applies: approval does not override a busy
-refusal. For example, `/compress` can return a busy reply instead of compressing
+refusal. For example, `compress` can return a busy reply instead of compressing
 the conversation. A command queued by the gateway can execute after the turn;
 `failed` means no reply was obtained, not that an accepted command was undone.
 
