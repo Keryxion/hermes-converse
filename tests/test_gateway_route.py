@@ -71,7 +71,7 @@ async def test_typed_text_rejects_invalid_payloads_without_turn(monkeypatch):
             ("a space", "hello", "bad_request_id"),
             ("id-1", "  ", "bad_text"),
             ("id-2", 5, "bad_text"),
-            ("id-3", "🙂" * 16385, "bad_text"),
+            ("id-3", "🙂" * 32769, "bad_text"),
             ("x" * 81, "hello", "bad_request_id"),
         ]:
             await ws.send_json({"type": "text", "request_id": request_id, "text": text})
@@ -82,11 +82,11 @@ async def test_typed_text_rejects_invalid_payloads_without_turn(monkeypatch):
     assert fake.turns == []
 
 
-async def test_typed_text_accepts_64kb_utf8_boundary(monkeypatch):
+async def test_typed_text_accepts_128kb_utf8_boundary(monkeypatch):
     fake = _patch(monkeypatch)
     async with Harness(fake) as client:
         ws, _ = await _connect(client)
-        text = "🙂" * 16384
+        text = "🙂" * 32768
         await ws.send_json({"type": "text", "text": text, "request_id": "boundary"})
         assert await ws.receive_json(timeout=3) == {
             "type": "text_ack", "request_id": "boundary", "accepted": True}

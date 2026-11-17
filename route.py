@@ -443,7 +443,7 @@ def _resolve_session(settings: Settings, input_rate: int, output_rate: int, quie
 
 
 MAX_SAY_CHARS = 400
-MAX_TEXT_BYTES = 65536
+MAX_TEXT_BYTES = 128 * 1024
 
 
 def _say_text(raw: Any) -> str:
