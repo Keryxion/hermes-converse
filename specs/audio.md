@@ -47,6 +47,19 @@ endpointing and transcription expect, on its own copy:
   raised over a reply stays louder than the reply's echo by as much as it was
   at the microphone, and a word is not louder at its end than at its start.
 - Digital silence does not teach the gain.
+- While a reply plays, speech has to be louder than the reply's echo to
+  interrupt it. The server measures that echo on each device's microphone and
+  compares it with the level of the reply audio it is sending, so the level to
+  beat follows the device's volume, its echo cancellation, its room, and the
+  reply's own loud and quiet passages. No volume or echo setting is sent.
+- A capture that began while a reply was playing, or before the device
+  reported it had finished playing, is compared with the reply's words. When
+  it is a stretch of the reply read back, it is the reply's echo: it is
+  dropped, with no `transcript` and no turn. The rule: at least 3 words; the
+  first is a word of the reply; the rest follow in the reply's order, next to
+  each other there; one word in every 4 may be one the reply did not say, since
+  speech to text mishears an echo. Shorter speech, such as "stop", is always a
+  request.
 - Speech detection therefore does not depend on the input's absolute level. A
   device whose speech arrives 30 dB or more below a typical USB or ESP32
   microphone gets the same onset, endpoint and transcript.
@@ -69,4 +82,9 @@ lower:
   levels;
 - `quiet` does not end a request that was spoken;
 - an interruption spoken over a reply interrupts it at all three levels, and
-  the reply's echo alone does not.
+  the reply's echo alone does not;
+- a reply whose second sentence is louder than its first does not interrupt
+  itself, on a device that returns 5%, 25% or 60% of the reply's level;
+- while "Spotify is paused until you ask for it again." plays, a capture
+  transcribed as "Spotify is acquired until" starts no turn and sends no
+  `transcript`; "No, play it in the kitchen." and "stop" start one.

@@ -41,6 +41,7 @@ class SpeechDetector:
         self._voiced: deque = deque(maxlen=INTERRUPT_WINDOW_MS // vad.BLOCK_MS)
         self._levels: deque = deque(maxlen=_LEVEL_WINDOW_BLOCKS)
         self._echo: deque = deque(maxlen=100 + _ECHO_LAG_BLOCKS)
+        self._coupling: deque = deque(maxlen=100 + _ECHO_LAG_BLOCKS)  # echo level over the reply's level
         if model != "energy":
             session, self.fallback_reason = load_silero_session()
             if session is not None:
@@ -81,8 +82,10 @@ class SpeechDetector:
                         self._energy.quiet_floor * vad.CONVERSE_ENDPOINT_FLOOR_MULT)
         return vad.rms(self._np, block) < threshold
 
-    def feed(self, block: Any, playing: bool, *, interrupting: bool = False) -> Optional[str]:
-        """Process once; interrupting selects active-turn sensitivity, even before playback."""
+    def feed(self, block: Any, playing: bool, *, interrupting: bool = False,
+             reference: Optional[float] = None) -> Optional[str]:
+        """Process once; interrupting selects active-turn sensitivity, even before playback.
+        *reference* is the level of the reply being played (echo.ReplyLevel), when one is."""
         energy_phase = self._energy.feed(vad.rms(self._np, block), playing, interrupting=interrupting)
         probability = self.probability = self._probability(block)
         self.quiet = self._energy_quiet(block) if probability is None else probability < SPEECH_OFF
@@ -97,14 +100,23 @@ class SpeechDetector:
             baseline = (float(self._np.percentile(settled, 90))
                         if len(settled) >= _ECHO_MIN_BLOCKS else None)
             gate = None if baseline is None else max(baseline, vad.MIN_QUIET_FLOOR) * ECHO_MARGIN
+            # The echo heard so far says how loud the reply was. The reply itself says how loud
+            # it is now: its echo is that level times what this device, at this volume, in this
+            # room, has returned of it. A reply that gets louder raises the gate as it does.
+            coupled = list(self._coupling)[:-_ECHO_LAG_BLOCKS]
+            if gate is not None and reference and len(coupled) >= _ECHO_MIN_BLOCKS:
+                gate = max(gate, float(self._np.percentile(coupled, 90)) * reference * ECHO_MARGIN)
             voiced = voiced and gate is not None and level >= gate
             if not voiced:
                 # The reference is playback alone. Speech over it must not raise the level its
                 # own next word has to beat.
                 self._echo.append(level)
+                if reference:
+                    self._coupling.append(level / reference)
         else:
             self._levels.clear()
             self._echo.clear()
+            self._coupling.clear()
         self._in_speech = voiced
         if not (voiced or playing or interrupting):
             self._voiced.clear()

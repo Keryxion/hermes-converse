@@ -1583,9 +1583,9 @@ async def test_pending_approval_listens_normally_once_its_question_has_played(qu
     session.playback_until = cl.time.monotonic() + (60 if question_playing else -1)
     seen = []
     feed = session._detector.feed
-    def spy(block, playing, *, interrupting=False):
+    def spy(block, playing, *, interrupting=False, **kwargs):
         seen.append((playing, interrupting))
-        return feed(block, playing, interrupting=interrupting)
+        return feed(block, playing, interrupting=interrupting, **kwargs)
     session._detector.feed = spy
     session.start()
     try:
