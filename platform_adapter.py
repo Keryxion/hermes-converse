@@ -366,7 +366,8 @@ class ConverseAdapter(BasePlatformAdapter):
         if self._active.get(chat_id) in self._abandoned:
             return SendResult(success=True, message_id=uuid.uuid4().hex)  # nobody is waiting for it
         turn = self._turns.get(chat_id)
-        if turn is not None and turn.started and turn.outcome is None:
+        if (turn is not None and turn.started and turn.outcome is None
+                and (reply_to is None or reply_to in (turn.event.message_id, turn.admitted_id))):
             # The voice turn's own output: its final completes the streamed speech.
             if notify and not turn.stopped:
                 self._finish_text(turn, content or "")

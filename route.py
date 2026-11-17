@@ -684,8 +684,12 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
         origin = gateway._server_turns.get(attachment.conversation_id)
         if origin is None:
             origin = gateway._turns.get(attachment.conversation_id)
-            if origin is not None and (not origin.started or origin.outcome is not None or origin.stopped):
+            if origin is not None and (origin.outcome is not None or origin.stopped):
                 origin = None
+            elif origin is not None:
+                # A tool call proves the agent is executing, even when Hermes omitted processing-start.
+                # Do not mark merely queued turns active at the handler's admission boundary.
+                origin.started = True
         if origin is None:
             return "failed"
         canonical = await asyncio.to_thread(client.canonical_command, name)

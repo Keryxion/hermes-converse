@@ -318,7 +318,8 @@ async def test_new_is_dropped_if_the_final_reply_is_not_played(monkeypatch, devi
 
 @pytest.mark.parametrize("name,refused", [("compress", False), ("status", False),
                                          ("reset", False), ("reset", True)])
-async def test_tool_uses_the_real_gateway_command_policy(tmp_path, monkeypatch, device_env, name, refused):
+@pytest.mark.parametrize("voice_hooks", [True, False], ids=["processing-hooks", "handler-only"])
+async def test_tool_uses_the_real_gateway_command_policy(tmp_path, monkeypatch, device_env, name, refused, voice_hooks):
     """Real GatewayRunner, admission, slash dispatch and session reset; only inference/audio are fake."""
     from agent.i18n import t
     from gateway.config import GatewayConfig, Platform
@@ -339,6 +340,19 @@ async def test_tool_uses_the_real_gateway_command_policy(tmp_path, monkeypatch, 
     await asyncio.wait_for(initialize_session_authority(
         runner, profile_id="default", instance_id="command-tool-test"), 10)
     runner._wire_adapter_handlers(harness.adapter)
+    if not voice_hooks:
+        start, complete = harness.adapter.on_processing_start, harness.adapter.on_processing_complete
+
+        async def command_start(event):
+            if event.get_command():
+                await start(event)
+
+        async def command_complete(event, outcome):
+            if event.get_command():
+                await complete(event, outcome)
+
+        monkeypatch.setattr(harness.adapter, "on_processing_start", command_start)
+        monkeypatch.setattr(harness.adapter, "on_processing_complete", command_complete)
     if refused:
         check_access = runner._check_slash_access
         monkeypatch.setattr(runner, "_check_slash_access", lambda source, command:
