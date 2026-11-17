@@ -595,8 +595,7 @@ can unmute by voice, because a muted device hears nothing. If the turn calls
 both `mute` and `standby`, the last call wins. Speech accepted before
 `turn_done` interrupts the turn, and its `turn_done` carries no `next_action`:
 the device is not muted. Results are the same as for `standby`; `ok` means the
-request will be sent, not that the device muted, since a device the person
-cannot unmute ignores it.
+request will be sent, not that the device muted.
 
 ### `command`
 

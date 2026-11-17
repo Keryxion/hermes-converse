@@ -642,7 +642,7 @@ To switch a client that is not listening into listening, the server sends:
 |---|---|
 | absent | After playback drains, preserve the interaction mode: hands-free continues streaming for a follow-up; released push-to-talk stays in standby and sends no PCM. |
 | `standby` | After playback drains, stop upstream PCM and return to local wake detection (or the non-wake client's idle UI). Keep the socket/session open for outbound events. |
-| `mute` | On receipt, without waiting for playback to drain: mute, as the device's own mute control does. The reply keeps playing. Only the person unmutes, on the device. A device the person cannot unmute ignores `mute`. |
+| `mute` | On receipt, without waiting for playback to drain: mute, as the device's own mute control does. The reply keeps playing. Only the person unmutes, on the device. |
 | `listen` | After playback drains, enter listening: open an activation and stream microphone PCM for the next utterance, as after a wake grant (no wake claim), subject to explicit user mute. A client already listening keeps listening. |
 
 `next_action` is optional and absent most of the time. `standby`, `mute`, and
