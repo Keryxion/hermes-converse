@@ -42,7 +42,7 @@ SCHEMAS = {
         "description": (
             "Voice devices only. Change the wake word of the device you are talking through. "
             "Call with no phrase to list the phrases available and this device's current one. "
-            "Call with a listed phrase to switch: the device downloads and loads the model, and "
+            "Call with a phrase exactly as listed to switch: the device downloads and loads the model, and "
             "the result is ok only once the device reports the change. On any other result the "
             "device keeps its previous wake word; say that the change did not happen."),
         "parameters": {"type": "object", "properties": {

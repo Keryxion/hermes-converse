@@ -396,8 +396,9 @@ For example, load the shared dictionary and a household dictionary:
 ```
 
 Combine entries from all configured dictionaries. For an identical exact
-`phrase`, the first repository in the list wins. Phrases that differ only by
-case or spacing share a cache folder and count as the same phrase. Select that entry as a whole;
+`phrase`, the first repository in the list wins. Phrases are compared exactly:
+`Hey Arya` and `hey arya` are two phrases, listed and selected separately.
+Select that entry as a whole;
 do not mix its model formats or evaluations with another dictionary's entry.
 Entry IDs are local to their repository. Reordering sources affects the next
 selection; it does not replace a device's installed model.
@@ -442,13 +443,25 @@ that phrase is selected again.
 Keep each dictionary's last good index when its refresh fails, and report that
 source's failure while continuing to load the others. A cached phrase still
 works when GitHub is unavailable. A failed model download leaves the cached
-model and the active phrase alone. Private-repository authentication belongs to
-the server: when GitHub refuses an anonymous request, it retries with the
-profile's `GH_TOKEN` or `GITHUB_TOKEN`, which goes to GitHub only.
-Devices receive local model URLs and use the voice API key.
+model and the active phrase alone.
+
+Private-repository authentication belongs to the server. Ask for every URL
+anonymously first, so public dictionaries need no credentials. When GitHub
+refuses, retry with the profile's `GH_TOKEN` or `GITHUB_TOKEN`: a private
+repository's refs and files directly, and a private release's assets
+(`https://github.com/<repository>/releases/download/<tag>/<file>`) through the
+releases API, by finding the asset in the release and downloading it by ID.
+Verify the hash of a private artifact like any other. Send the token only to
+`github.com`, `raw.githubusercontent.com` and `api.github.com` over HTTPS. Do
+not follow a redirect with it: fetch the redirect target without credentials.
+Never log the token. Devices receive local model URLs and use the voice API key.
 
 Cached models live in the profile's `plugin-data/hermes-converse/wake/<slug>/`,
-where `<slug>` is the phrase in lowercase with spaces as `_` (`hey_sakura`). A
+where `<slug>` is the phrase in lowercase with spaces as `_` (`hey_sakura`).
+When that folder already holds another phrase's models, one differing only by
+case or spacing, the phrase gets a folder of its own named
+`<slug>.<first 12 hex digits of the phrase's SHA-256>`, so neither replaces
+the other. A
 folder holds a microWakeWord `manifest.json` with its `.tflite`, an openWakeWord
 `<slug>.onnx`, or both. `ready` lists only the formats present (client spec,
 section 8), each with its URL and the file's `sha256`. A phrase with no folder
@@ -467,7 +480,6 @@ tool with `phrase: "Hey Arya"`. Without `phrase`, the tool lists the combined
 dictionary's phrases, their available model formats and descriptions, and the
 device's configured phrase. With a phrase, download
 and verify its models before persisting the setting or sending the command.
-A phrase that differs from a listed one only by case or spacing selects the listed one.
 The tool acts on the device attached to the calling conversation; it has no
 device argument. Send `set_wake_word` with its models on the open socket
 (client spec, section 8), and save the phrase in `device_wake_words` when the
@@ -506,7 +518,11 @@ confirmation waits for a successful device result. Multiple dictionaries supply
 one combined listing; duplicate phrases use the first source's complete entry;
 each source reads from its own pinned commit; a failed source refresh preserves
 its cache and does not block other sources; a bad model hash prevents a switch;
-and cached models remain usable when GitHub is unreachable.
+and cached models remain usable when GitHub is unreachable. Phrases differing
+only by case or spacing stay separate, each with its own cached models, across
+a restart. A private dictionary's release assets download with the profile's
+token; public ones never see it, and it reaches no other host or redirect
+target.
 
 ## Gateway conversation
 
