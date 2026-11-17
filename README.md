@@ -77,6 +77,7 @@ A non-wake client may stream after `ready`. The server answers:
 | `error` | the turn failed (the message is spoken-safe text) |
 | `turn_done` | the reply is fully sent; optional `next_action: "standby"` ends the exchange after drain |
 | `quiet` | session mode: the stream has been silent for another `quiet_interval` seconds |
+| `client_diagnostics` | requests a fresh snapshot of the client's installed version, build, and diagnostic state; reply with the same `request_id` ([contract](specs/client.md#client-diagnostics)) |
 
 Handle the first `thinking` for a turn as an explicit boundary even without a preceding `transcript`:
 mark the agent turn active and show "thinking". During the granted activation, keep sending
@@ -305,7 +306,8 @@ API-server client.
 | `synth.py` | one `text → int16 PCM` seam over streaming or one-shot TTS, plus resampling |
 | `speech.py` | the only module that imports Hermes core speech helpers |
 | `settings.py` | the settings schema |
-| `voice_tools.py` | the `speak_this`, `play_tone`, `standby` and approved `command` agent tools |
+| `voice_tools.py` | the `speak_this`, `play_tone`, `standby`, approved `command`, and `client_diagnostics` agent tools |
+| `client_diagnostics.py` | fresh diagnostic requests and responses on one client socket |
 | `named.py` | named-device routing records and public Hermes conversation lookup/continuation |
 | `turn_detector.py`, `tracing.py` | the optional Smart Turn endpointer and host-configured OTEL tracing backend |
 

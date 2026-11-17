@@ -304,6 +304,7 @@ Countdowns are unaffected by a command.
 | `quiet` | session mode: the stream has been silent for another `quiet_interval` seconds |
 | `error` | the turn failed (spoken-safe text) |
 | `{"type":"tone","tone":"confirm"}` | Play the named tone (see `tones.md`): `confirm` or `error` when the assistant chooses to, `approval` just before the server asks for an approval. It is not a reply: no `turn_id`, and the device reports no state for it. |
+| `client_diagnostics` | Request a fresh version, build, and diagnostic snapshot; answer on this socket with the same `request_id`, as below. |
 | `countdown`, `countdown_cancel` | Start, extend, or cancel a countdown that ends with a tone (section 10). |
 
 These are the only server frames, apart from `model_changed` and `model_error`
@@ -315,6 +316,39 @@ then the server stays at most about 1.5 s ahead of real-time playback. Keep
 reading the socket while you play. A buffer of 1.5 s plus network jitter never
 has to stop reading, so `interrupted`, `turn_done`, and pings reach you without
 waiting behind queued audio.
+
+### Client diagnostics
+
+The assistant can request diagnostics from this connected client. On receiving:
+
+```json
+{"type":"client_diagnostics","request_id":"diag-1"}
+```
+
+Return a fresh snapshot with the same `request_id`:
+
+```json
+{"type":"client_diagnostics","request_id":"diag-1","version":"1.2.3","build":"145","platform":"macos","diagnostics":{"state":"listening","muted":false,"conversation_window":"hidden"}}
+```
+
+Always include the running app's `version` and `build` as nonempty strings, read
+from its installed package or firmware, not a release lookup. `diagnostics` is
+an object; `platform` is an optional nonempty string. Include the client's connection,
+microphone, wake detection, playback and window state where applicable, plus
+recent bounded diagnostic events already collected by the app. Omit unavailable
+measurements rather than inventing values. Report collection failure with the
+same `request_id` and a nonempty `error` string instead of a snapshot:
+
+```json
+{"type":"client_diagnostics","request_id":"diag-1","error":"Microphone diagnostics unavailable."}
+```
+
+The response is at most 32 KiB of UTF-8 JSON. Exclude credentials, authentication
+headers, audio, transcript text, assistant reply text and other message content.
+This request reads existing diagnostics; it does not enable recording, change
+settings, reconnect, or interrupt the exchange. It works without telemetry export
+being configured. Answer on the socket that received the request; do not send
+unsolicited snapshots or carry a pending response to a replacement connection.
 
 ### Microphone streaming and barge-in
 

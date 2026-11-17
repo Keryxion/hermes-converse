@@ -19,6 +19,7 @@ class Attachment:
     send: Optional[Callable[[dict], Any]] = None  # sends a JSON frame to the device
     assistant_name: str = ""  # the start frame's, which approvals speak as
     command: Optional[Callable[[str, list[str], float], Any]] = None
+    diagnostics: Optional[Callable[[], Any]] = None
 
 
 class ConversationHub:
