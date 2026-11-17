@@ -161,6 +161,18 @@ class Relay:
         self.ws = ws
         self.audio = audio
 
+    async def _send(self, method: str, payload: Any) -> None:
+        ws = self.ws
+        if ws is None:
+            return
+        try:
+            await getattr(ws, method)(payload)
+        except ConnectionResetError:
+            # The reader will detach the running turn. A simultaneous write failure must not
+            # cancel it first, especially while the agent is waiting for an approval answer.
+            if self.ws is ws:
+                self.ws = None
+
     async def send_json(self, frame: dict) -> None:
         if self.ws is not None:
             audio = self.audio
@@ -169,21 +181,21 @@ class Relay:
                 for packet in await on_audio_thread(_audio_frame, audio, frame):
                     if self.ws is None:
                         return
-                    await self.ws.send_bytes(packet)
+                    await self._send("send_bytes", packet)
                 if self.ws is None:
                     return
-            await self.ws.send_json(frame)
+            await self._send("send_json", frame)
 
     async def send_bytes(self, data: bytes) -> None:
         if self.ws is not None:
             audio = self.audio
             if audio is None:
-                await self.ws.send_bytes(data)
+                await self._send("send_bytes", data)
             else:
                 for packet in await on_audio_thread(lambda: list(audio.encode(data, self.source_rate))):
                     if self.ws is None:
                         return
-                    await self.ws.send_bytes(packet)
+                    await self._send("send_bytes", packet)
 
 
 def _changes_audio(frame: dict) -> bool:

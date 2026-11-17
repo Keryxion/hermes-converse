@@ -569,6 +569,9 @@ from a device), including plugin commands; there is no separate allowlist. Unkno
 `unknown_command` without asking for approval or sending them to the gateway.
 The gateway's slash-access policy still applies. The reply is the tool result,
 not speech; the agent says what matters in its own words.
+The voice prompt includes this catalog with descriptions, aliases, argument
+hints, and subcommands. It tells the agent to call `command` with
+`{"name":"new","args":[]}` when the person asks to start a new session or start over.
 
 The person approves every call before it runs. The agent does not decide what a
 command does to the conversation: it is asked as for a Hermes approval

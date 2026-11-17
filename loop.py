@@ -1256,12 +1256,20 @@ VOICE_PROMPT = (
     "summary. Speak useful authorized updates proactively; if no update is needed, honor "
     "the scheduler's silent-response protocol. Cancelling speech does not cancel a timer: "
     "use the countdown tool to cancel it. Use the scheduling tool to cancel a scheduled wake. "
+    "Use the command tool for this conversation's gateway commands. The server supplies their "
+    "catalog below: choose the command name, aliases, and arguments from that catalog, including "
+    "session management, status, settings, memory, and skills when listed. When the user asks "
+    "to start a new session, start a new conversation, or start over, call command with "
+    "{\"name\":\"new\",\"args\":[]}. The server asks the person for approval on every call and "
+    "enforces Hermes's access and busy-command policies. A new-session command takes effect "
+    "after your final reply has played: acknowledge its deferral briefly and finish your turn. "
     "If a tool or delivery integration is unavailable, say so instead of claiming success."
 )
 
 
 def voice_system_prompt(name: Optional[str] = None, *,
-                        device_name: Optional[str] = None, recipient_id: Optional[str] = None) -> str:
+                        device_name: Optional[str] = None, recipient_id: Optional[str] = None,
+                        commands: Optional[list[dict[str, Any]]] = None) -> str:
     """Ephemeral system prompt for one converse turn: an identity + wake-word preamble when *name*
     is given and the spoken-brevity rules."""
     name = (str(name).strip() if name is not None else "")
@@ -1288,6 +1296,9 @@ def voice_system_prompt(name: Optional[str] = None, *,
             "destination, use a routing-capable tool and clarify ambiguous labels; do not invent "
             "cross-device delivery or claim that it is supported when the tool cannot do it."
         )
+    if commands is not None:
+        import json
+        prompt += " Gateway command catalog: " + json.dumps(commands, ensure_ascii=False, separators=(",", ":"))
     return prompt
 
 

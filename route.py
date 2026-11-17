@@ -741,11 +741,12 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
         nonlocal after_reply
         after_reply = None
         model, provider = selected_model  # Snapshot once; do not alter a turn already in flight.
+        commands = await asyncio.to_thread(client.commands) if hasattr(client, "commands") else None
         result = await client.run_turn(
             text=transcript, on_delta=on_delta,
             instructions=voice_system_prompt(
                 name,
-                device_name=named_device.device_name, recipient_id=named_device.recipient_id),
+                device_name=named_device.device_name, recipient_id=named_device.recipient_id, commands=commands),
             model=model, provider=provider)
         after_reply = getattr(result, "after_playback", None)
         return result.reply, result.error

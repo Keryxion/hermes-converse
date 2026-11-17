@@ -1,4 +1,5 @@
 import json
+import pytest
 
 from hermes_converse.catchup import replay_frames
 
@@ -50,3 +51,17 @@ def test_an_interrupted_turns_notice_is_not_replayed():
     rows = [row(1, "user", "Put that on the PR."),
             row(2, "assistant", "Operation interrupted: waiting for model response (10.6s elapsed).")]
     assert [(f["message_id"], f["role"]) for f in replay_frames(rows, None)] == [("1", "user")]
+@pytest.mark.parametrize("method,payload", [("send_json", {"type": "thinking"}), ("send_bytes", b"audio")])
+async def test_socket_write_failure_detaches_the_relay_instead_of_cancelling_the_turn(method, payload):
+    from hermes_converse.catchup import Relay
+
+    class Gone:
+        async def send_json(self, data):
+            raise ConnectionResetError("peer disconnected")
+
+        async def send_bytes(self, data):
+            raise ConnectionResetError("peer disconnected")
+
+    relay = Relay(Gone())
+    await getattr(relay, method)(payload)
+    assert not relay.attached
