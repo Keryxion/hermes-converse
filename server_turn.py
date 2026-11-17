@@ -10,6 +10,7 @@ class ServerTurn:
         self.spoken: list[str] = []
         self.exclusive = False
         self.standby = False
+        self.mute = False
         self.after_playback: Optional[Callable[[], Awaitable[None]]] = None
 
     def speak(self, text: str) -> None:

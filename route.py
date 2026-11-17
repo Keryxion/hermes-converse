@@ -782,7 +782,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
             last_progress=lambda: client.last_progress,
             turn_timeout=settings.turn_timeout, tail_fallback=settings.tail_fallback,
             max_tts_chars=settings.max_tts_chars,
-            standby=lambda: client.standby, after_turn=_after_turn,
+            standby=lambda: client.standby, mute=lambda: client.mute, after_turn=_after_turn,
         )
 
     detached = False

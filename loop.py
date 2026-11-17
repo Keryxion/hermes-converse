@@ -1329,6 +1329,7 @@ class _Driver:
     tail_fallback: float
     max_tts_chars: int
     standby: Optional[Callable[[], bool]]
+    mute: Optional[Callable[[], bool]]
     transcripts: bool
     tool_calls: Optional[Callable[[], int]]
     reasoning_tokens: Optional[Callable[[], Optional[int]]]
@@ -1397,6 +1398,7 @@ async def drive_converse_turns(
     tail_fallback: float = DEFAULT_TAIL_FALLBACK,
     max_tts_chars: int = DEFAULT_MAX_TTS_CHARS,
     standby: Optional[Callable[[], bool]] = None,
+    mute: Optional[Callable[[], bool]] = None,
     transcripts: bool = False,
     tool_calls: Optional[Callable[[], int]] = None,
     reasoning_tokens: Optional[Callable[[], Optional[int]]] = None,
@@ -1429,7 +1431,7 @@ async def drive_converse_turns(
                 send_bytes=send_bytes, run_turn=run_turn, history=history,
                 quiet_interval=quiet_interval, interrupt_turn=interrupt_turn, release_turn=release_turn,
                 turn_timeout=turn_timeout, tail_fallback=tail_fallback, max_tts_chars=max_tts_chars,
-                standby=standby, transcripts=transcripts, tool_calls=tool_calls,
+                standby=standby, mute=mute, transcripts=transcripts, tool_calls=tool_calls,
                 reasoning_tokens=reasoning_tokens, last_progress=last_progress,
                 message_ids=message_ids, present=present)
     session.enable_turn_control()
@@ -1542,7 +1544,7 @@ async def drive_converse_turns(
                 unsubmitted.append(str(transcript))
             else:
                 unsubmitted.clear()  # explicit cancellation does not carry a request forward
-            if action == "standby":
+            if action in ("standby", "mute"):  # either way the device stops sending audio
                 _discard_after_signoff(session, deferred_outputs)
                 getattr(session, "end_exchange", lambda: None)()
             await session.wait_for_playback_tail()
@@ -1668,7 +1670,8 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
     # run is not a decision to put the client in standby.
     completed = not (barged or turn_err or turn.timed_out)
     next_action = (
-        "standby" if completed and d.standby is not None and d.standby()
+        "mute" if completed and d.mute is not None and d.mute()
+        else "standby" if completed and d.standby is not None and d.standby()
         else "listen"
     )
     if completed and turn.output:
@@ -1689,7 +1692,8 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
     if record_action is not None:
         record_action(next_action)
     action_source = ("server_output" if turn.output is not None else
-                     "standby_tool" if next_action == "standby" else "user_turn")
+                     "standby_tool" if next_action == "standby" else
+                     "mute_tool" if next_action == "mute" else "user_turn")
     # One line per turn that says which turn it was and why it was (or was not) heard. Lengths
     # only: never the transcript or reply text. reply_chars counts streamed deltas, final_chars the
     # run's final reply, spoken_chars what reached TTS.
@@ -1704,10 +1708,10 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
         getattr(session, "session_id", None), turn.turn_id, outcome, len(turn.result.get("reply") or ""),
         sum(len(p) for p in turn.spoken_parts), turn.pcm_chunks, next_action, action_source)
     # Ordinary completion preserves the device's interaction mode. Only an
-    # explicit standby decision overrides it; never reopen a released PTT mic.
+    # explicit standby or mute decision overrides it; never reopen a released PTT mic.
     turn_done: dict[str, Any] = {"type": "turn_done", "turn_id": turn.turn_id}
-    if next_action == "standby":
-        turn_done["next_action"] = "standby"
+    if next_action in ("standby", "mute"):
+        turn_done["next_action"] = next_action
     await d.send_json(turn_done)
     _finish_trace(tt, turn, reply, err=turn_err, barged=barged, next_action=next_action)
     return next_action
