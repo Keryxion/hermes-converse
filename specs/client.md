@@ -1026,13 +1026,14 @@ optional `turn_id` to target a specific turn.
 
 ### The wake word
 
-The server sets each device's wake phrase and sends it in `ready`, with the
-model files that detect it:
+Every wake-word device ships with a working `Hey Sakura` model and starts
+with that phrase on first setup. The server sends the configured phrase and
+its models in `ready`:
 
 ```json
-{"type":"ready","wake_word":{"phrase":"Hey Arya","models":{
-  "micro_wake_word":{"url":"/v1/audio/wake/hey_arya/manifest.json","sha256":"9f2c…"},
-  "open_wake_word":{"url":"/v1/audio/wake/hey_arya/hey_arya.onnx","sha256":"41d0…"}}}}
+{"type":"ready","wake_word":{"phrase":"Hey Sakura","models":{
+  "micro_wake_word":{"url":"/v1/audio/wake/hey_sakura/manifest.json","sha256":"9f2c…"},
+  "open_wake_word":{"url":"/v1/audio/wake/hey_sakura/hey_sakura.onnx","sha256":"41d0…"}}}}
 ```
 
 | `models` key | File | Used by |
@@ -1042,15 +1043,35 @@ model files that detect it:
 
 Fetch a model with `GET` on the server's host and port, with
 `Authorization: Bearer <API_SERVER_KEY>`. `sha256` is the hash of the file at
-`url`. Keep what you downloaded and fetch again only when `sha256` changes. Go
-on detecting with the current model until the new one is ready.
+`url`. For microWakeWord, also fetch the manifest's model file, resolving it
+relative to the manifest URL and using the same key. Cache downloads by
+`sha256`; reuse a cached model when its hash matches. If no download is
+offered for a phrase already supplied by a bundled model, use that model.
 
-Listen for `phrase` with the model for your engine, and send exactly `phrase`
-as `wake_word` in wake claims, so every device in the house elects together. If
-`models` has nothing for your engine, or the download fails, keep your previous
-wake word and show that the configured one is not available. A `ready` without
-`wake_word` sets nothing; keep your own. The `cancel` wake word (section 10)
-stays the device's own.
+The server can change the wake word on an open socket with `set_wake_word`.
+It carries the same `phrase` and `models` as `ready.wake_word`:
+
+```json
+{"type":"set_wake_word","phrase":"Hey Arya","models":{
+  "open_wake_word":{"url":"/v1/audio/wake/hey_arya/hey_arya.onnx","sha256":"41d0…"}}}
+```
+
+For either message, keep detecting with the current model while downloading,
+verifying the advertised hash, and loading the new model. Once loading succeeds,
+switch the model and phrase together. Send exactly the active `phrase` in wake
+claims. Report the result on the same socket:
+
+```json
+{"type":"wake_word_set","phrase":"Hey Arya","status":"ok"}
+{"type":"wake_word_set","phrase":"Hey Arya","status":"error","error":"download_failed"}
+```
+
+`phrase` identifies the requested phrase. Errors are `model_unavailable`,
+`download_failed`, `hash_mismatch`, or `load_failed`. On failure, keep the
+previous phrase and model and show that the requested one is unavailable.
+Remember a successful switch across restarts. A `ready` without `wake_word`
+keeps the active phrase; before any switch, that is `Hey Sakura`. The `cancel`
+wake word (section 10) stays the device's own.
 
 ### Participation and lifetime
 
