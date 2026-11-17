@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import math
 import logging
-import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -19,13 +18,6 @@ AUX_TIMEOUT = 20.0
 WATCH_SECONDS = 1.0
 SPEECH_TTL = 60.0
 
-SUMMARY_SYSTEM = (
-    "A voice assistant asks permission to run a shell command, aloud, as \"<name> wants to <phrase>. Okay?\". "
-    "Write only the phrase: what will happen, in plain words, in twenty words or fewer, as a verb phrase "
-    "that follows \"wants to\" (for example: open a network connection to the Kitchen speaker to read its logs). "
-    "No name, no question mark. Do not read the command out character by character and never repeat secrets. "
-    "Reply with the phrase only."
-)
 NO_NAME = "The assistant"  # who asks when no device has told its assistant_name
 ANSWER_SYSTEM = (
     "A voice assistant asked the user a yes-or-no question about running a command. Decide what the user's "
@@ -51,20 +43,10 @@ def _answers(choices: Any) -> str:
     return "Say " + ", ".join(words[:-1]) + (", or " if len(words) > 2 else " or ") + words[-1] + "."
 
 
-def phrase(text: str) -> str:
-    """Hermes's description (or the model's phrase) as words that follow "wants to": "Start a new
-    session (fresh session ID + history)" -> "start a new session, with fresh session ID + history"."""
-    text = " ".join((text or "").split()).rstrip(" .!?;:,")
-    text = re.sub(r"\s*\(([^()]*)\)$", r", with \1", text).rstrip(" .!?;:,")
-    first = text.split(" ", 1)[0]
-    if not (len(first) > 1 and first[:2].isupper()):  # SSH, URL: an acronym keeps its capitals
-        text = text[:1].lower() + text[1:]
-    return text
-
-
-def summary(assistant_name: str, what: str) -> str:
-    """The spoken question: "Arya wants to <what will happen>. Okay?" """
-    return f"{assistant_name or NO_NAME} wants to {what}. Okay?"
+def summary(assistant_name: str, description: str) -> str:
+    """Ask permission using Hermes's description directly."""
+    description = " ".join(description.split()).rstrip(" .!?;:,") or "Run a command"
+    return f"{assistant_name or NO_NAME} wants permission for: {description}. Okay?"
 
 
 def _aux(system: str, user: str, max_tokens: int) -> str:
@@ -125,7 +107,8 @@ class Approvals:
         if old is not None:
             self._settle(old, "deny", "denied")  # Hermes asks one at a time; an older one is stale
         self._pending[p.chat_id] = p
-        p.tasks = [asyncio.ensure_future(self._prepare(p)), asyncio.ensure_future(self._watch(p))]
+        p.tasks = [asyncio.ensure_future(self._watch(p))]
+        self._ask(p)
 
     async def ask(self, chat_id: str, command: str, summary: str, timeout: float) -> Optional[str]:
         """Ask the person about the plugin's own *command* as a Hermes request is asked, whatever
@@ -148,19 +131,6 @@ class Approvals:
             return None
         finally:
             self._settle(p, "deny", "cancelled")  # the tool call went away; nothing if already settled
-
-    async def _prepare(self, p: _Pending) -> None:
-        user = f"Command:\n{p.command}\n\nDescription:\n{p.description}"
-        try:
-            what = phrase(await asyncio.to_thread(_aux, SUMMARY_SYSTEM, user, 80))
-        except Exception:
-            logger.warning("converse: approval summary failed; using Hermes's description", exc_info=True)
-            what = ""
-        attachment = self._hub.attachment(p.chat_id)
-        p.summary = summary(getattr(attachment, "assistant_name", ""),
-                            what or phrase(p.description) or "run a command that needs permission")
-        if not p.settled:
-            self._ask(p)
 
     async def _watch(self, p: _Pending) -> None:
         """Hermes's own timeout ends the request (ours: its deadline); notice it. Keep the waiting turn
@@ -196,6 +166,8 @@ class Approvals:
         session.answer_taken = False
         session.answer_hook = lambda text, _p=p, _a=attachment: self._spoken(_p, _a, text)
         if speech is None:
+            if p.answer is None:
+                p.summary = summary(attachment.assistant_name, p.description)
             self._send(attachment, {
                 "type": "approval_request",
                 "turn_id": getattr(attachment.session, "_active_turn_id", None),
@@ -215,7 +187,7 @@ class Approvals:
             text += "?"
         return f"{text} {_answers(choices)}"
 
-    def _speak(self, p: _Pending, text: str, *, tone: bool = False) -> None:
+    def _speak(self, p: _Pending, text: str, *, tone: bool = False, question: bool = True) -> None:
         turn = self._adapter._turns.get(p.chat_id)
         if turn is not None and turn.started and turn.outcome is None and not turn.stopped and not turn.detached:
             if tone:
@@ -223,7 +195,8 @@ class Approvals:
             turn.on_delta(Aside(text + "\n"))  # the waiting turn says it; it is not part of the reply
         else:
             self._hub.publish(p.chat_id, text, f"approval:{uuid.uuid4().hex}", expires_at=time.time() + SPEECH_TTL,
-                              transient=True, next_action="listen",  # the idle device must capture the answer
+                              transient=True,
+                              next_action="listen" if question else None,  # the idle device must capture the answer
                               tones=("approval",) if tone else ())
 
     @staticmethod
@@ -237,7 +210,7 @@ class Approvals:
     def attached(self, attachment: Any) -> None:
         """A device attached to the conversation: a pending request asks again, both ways."""
         p = self._pending.get(attachment.conversation_id)
-        if p is not None and not p.settled and p.summary:
+        if p is not None and not p.settled:
             self._ask(p)
 
     # ── answering ──
@@ -314,6 +287,14 @@ class Approvals:
             if getattr(device.session, "answer_hook", None) is not None:
                 device.session.answer_hook = None
             self._send(device, {"type": "approval_resolved", "approval_id": p.request_id, "outcome": outcome})
+            if self._hub.attachment(p.chat_id) is device:
+                text = outcome.capitalize() + "."
+                if outcome == "cancelled":
+                    # The cancelled turn's audio is discarded; speak after it has stopped.
+                    self._hub.publish(p.chat_id, text, f"approval:{uuid.uuid4().hex}",
+                                      expires_at=time.time() + SPEECH_TTL)
+                else:
+                    self._speak(p, text, question=False)
         for task in p.tasks:
             if task is not asyncio.current_task():
                 task.cancel()

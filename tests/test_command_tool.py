@@ -12,7 +12,6 @@ import pytest
 from aiohttp import web
 
 from hermes_converse import command_catalog
-from hermes_converse.approvals import phrase
 from hermes_converse.voice_tools import make_handlers, register_tools
 from tests.support.fake_hermes import FakeHermes
 from tests.test_route import (API_KEY, VOICE_PROTOCOL, Harness, _FakeStreamer, _key_protocol, _patch_speech,
@@ -110,8 +109,8 @@ async def test_an_approved_command_runs_in_the_turn_and_returns_its_reply(monkey
     fake, harness, ws, request, frames, streamer = await _turn_calling(
         monkeypatch, device_env, "compress", "once", args=["here", "3"])
     try:
-        description = phrase(command_catalog.description("compress"))
-        summary = f"Arya wants to run a command for you: {description}, here, 3. Okay?"
+        description = command_catalog.description("compress")
+        summary = f"Arya wants permission for: {description}, here, 3. Okay?"
         assert request["summary"] == summary and request["command"] == "/compress here 3"
         assert request["choices"] == ["once", "deny"]
         assert not [f for f in frames if f.get("type") == "tone"]  # the tone is in the reply audio
@@ -191,8 +190,8 @@ async def test_new_starts_the_conversation_only_after_the_reply_has_played(monke
         monkeypatch, device_env, "reset", "once", transcript="start over",
         settings={"playback_tail_timeout_seconds": .1} if playback == "timeout" else None)
     try:
-        description = phrase(command_catalog.description("new"))
-        assert request["summary"] == f"Arya wants to run a command for you: {description}. Okay?"
+        description = command_catalog.description("new")
+        assert request["summary"] == f"Arya wants permission for: {description}. Okay?"
         assert "new conversation" in fake.results[0]
         turn_done = frames[-1]
         if playback == "timeout":

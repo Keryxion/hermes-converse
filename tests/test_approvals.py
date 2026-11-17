@@ -1,4 +1,4 @@
-"""Voice approvals (specs/server.md, "Approvals"): the summary says who is asking."""
+"""Voice approvals: direct descriptions, named questions, and spoken outcomes."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import pytest
 pytest.importorskip("tools.approval")
 
 from hermes_converse import approvals  # noqa: E402
-from hermes_converse.approvals import Approvals, phrase  # noqa: E402
+from hermes_converse.approvals import Approvals  # noqa: E402
 from hermes_converse.conversation import ConversationHub  # noqa: E402
 
 
@@ -28,9 +28,14 @@ def rig(monkeypatch):
     monkeypatch.setattr("tools.approval.resolve_gateway_approval",
                         lambda key, choice, request_id=None: resolved.append(choice) or 1)
     monkeypatch.setattr("tools.approval.list_gateway_approvals", lambda key: [{"request_id": "r1"}])
+
+    def no_model(*_):
+        pytest.fail("Asking permission must not call a model")
+
+    monkeypatch.setattr(approvals, "_aux", no_model)
     hub = ConversationHub()
     adapter = SimpleNamespace(_hub=hub, _turns={})
-    return SimpleNamespace(hub=hub, approvals=Approvals(adapter), resolved=resolved)
+    return SimpleNamespace(hub=hub, adapter=adapter, approvals=Approvals(adapter), resolved=resolved)
 
 
 def attach(rig, name="Arya"):
@@ -45,63 +50,102 @@ PROMPT = SimpleNamespace(request_id="r1", session_key="k", chat_id="den", comman
                          description="Network connection (to a device)", choices=["once", "deny"])
 
 
-async def asked(rig, frames):
-    await rig.approvals.begin(PROMPT)
-    for _ in range(100):
-        if frames:
-            break
-        await asyncio.sleep(0.01)
-    return frames[0]
-
-
-@pytest.mark.parametrize("text, expected", [
-    ("Start a new session (fresh session ID + history)", "start a new session, with fresh session ID + history"),
-    ("Compress conversation context.", "compress conversation context"),
-    ("SSH into the host!", "SSH into the host"),
-    ("  open the door  ", "open the door"),
-    ("delete files (recursive).", "delete files, with recursive"),
-])
-def test_phrase_makes_a_description_speakable(text, expected):
-    assert phrase(text) == expected
-
-
-async def test_summary_names_the_assistant_and_asks_okay(rig, monkeypatch):
-    seen = []
-    monkeypatch.setattr(approvals, "_aux", lambda system, user, n: seen.append((system, user)) or
-                        "Open a network connection to the Kitchen speaker to read its logs.")
+async def test_summary_uses_description_without_a_model(rig):
     session, frames = attach(rig)
-    request = await asked(rig, frames)
-    summary = "Arya wants to open a network connection to the Kitchen speaker to read its logs. Okay?"
-    assert request["type"] == "approval_request" and request["summary"] == summary
+    await rig.approvals.begin(PROMPT)
+    summary = "Arya wants permission for: Network connection (to a device). Okay?"
+    assert frames[0]["type"] == "approval_request" and frames[0]["summary"] == summary
     assert len(frames) == 1  # the tone is audio, not a frame
     assert [(o.tones, o.text) for o in session.outputs] == [(("approval",), summary + " Say yes or no.")]
     assert session.outputs[0].next_action == "listen"
-    assert "wants to" in seen[0][0] and "nc 10.0.4.17 6053" in seen[0][1]
-    rig.approvals._settle(rig.approvals._pending["den"], "deny", "denied")
-
-
-async def test_a_failed_summary_call_says_hermess_description(rig, monkeypatch):
-    def fail(*_):
-        raise RuntimeError("no auxiliary model")
-
-    monkeypatch.setattr(approvals, "_aux", fail)
-    _session, frames = attach(rig, name="Hal")
-    request = await asked(rig, frames)
-    assert request["summary"] == "Hal wants to network connection, with to a device. Okay?"
-    rig.approvals._settle(rig.approvals._pending["den"], "deny", "denied")
+    rig.approvals.respond(rig.hub.attachment("den"), {"approval_id": "r1", "choice": "deny"})
 
 
 async def test_no_assistant_name_and_the_re_ask(rig, monkeypatch):
-    replies = iter(["run the tests", "pardon"])
-    monkeypatch.setattr(approvals, "_aux", lambda *_: next(replies))
     session, frames = attach(rig, name="")
-    request = await asked(rig, frames)
-    assert request["summary"] == "The assistant wants to run the tests. Okay?"
+    await rig.approvals.begin(PROMPT)
+    summary = "The assistant wants permission for: Network connection (to a device). Okay?"
+    assert frames[0]["summary"] == summary
     pending = rig.approvals._pending["den"]
+    monkeypatch.setattr(approvals, "_aux", lambda *_: "unclear")
     await rig.approvals._answer(pending, "hmm")
-    assert session.outputs[-1].text == ("Sorry, I did not catch that. The assistant wants to run the tests. Okay? "
-                                        "Say yes or no.")
-    rig.approvals._settle(pending, "deny", "denied")
+    assert session.outputs[-1].text == "Sorry, I did not catch that. " + summary + " Say yes or no."
+    await rig.approvals._answer(pending, "hmm")
+    assert session.outputs[-1].text == "Denied."
+    assert rig.resolved == ["deny"]
+
+
+async def test_empty_description(rig):
+    session, frames = attach(rig)
+    await rig.approvals.begin(SimpleNamespace(**{**vars(PROMPT), "description": "  "}))
+    assert frames[0]["summary"] == "Arya wants permission for: Run a command. Okay?"
+    rig.approvals.respond(rig.hub.attachment("den"), {"approval_id": "r1", "choice": "deny"})
+
+
+@pytest.mark.parametrize("initially_attached", [False, True])
+async def test_held_approval_uses_name_on_attach(rig, initially_attached):
+    if initially_attached:
+        attach(rig)
+    await rig.approvals.begin(PROMPT)
+    original = rig.hub.attachment("den")
+    if original is not None:
+        rig.hub.detach("den", original)
+        assert rig.approvals.on_stop("den")
+    session, frames = attach(rig)
+    rig.approvals.attached(rig.hub.attachment("den"))
+    assert frames[0]["summary"] == "Arya wants permission for: Network connection (to a device). Okay?"
+    assert session.outputs[0].text == frames[0]["summary"] + " Say yes or no."
+    rig.approvals.respond(rig.hub.attachment("den"), {"approval_id": "r1", "choice": "deny"})
+
+
+@pytest.mark.parametrize("outcome", ["approved", "denied", "expired", "cancelled"])
+async def test_outcome_is_spoken_and_sent_once(rig, monkeypatch, outcome):
+    session, frames = attach(rig)
+    await rig.approvals.begin(PROMPT)
+    attachment = rig.hub.attachment("den")
+    if outcome in ("approved", "denied"):
+        response = {"approval_id": "r1", "choice": "once" if outcome == "approved" else "deny"}
+        rig.approvals.respond(attachment, response)
+        rig.approvals.respond(attachment, response)
+    elif outcome == "expired":
+        monkeypatch.setattr("tools.approval.list_gateway_approvals", lambda key: [])
+        monkeypatch.setattr(approvals, "WATCH_SECONDS", 0)
+        await rig.approvals._watch(rig.approvals._pending["den"])
+    else:
+        assert not rig.approvals.on_stop("den")
+        assert not rig.approvals.on_stop("den")
+    assert [o.text for o in session.outputs][1:] == [outcome.capitalize() + "."]
+    assert session.outputs[-1].next_action is None  # an outcome is not a question
+    assert frames[1:] == [{"type": "approval_resolved", "approval_id": "r1", "outcome": outcome}]
+    assert rig.resolved == ([] if outcome == "expired" else ["once" if outcome == "approved" else "deny"])
+    assert session.answer_hook is None
+
+
+@pytest.mark.parametrize("outcome", ["approved", "cancelled"])
+async def test_outcome_during_a_running_turn(rig, outcome):
+    session, frames = attach(rig)
+    deltas = []
+    rig.adapter._turns["den"] = SimpleNamespace(started=True, outcome=None, stopped=False,
+                                               detached=False, on_delta=deltas.append)
+    await rig.approvals.begin(PROMPT)
+    if outcome == "approved":
+        rig.approvals.respond(rig.hub.attachment("den"), {"approval_id": "r1", "choice": "once"})
+        assert deltas[-1] == "Approved.\n"
+        assert session.outputs == []
+    else:
+        rig.approvals.on_stop("den")
+        # Cancellation discards the running turn's audio; the confirmation is queued separately.
+        assert len(deltas) == 2  # the approval tone and the question
+        assert [o.text for o in session.outputs] == ["Cancelled."]
+
+
+async def test_spoken_yes_confirms_approval(rig, monkeypatch):
+    session, frames = attach(rig)
+    await rig.approvals.begin(PROMPT)
+    monkeypatch.setattr(approvals, "_aux", lambda *_: "once")
+    await rig.approvals._answer(rig.approvals._pending["den"], "yes")
+    assert rig.resolved == ["once"]
+    assert session.outputs[-1].text == "Approved."
 
 
 @pytest.mark.parametrize("answer", ["frame", "spoken", "spoken_late"])
