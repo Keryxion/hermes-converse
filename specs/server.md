@@ -412,10 +412,11 @@ unsupported index versions. Entry versions support semver prereleases such as
 A phrase manifest has the exact `phrase` and a `models` map keyed by
 `micro_wake_word` or `open_wake_word`. Each format gives its primary file's
 pinned artifact `url` and `sha256`; microWakeWord also lists its referenced
-`.tflite` URL and hash in `files`. The default dictionary references versioned
-release assets in `Keryxion/wakeword-training`; other dictionaries can reference
-their own releases. Only entries with trained models are offered; text alone
-does not create a detector.
+`.tflite` URL and hash in `files`. The default dictionary hosts its models in
+versioned releases of `Keryxion/wakewords`; training and provenance live in
+`Keryxion/wakeword-training`. Other dictionaries can reference their own
+releases. Only entries with trained models are offered; text alone does not
+create a detector.
 
 Optional `evaluations`, keyed by engine, summarize sensitivity (detected
 positive cases) and specificity (negative cases that stayed quiet). Each metric
