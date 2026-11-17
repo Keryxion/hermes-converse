@@ -12,6 +12,7 @@ import logging
 import math
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass, replace
 from typing import Any, Optional
 
@@ -25,8 +26,10 @@ DEFAULT_POLICY = POLICY_WAKE_SIGNAL
 DEFAULT_WAKE_WINDOW = 0.75
 # An election stops waiting for a device once its chance of claiming falls below this.
 LIKELY_TO_CLAIM = 0.1
-# Allowed beyond the largest gap seen between two devices' claims for one utterance.
+# Allowed beyond the largest recent gap between two devices' claims for one utterance.
 SKEW_MARGIN = 0.1
+# How many of a pair's latest gaps count.
+RECENT_GAPS = 20
 
 
 @dataclass(frozen=True)
@@ -157,8 +160,8 @@ class Arbitrator:
         self._recent: list[tuple[str, str, float]] = []  # (wake word, device, claimed at)
         self._claimed: dict[str, int] = {}
         self._together: dict[tuple[str, str], int] = {}
-        # ponytail: largest gap ever seen, so one outlier lengthens that pair's wait for good.
-        self._skew: dict[frozenset[str], float] = {}
+        # Each pair's latest gaps between claims; the oldest drops out, so one late claim passes.
+        self._skew: dict[frozenset[str], deque[float]] = {}
 
     async def register(self, device_id: str, *, device_name: Optional[str] = None,
                        session_id: Optional[str] = None) -> Device:
@@ -193,7 +196,7 @@ class Arbitrator:
             for pair in ((me, other), (other, me)):
                 self._together[pair] = self._together.get(pair, 0) + 1
             both = frozenset((me, other))
-            self._skew[both] = max(self._skew.get(both, 0.0), now - at)
+            self._skew.setdefault(both, deque(maxlen=RECENT_GAPS)).append(now - at)
         self._recent.append((claim.wake_word, me, now))
 
     def _likelihood(self, claimant: str, other: str) -> float:
@@ -214,7 +217,7 @@ class Arbitrator:
                 if self._likelihood(me, other) >= LIKELY_TO_CLAIM:
                     skew = self._skew.get(frozenset((me, other)))
                     until = max(until, claim.claimed_at + (
-                        self.wake_window if skew is None else skew + SKEW_MARGIN))
+                        self.wake_window if skew is None else max(skew) + SKEW_MARGIN))
         election.deadline = min(election.created_at + self.wake_window, until)
         election.moved.set()
 
