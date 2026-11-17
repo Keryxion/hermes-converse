@@ -198,7 +198,8 @@ call appears in the conversation's history.
 ### Endpointing, completion, and recovery
 
 Keep endpointing separate from onset detection. Received silence of
-`endpoint_silence_ms` (default 700) is a candidate pause. Without Smart Turn it
+`endpoint_silence_ms` (default 700) is a candidate pause. Smart Turn is on by
+default; `smart_turn_enabled: false` turns it off. Without Smart Turn the pause
 ends the capture. With Smart Turn, a complete-sounding turn ends it; an incomplete
 one keeps listening and is checked again after each further window, until
 `endpoint_max_silence_ms` (default 3000) of continuous silence ends it. Speech

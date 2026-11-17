@@ -411,7 +411,7 @@ class ConverseSession:
     def __init__(
         self, np: Any, *, input_rate: int = DEFAULT_INPUT_RATE, quiet_interval: float = 0.0,
         transcribe: Optional[Callable[[str], str]] = None, barge_multiplier: Optional[float] = None,
-        endpoint_model: bool = False, endpoint_threshold: float = SMART_TURN_DEFAULT_THRESHOLD,
+        smart_turn_enabled: bool = False, endpoint_threshold: float = SMART_TURN_DEFAULT_THRESHOLD,
         endpoint_silence_ms: int = DEFAULT_ENDPOINT_SILENCE_MS,
         endpoint_max_silence_ms: int = DEFAULT_ENDPOINT_MAX_SILENCE_MS,
         vad_model: str = DEFAULT_VAD_MODEL,
@@ -491,7 +491,7 @@ class ConverseSession:
         self._pause_blocks = max(1, vad.PAUSE_MS // vad.BLOCK_MS)
         self._endpoint_threshold = float(endpoint_threshold)
         self._turn_detector: Any = None
-        if endpoint_model:
+        if smart_turn_enabled:
             try:
                 from .turn_detector import load_turn_detector
 

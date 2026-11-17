@@ -26,7 +26,7 @@ def test_unavailable_smart_turn_keeps_fixed_endpoint(monkeypatch, caplog, failur
         transformers.WhisperFeatureExtractor = object
         monkeypatch.setitem(sys.modules, 'transformers', transformers)
 
-    session = ConverseSession(np, endpoint_model=True)
+    session = ConverseSession(np, smart_turn_enabled=True)
     assert session._turn_detector is None
     assert turn_detector.load_turn_detector() is None
     messages = [r.message for r in caplog.records if 'smart-turn endpointer unavailable' in r.message]

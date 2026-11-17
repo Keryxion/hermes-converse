@@ -55,7 +55,7 @@ class Settings:
     turn_timeout: float = DEFAULT_TURN_TIMEOUT
     tail_fallback: float = DEFAULT_TAIL_FALLBACK
     max_tts_chars: int = DEFAULT_MAX_TTS_CHARS
-    endpoint_model: bool = False
+    smart_turn_enabled: bool = True
     endpoint_threshold: float = DEFAULT_ENDPOINT_THRESHOLD
     endpoint_silence_ms: int = DEFAULT_ENDPOINT_SILENCE_MS
     endpoint_max_silence_ms: int = DEFAULT_ENDPOINT_MAX_SILENCE_MS
@@ -83,8 +83,7 @@ def _text(raw: Any) -> Optional[str]:
     return text or None
 
 
-def _model_enabled(raw: Any) -> bool:
-    """``endpoint_model``: any value that is not empty / none / false / off enables Smart Turn."""
+def _arbitrate_enabled(raw: Any) -> bool:
     return bool(raw) and str(raw).strip().lower() not in ("", "none", "false", "off", "0")
 
 
@@ -113,6 +112,9 @@ def _milliseconds(raw: Any, default: int) -> int:
 
 def load_settings(get: Getter) -> Settings:
     """Build :class:`Settings` from ``get(key, default)`` (``ctx.get_config`` or a dict's ``.get``)."""
+    smart_turn_enabled = get("smart_turn_enabled", True)
+    if not isinstance(smart_turn_enabled, bool):
+        raise ValueError("smart_turn_enabled must be a boolean (true or false)")
     approval = str(get("approval_choice", "deny") or "deny").strip().lower()
     silence_ms = _milliseconds(get("endpoint_silence_ms", DEFAULT_ENDPOINT_SILENCE_MS), DEFAULT_ENDPOINT_SILENCE_MS)
     return Settings(
@@ -121,7 +123,7 @@ def load_settings(get: Getter) -> Settings:
         turn_timeout=_number(get("turn_timeout_seconds", DEFAULT_TURN_TIMEOUT), DEFAULT_TURN_TIMEOUT),
         tail_fallback=_number(get("playback_tail_timeout_seconds", DEFAULT_TAIL_FALLBACK), DEFAULT_TAIL_FALLBACK),
         max_tts_chars=int(_number(get("max_tts_chars_per_turn", DEFAULT_MAX_TTS_CHARS), DEFAULT_MAX_TTS_CHARS)),
-        endpoint_model=_model_enabled(get("endpoint_model", "")),
+        smart_turn_enabled=smart_turn_enabled,
         vad_model="energy" if str(get("vad_model", DEFAULT_VAD_MODEL)).strip().lower() == "energy" else "silero",
         endpoint_threshold=min(1.0, max(0.0, _number(get("endpoint_threshold", DEFAULT_ENDPOINT_THRESHOLD),
                                                        DEFAULT_ENDPOINT_THRESHOLD))),
@@ -132,7 +134,7 @@ def load_settings(get: Getter) -> Settings:
             get("capture_no_data_seconds", DEFAULT_CAPTURE_NO_DATA_SECONDS)),
         approval_choice=approval if approval in APPROVAL_CHOICES else "deny",
         api_base_url=str(get("api_base_url", "") or "").strip().rstrip("/"),
-        arbitrate_enabled=_model_enabled(get("arbitrate_enabled", DEFAULT_ARBITRATE_ENABLED)),
+        arbitrate_enabled=_arbitrate_enabled(get("arbitrate_enabled", DEFAULT_ARBITRATE_ENABLED)),
         arbitrate_policy=_arbitrate_policy(get("arbitrate_policy", DEFAULT_ARBITRATE_POLICY)),
         arbitrate_device_id=_text(get("arbitrate_device_id", DEFAULT_ARBITRATE_DEVICE_ID)),
         arbitrate_wake_window_seconds=_wake_window(
