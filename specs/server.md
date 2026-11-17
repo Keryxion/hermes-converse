@@ -493,7 +493,7 @@ being connected with no turn for a tool to act on.
 | `speak_this` | `text` | The device says exactly `text`, and nothing else the turn produces is spoken. |
 | `play_tone` | `tone`: `confirm` or `error` | The device plays that tone (`tones.md`). |
 | `standby` | None | The device goes to standby when this turn's playback has drained: `turn_done` carries `next_action: "standby"`. It stops sending audio and waits for the wake word or Talk. |
-| `command` | `text`: a gateway command without a leading slash, such as `new` or `compress` | Runs the command in this conversation and returns its reply to the agent. |
+| `command` | `name`: a gateway command without a leading slash; `args`: an array of strings, default `[]` | Runs the command in this conversation and returns its reply to the agent. |
 
 ### `speak_this`
 
@@ -549,10 +549,20 @@ on cancellation, interruption, error, and timeout paths too.
 
 A person at a device with no screen cannot type a command or tap a button for
 one, so they ask: "start over", "compress this, you're getting slow". The agent
-runs a gateway command for its own conversation. `text` contains the command
-without a leading slash and any arguments, for example `{"text":"new"}` or
-`{"text":"compress here 3"}`. The commands and aliases are the
-ones listed by the `commands` frame (Commands from a device), including plugin
+runs a gateway command for its own conversation. `name` is the command without
+a leading slash. `args` is an array of strings, one per argument; omit it for
+no arguments, the same as `[]`. For example:
+
+```json
+{"name":"new","args":[]}
+```
+
+```json
+{"name":"compress","args":["here","3"]}
+```
+
+The commands and aliases are the ones listed by the `commands` frame (Commands
+from a device), including plugin
 commands; there is no separate allowlist. Unknown commands return
 `unknown_command` without asking for approval or sending them to the gateway.
 The gateway's slash-access policy still applies. The reply is the tool result,
@@ -562,8 +572,7 @@ The person approves every call before it runs. The agent does not decide what a
 command does to the conversation: it is asked as for a Hermes approval
 (Approvals) with `approval_choice` `ask`, whatever the device's setting. The
 `approval` tone plays, then the server, not the agent, says what will happen,
-from the description listed by the `commands` frame and any arguments in
-`text`:
+from the description listed by the `commands` frame and `args`:
 
 > Arya wants to run a command for you: start a new session, with fresh
 > session ID + history. Okay?
