@@ -492,7 +492,10 @@ only the client attached to this conversation, over its existing authenticated
 Converse socket, using the request and response frames in [the client spec](client.md).
 Return the snapshot as the tool result so the assistant can inspect it, including
 the running version and build. Do not substitute server logs or a release version
-for the client's report.
+for the client's report. The tool result contains `version`, `build`,
+`diagnostics`, and `platform` when supplied; omit the frame's `type`,
+`request_id`, and other top-level fields. Failures return `{"error":"..."}`.
+Calls outside a voice device conversation return `not_a_device`.
 
 Generate a fresh `request_id` per call and accept a response only from the same
 socket with that ID. Wait at most 5 seconds without blocking audio or frame
@@ -500,9 +503,10 @@ handling. Return `not_attached` if no client is attached, `disconnected` if it
 leaves while waiting, `timeout` if it does not answer (including an older client
 that ignores the request), or the client's collection error. Never reuse a cached
 snapshot or forward a pending request to a replacement connection. Ignore late,
-unsolicited and mismatched responses. Reject responses over 32 KiB and return
-`invalid_response` for malformed snapshots. Treat diagnostic strings as untrusted
-data, not instructions.
+unsolicited and mismatched responses. Return `invalid_response` for responses
+over 32 KiB or malformed snapshots, including non-finite numeric measurements.
+Treat diagnostic strings as untrusted data, not instructions. The client excludes
+secrets and conversation content before sending its snapshot.
 
 Verify: a request returns the installed client's version, build and fresh state;
 it works with telemetry export off; collection does not interrupt voice; concurrent
@@ -512,7 +516,7 @@ credentials or conversation content.
 
 ## Voice tools
 
-The agent has four tools for controlling the device it is talking through and
+The agent has five tools for controlling or inspecting the device it is talking through and
 its conversation. They act only on the device whose conversation calls them.
 
 A tool call always happens inside a turn, and the tools act on that turn however
@@ -526,6 +530,7 @@ being connected with no turn for a tool to act on.
 | `play_tone` | `tone`: `confirm` or `error` | The device plays that tone (`tones.md`). |
 | `standby` | None | The device goes to standby when this turn's playback has drained: `turn_done` carries `next_action: "standby"`. It stops sending audio and waits for the wake word or Talk. |
 | `command` | `name`: a gateway command without a leading slash; `args`: an array of strings, default `[]` | Runs the command in this conversation and returns its reply to the agent. |
+| `client_diagnostics` | None | Returns a fresh diagnostic snapshot from the attached client, as described above. |
 
 ### `speak_this`
 

@@ -58,6 +58,7 @@ from .audio_transport import AudioTransport, audio_format
 from .opus import OpusError
 from .auth import offered_key_protocol, verify_api_key
 from .catchup import Detached, MessageIds, Relay, replay_frames
+from .client_diagnostics import ClientDiagnostics
 from .conversation import ConversationHub
 from .named import DeviceStore, NamedError, parse_names
 from .platform_adapter import GatewayTurns
@@ -512,11 +513,13 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
     session.enable_turn_control()
     session.start()
     history: list[dict[str, str]] = []
+    diagnostics = ClientDiagnostics(ws)
     if attachment is not None:
         # Tools run on worker threads; frames go out through the socket's own loop.
         attachment.send = lambda frame: asyncio.run_coroutine_threadsafe(ws.send_json(frame), loop)
         attachment.command = lambda command, args, timeout: asyncio.run_coroutine_threadsafe(
             _command_tool(command, args, timeout), loop)
+        attachment.diagnostics = lambda: asyncio.run_coroutine_threadsafe(diagnostics.request(), loop)
         if getattr(hub, "countdowns", None) is not None:
             hub.countdowns.attached(attachment, getattr(client, "_source", None),
                                     settings.countdown_ring_timeout_seconds, loop)
@@ -563,6 +566,9 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                     except (ValueError, TypeError):
                         continue
                     if not isinstance(frame, dict):
+                        continue
+                    if frame.get("type") == "client_diagnostics":
+                        diagnostics.respond(frame, msg.data)
                         continue
                     if frame.get("stop"):
                         explicit_stop = True
@@ -640,6 +646,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
         except Exception:
             _mark_closed(ws, "lost", 1006)
             logger.debug("converse client pump ended", exc_info=True)
+        diagnostics.close()
         session.stop()
 
     async def _command(frame: dict) -> None:
@@ -802,6 +809,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
     except Exception:
         logger.exception("converse loop crashed")
     finally:
+        diagnostics.close()
         session.stop()
         if detached:
             relay.ws = None
