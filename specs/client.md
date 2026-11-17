@@ -232,7 +232,7 @@ a bad Opus packet.
 After `ready`, send `{"type":"text","text":"...","request_id":"draft-1"}`.
 `request_id` is a nonempty ASCII identifier of 1–80 characters (`A–Z`, `a–z`,
 `0–9`, `_`, `-`), chosen uniquely per submission on this socket. `text` is a
-nonempty string after trimming surrounding whitespace, at most 65536 UTF-8
+nonempty string after trimming surrounding whitespace, at most 131072 UTF-8
 bytes after trimming. The server does not truncate it. It responds once per
 frame with `{"type":"text_ack","request_id":"draft-1","accepted":true}`
 when queued for the agent, or `{"type":"text_ack","request_id":"draft-1","accepted":false,"error":"bad_text"}`
