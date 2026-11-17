@@ -78,6 +78,7 @@ A non-wake client may stream after `ready`. The server answers:
 | `turn_done` | the reply is fully sent; optional `next_action: "standby"` ends the exchange after drain, `"mute"` mutes the device at once |
 | `quiet` | session mode: the stream has been silent for another `quiet_interval` seconds |
 | `client_diagnostics` | requests a fresh snapshot of the client's installed version, build, and diagnostic state; reply with the same `request_id` ([contract](specs/client.md#client-diagnostics)) |
+| `set_wake_word` | switch to this wake phrase and its models, then answer `wake_word_set` ([contract](specs/client.md#the-wake-word)) |
 
 Handle the first `thinking` for a turn as an explicit boundary even without a preceding `transcript`:
 mark the agent turn active and show "thinking". During the granted activation, keep sending
@@ -156,6 +157,9 @@ plugin settings form):
 | `arbitrate_policy` | `wake_signal` | rank wake claims with `wake_signal` |
 | `arbitrate_device_id` | `""` | optional label prefix for server-generated unique socket identifiers |
 | `arbitrate_wake_window_seconds` | `0.75` | how long the arbitrator collects concurrent wake claims for the same wake word before electing the primary device |
+| `wake_word` | `Hey Sakura` | wake phrase for every named device |
+| `device_wake_words` | `{}` | wake phrase for particular devices by `device_name`; the `set_wake_word` voice tool writes it |
+| `wake_word_repositories` | `[{repository: Keryxion/wakewords, ref: main}]` | ordered GitHub wake-word dictionaries; the first one listing a phrase supplies it, and `[]` uses only cached models |
 
 STT and TTS come from your normal Hermes `stt.*` and `tts.*` configuration.
 
@@ -306,7 +310,8 @@ API-server client.
 | `synth.py` | one `text → int16 PCM` seam over streaming or one-shot TTS, plus resampling |
 | `speech.py` | the only module that imports Hermes core speech helpers |
 | `settings.py` | the settings schema |
-| `voice_tools.py` | the `speak_this`, `play_tone`, `standby`, `mute`, approved `command`, and `client_diagnostics` agent tools |
+| `voice_tools.py` | the `speak_this`, `play_tone`, `standby`, `mute`, approved `command`, `client_diagnostics`, and `set_wake_word` agent tools |
+| `wake_words.py` | wake-word dictionaries, the verified model cache behind `GET /v1/audio/wake/<slug>/<file>`, and live switches |
 | `client_diagnostics.py` | fresh diagnostic requests and responses on one client socket |
 | `named.py` | named-device routing records and public Hermes conversation lookup/continuation |
 | `turn_detector.py`, `tracing.py` | the optional Smart Turn endpointer and host-configured OTEL tracing backend |

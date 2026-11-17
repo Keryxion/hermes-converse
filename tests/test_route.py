@@ -24,9 +24,11 @@ from hermes_converse.named import DeviceStore
 from hermes_converse.platform_adapter import ConverseAdapter
 from hermes_converse.route import ConverseRoute, loopback_base_url
 from hermes_converse.settings import load_settings
+from hermes_converse.wake_words import WakeWords
 
 from tests.support.converse_audio import RMS_NORMAL_SPEECH, RMS_QUIET_SPEECH, room_noise, speech_like
 from tests.support.converse_audio import silence as _silence_pcm
+from tests.support.fake_github import FakeGitHub
 from tests.support.fake_hermes import FakeHermes
 
 API_KEY = "-".join(("fixture", "converse", "api", "key", "0123456789"))
@@ -69,9 +71,9 @@ class Harness:
     """One app serving the fake API server and the plugin route, with the converse platform
     connected to the fake gateway runner; the route's loopback URL is this server's own URL."""
 
-    def __init__(self, fake: FakeHermes, settings: dict | None = None, *, device_store=None):
+    def __init__(self, fake: FakeHermes, settings: dict | None = None, *, device_store=None, wake_words=None):
         self.fake = fake
-        self.settings = settings or {}
+        self.settings = settings if settings is not None else {}
         self.base = {"url": ""}
         app = web.Application()
         app.add_routes(fake.routes())
@@ -79,8 +81,12 @@ class Harness:
         if device_store is None:
             # Device identity is per harness: one test's names never reuse another's conversation.
             device_store = DeviceStore(Path(tempfile.mkdtemp(prefix="converse-devices-"))/"devices.db")
+        if wake_words is None:
+            # Wake-word models are per harness too, and ordinary tests never reach GitHub.
+            wake_words = WakeWords(Path(tempfile.mkdtemp(prefix="converse-wake-")), open_fetch=FakeGitHub().open)
         self.route = ConverseRoute(settings_getter=getter, base_url_resolver=lambda: self.base["url"],
-                                   device_store=device_store)
+                                   device_store=device_store, wake_words=wake_words,
+                                   settings_setter=self.settings.__setitem__)
         self.route.wire(app)
         app['hub'] = self.route.hub
         self.app = app

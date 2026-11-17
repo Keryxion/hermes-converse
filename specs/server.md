@@ -384,7 +384,7 @@ device starts with a bundled `Hey Sakura` model on first setup.
 |---|---|---|
 | `wake_word` | `Hey Sakura` | The default phrase for every named device. |
 | `device_wake_words` | none | A phrase for particular devices by `device_name`, such as `{"Den Echo": "Hey Arya"}`. |
-| `wake_word_repositories` | `[{"repository":"Keryxion/wakewords","ref":"main"}]` | Ordered list of GitHub dictionaries, each with its own branch, tag, or commit. Omitted `ref` means `main`; `[]` uses only bundled and cached models. |
+| `wake_word_repositories` | `[{"repository":"Keryxion/wakewords","ref":"main"}]` | Ordered list of GitHub dictionaries, each with its own branch, tag, or full commit hash. Omitted `ref` means `main`; `[]` uses only bundled and cached models. |
 
 For example, load the shared dictionary and a household dictionary:
 
@@ -425,18 +425,26 @@ the linked report. An unmeasured metric is `null`. Include the measured
 `model_sha256`, named dataset, test conditions, detector settings and source
 report URL. Results belong to those model bytes and that test.
 
-On an explicit dictionary refresh, resolve each repository's `ref` to its own
-commit and read its index and manifests from that commit. Keep the repository
-and resolved commit with its entries. Download a selected phrase's files from
-its pinned URLs, verify every hash, and cache them before sending the switch
-command. Record the source repository, commit, entry version and artifact hashes
-with the cached model. Refreshing dictionaries does not install new models.
+Refresh the dictionaries when the `set_wake_word` tool lists or selects a
+phrase, and when a configured phrase has no cached models. Resolve each
+repository's `ref` to its own commit from the repository's Git refs, and read
+its index and manifests from that commit at `raw.githubusercontent.com`; an
+unchanged commit is not read again. Keep each dictionary, with its repository
+and resolved commit, in the profile's
+`plugin-data/hermes-converse/wake-dictionaries/`. Download a selected phrase's
+files from its pinned URLs, verify every hash, and cache them before sending
+the switch command. Record the source repository, commit, entry version and
+artifact hashes in `source.json` beside the cached model. Refreshing
+dictionaries does not install new models: a cached phrase changes only when
+that phrase is selected again.
 
 Keep each dictionary's last good index when its refresh fails, and report that
 source's failure while continuing to load the others. A cached phrase still
-works when GitHub is unavailable. A failed model download leaves the active
-phrase alone. Private-repository authentication belongs to the server; devices
-receive local model URLs and use the voice API key.
+works when GitHub is unavailable. A failed model download leaves the cached
+model and the active phrase alone. Private-repository authentication belongs to
+the server: when GitHub refuses an anonymous request, it retries with the
+profile's `GH_TOKEN` or `GITHUB_TOKEN`, which goes to GitHub only.
+Devices receive local model URLs and use the voice API key.
 
 Cached models live in the profile's `plugin-data/hermes-converse/wake/<slug>/`,
 where `<slug>` is the phrase in lowercase with spaces as `_` (`hey_sakura`). A
@@ -449,25 +457,46 @@ local filename. Hash the served manifest, so a changed model also changes the
 hash advertised to clients.
 
 Serve the files at `GET /v1/audio/wake/<slug>/<file>` on the API server, with
-the same API key as the voice route. Serve only files in that folder.
+the same API key as the voice route in `Authorization: Bearer`. Serve only
+files in that folder; answer anything else with 404, and a missing or wrong key
+with 401.
 
 “Hey Sakura, change your wake word to Hey Arya” calls the `set_wake_word` voice
 tool with `phrase: "Hey Arya"`. Without `phrase`, the tool lists the combined
-dictionary's phrases and their available model formats. With a phrase, download
+dictionary's phrases, their available model formats and descriptions, and the
+device's configured phrase. With a phrase, download
 and verify its models before persisting the setting or sending the command.
+A phrase that differs from a listed one only by case selects the listed one.
 The tool acts on the device attached to the calling conversation; it has no
 device argument. Persist the requested phrase in `device_wake_words` and send
 `set_wake_word` with its models on the open socket (client spec, section 8).
-Send changes to a connected device's effective setting the same way; an offline
-device receives it in `ready` on reconnect. A device override takes precedence
-over `wake_word`.
+A device override takes precedence over `wake_word`.
+
+When a connected device's configured phrase changes in the settings, select
+that phrase and send `set_wake_word` the same way, within a few seconds and
+without a reconnect. An offline device receives its phrase in `ready` on
+reconnect. `ready` never waits for GitHub: it carries the models already
+cached, and a configured phrase with none cached is selected and sent in
+`set_wake_word` once the device is connected.
 
 Allow one switch at a time per device. A sent command means the switch was
 requested; confirm that the device changed only after its `wake_word_set`
-reports `ok`. An error, disconnect, or missing result does not confirm a
-switch. Report a failed switch as failed; the device keeps its previous model
-and phrase. Reject a tool request with no models before changing the setting.
+reports `ok` for that phrase, within 30 seconds. An error, disconnect, or
+missing result does not confirm a switch. Report a failed switch as failed; the
+device keeps its previous model and phrase. When the device reports an error,
+put its `device_wake_words` entry back as it was. After a disconnect or a
+missing result the requested phrase stays configured, and the device receives
+it in `ready` when it reconnects. Reject a tool request with no models before
+changing the setting.
 `assistant_name` remains the client's choice, independent of the wake phrase.
+
+| Tool result | Meaning |
+|---|---|
+| `{"wake_word":"Hey Sakura","phrases":[{"phrase":"Hey Arya","formats":["micro_wake_word","open_wake_word"],"description":"..."}]}` | No `phrase` was given: the device's configured phrase and the phrases on offer. `unavailable_dictionaries` lists repositories that could not be refreshed. |
+| `{"result":"ok","phrase":"Hey Arya"}` | The device reported that it switched. |
+| `{"result":"failed","error":"..."}` | No switch was confirmed. `unknown_phrase`, `download_failed`, `hash_mismatch` and `setting_not_saved` come from the server before anything was sent; `model_unavailable`, `download_failed`, `hash_mismatch` and `load_failed` come from the device; `timeout` and `disconnected` mean it did not answer. |
+| `{"result":"not_attached"}` | No device is connected to this conversation. |
+| `{"result":"not_a_device"}` | The call was made from a chat that is not a voice device. |
 
 Verify: two devices given one phrase send identical wake claims; a changed model
 changes its advertised hash; a device with no compatible model keeps its active
@@ -627,14 +656,9 @@ connection and other producers start turns too. Its output goes nowhere, and
 that is expected:
 
 - Do not synthesize speech for it. The reply is in the conversation's history
-<<<<<<< HEAD
   and is replayed as a transcript when a client catches up, with the text it
   would have said.
-- `speak_this`, `play_tone`, `standby`, `mute`, and `countdown` return `not_attached`,
-=======
-  and is replayed as a transcript when a client catches up.
-- `speak_this`, `play_tone`, `standby`, `set_wake_word`, and `countdown` return `not_attached`,
->>>>>>> afb4cd2 (Spec live wake-word switching and configurable dictionaries)
+- `speak_this`, `play_tone`, `standby`, `mute`, `set_wake_word`, and `countdown` return `not_attached`,
   so the agent can tell nobody is there and tell another room or chat instead.
 - Nothing is queued to be spoken later.
 - A pending approval is held, as described under Approvals.
@@ -679,13 +703,8 @@ credentials or conversation content.
 
 ## Voice tools
 
-<<<<<<< HEAD
-The agent has six tools for controlling or inspecting the device it is talking through and
+The agent has tools for controlling or inspecting the device it is talking through and
 its conversation. They act only on the device whose conversation calls them.
-=======
-The agent has four tools for controlling the device it is talking through.
-They act only on the device whose conversation calls them.
->>>>>>> afb4cd2 (Spec live wake-word switching and configurable dictionaries)
 
 A tool call always happens inside a turn, and the tools act on that turn however
 it started: by speech, or by the server for a reminder, a still-ringing alarm,

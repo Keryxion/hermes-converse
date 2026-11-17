@@ -31,7 +31,9 @@ Protocol:
            "countdown_id":...,"ringing":true}`` or ``..."ended":true}`` a countdown ringing or ended,
            ``{"type":"wake","claim_id":"...","wake_word":"...", ...}`` requests an
            advisory wake recommendation; see ``specs/client.md``. Accepted interruptions are captured as continuations.
-  server → ``ready`` (rates, ``session_id``, clock-skew timestamps), ``transcript``, ``thinking``,
+           ``{"type":"wake_word_set","phrase":"...","status":"ok"}`` the result of a wake-word switch.
+  server → ``ready`` (rates, ``session_id``, ``wake_word``, clock-skew timestamps), ``set_wake_word``,
+           ``transcript``, ``thinking``,
            ``speaking`` + binary PCM, ``interrupted``, ``turn_done`` (``next_action``), ``quiet``, ``error``.
 """
 
@@ -67,6 +69,7 @@ from .loop import (ConversationOutput, ConverseSession, drive_converse_turns,
                    parse_start_config, voice_system_prompt)
 from .settings import Settings, load_settings
 from .tracing import ConnectionTrace, emit_span, force_flush
+from .wake_words import ROUTE_PREFIX as WAKE_ROUTE_PREFIX, WakeWordLink, WakeWords, device_wake_words
 
 logger = logging.getLogger(__name__)
 
@@ -114,8 +117,13 @@ class ConverseRoute:
 
     def __init__(self, *, settings_getter: Callable[..., Any], base_url_resolver: Callable[[], str],
                  hub: Optional[ConversationHub] = None,
-                 device_store: Optional[DeviceStore] = None) -> None:
+                 device_store: Optional[DeviceStore] = None,
+                 settings_setter: Optional[Callable[[str, Any], None]] = None,
+                 wake_words: Optional[WakeWords] = None) -> None:
         self._settings_getter = settings_getter
+        self._settings_setter = settings_setter
+        self._wake_words = wake_words or WakeWords()
+        self._wake_setting_lock = asyncio.Lock()
         self._base_url = base_url_resolver
         self.hub = hub or ConversationHub()
         self._arbitrator: Optional[Arbitrator] = None
@@ -151,6 +159,7 @@ class ConverseRoute:
                            "register %s", ROUTE_PATH)
             return False
         app.router.add_get(ROUTE_PATH, self.handle)
+        app.router.add_get(WAKE_ROUTE_PREFIX + "/{slug}/{file}", self.wake_file)
         app.on_cleanup.append(_flush_tracing)
         async def close_devices(app):
             await asyncio.to_thread(self._devices.close)
@@ -167,6 +176,30 @@ class ConverseRoute:
 
     def _settings(self) -> Settings:
         return load_settings(self._settings_getter)
+
+    async def wake_file(self, request: web.Request) -> web.StreamResponse:
+        """``GET /v1/audio/wake/<slug>/<file>``: a cached wake-word model file, for the voice API key."""
+        scheme, _, key = request.headers.get("Authorization", "").partition(" ")
+        async with ClientSession(timeout=HTTP_TIMEOUT) as http:
+            if scheme.lower() != "bearer" or not await verify_api_key(self._base_url(), key.strip(), http=http):
+                raise web.HTTPUnauthorized()
+        path = await asyncio.to_thread(self._wake_words.file, request.match_info["slug"],
+                                       request.match_info["file"])
+        if path is None:
+            raise web.HTTPNotFound()
+        return web.FileResponse(path)
+
+    async def _set_device_wake_word(self, device_name: str, phrase: Optional[str]) -> None:
+        """Write one device's entry in ``device_wake_words``; None removes it."""
+        if self._settings_setter is None:
+            raise RuntimeError("settings are read-only")
+        async with self._wake_setting_lock:
+            words = device_wake_words(self._settings_getter)
+            if phrase is None:
+                words.pop(device_name, None)
+            else:
+                words[device_name] = phrase
+            await asyncio.to_thread(self._settings_setter, "device_wake_words", words)
 
     async def handle(self, request: web.Request) -> web.StreamResponse:
         """One ``voice.connection`` span per socket, from accepting it to closing it."""
@@ -295,6 +328,8 @@ class ConverseRoute:
                          *, named, transcripts=False, models=False, turns=None, after=None, audio=None):
         client = turns
         device, connection = named
+        wake_word = WakeWordLink(ws, self._wake_words, device.device_name, get=self._settings_getter,
+                                 persist=self._set_device_wake_word)
         ready = {
             "type": "ready",
             "transcripts": transcripts,
@@ -304,6 +339,7 @@ class ConverseRoute:
             "recipient_id": device.recipient_id,
             "assistant_name": device.assistant_name,
             "device_name": device.device_name,
+            "wake_word": await wake_word.ready(),
             "server_recv_unix_ms": server_recv_unix_ms,
             "server_send_unix_ms": int(time.time() * 1000),
         }
@@ -360,7 +396,7 @@ class ConverseRoute:
                      name=name, quiet_interval=quiet_interval, arbitrator=arbitrator,
                      device_id=device_id, hub=self.hub, attachment=attachment,
                      named_device=device, named_connection=connection, transcripts=transcripts,
-                     relay=relay, adopted=adopted, audio=audio)
+                     relay=relay, adopted=adopted, audio=audio, wake_word=wake_word)
 
 
 async def _model_options(base_url: str, api_key: str, http: ClientSession) -> dict[str, Any]:
@@ -518,7 +554,8 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                  named_device, named_connection, arbitrator: Optional[Arbitrator] = None,
                  device_id: str = "", hub=None, attachment=None,
                  transcripts: bool = False, relay: Optional[Relay] = None,
-                 adopted: Optional[Detached] = None, audio=None) -> None:
+                 adopted: Optional[Detached] = None, audio=None,
+                 wake_word: Optional[WakeWordLink] = None) -> None:
     """Run the client pump and the turn driver until the socket ends; always stop the live turn."""
     loop = asyncio.get_running_loop()
     session.enable_turn_control()
@@ -531,6 +568,9 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
         attachment.command = lambda command, args, timeout: asyncio.run_coroutine_threadsafe(
             _command_tool(command, args, timeout), loop)
         attachment.diagnostics = lambda: asyncio.run_coroutine_threadsafe(diagnostics.request(), loop)
+        if wake_word is not None:
+            attachment.wake_word = lambda phrase: asyncio.run_coroutine_threadsafe(
+                wake_word.listing() if phrase is None else wake_word.switch(phrase), loop)
         if getattr(hub, "countdowns", None) is not None:
             hub.countdowns.attached(attachment, getattr(client, "_source", None),
                                     settings.countdown_ring_timeout_seconds, loop)
@@ -539,6 +579,8 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
     default_model = (settings.model, settings.provider)
     selected_model = default_model
     wake_tasks: set[asyncio.Task] = set()
+    if wake_word is not None:
+        wake_tasks.add(asyncio.create_task(wake_word.watch()))
     relay = relay or Relay(ws)
     explicit_stop = False
     after_reply = None  # only the final reply returned by _run_turn, never an approval output
@@ -580,6 +622,9 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                         continue
                     if frame.get("type") == "client_diagnostics":
                         diagnostics.respond(frame, msg.data)
+                        continue
+                    if frame.get("type") == "wake_word_set" and wake_word is not None:
+                        wake_word.respond(frame)
                         continue
                     if frame.get("stop") is True:
                         explicit_stop = True
@@ -658,6 +703,8 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
             _mark_closed(ws, "lost", 1006)
             logger.debug("converse client pump ended", exc_info=True)
         diagnostics.close()
+        if wake_word is not None:
+            wake_word.close()
         session.stop()
 
     async def _command(frame: dict) -> None:
@@ -823,6 +870,8 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
         logger.exception("converse loop crashed")
     finally:
         diagnostics.close()
+        if wake_word is not None:
+            wake_word.close()
         session.stop()
         if detached:
             relay.ws = None
@@ -874,7 +923,8 @@ def make_platform_factory(ctx: Any, *, hub: Optional[ConversationHub] = None) ->
         def _base_url() -> str:
             return loopback_base_url(adapter, str(ctx.get_config("api_base_url", "") or ""))
 
-        route = ConverseRoute(settings_getter=ctx.get_config, base_url_resolver=_base_url, hub=hub)
+        route = ConverseRoute(settings_getter=ctx.get_config, base_url_resolver=_base_url, hub=hub,
+                              settings_setter=ctx.set_config)
         if route.wire(app):
             logger.info("converse: %s registered on the API server", ROUTE_PATH)
 

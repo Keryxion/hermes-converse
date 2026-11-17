@@ -20,6 +20,7 @@ class Attachment:
     assistant_name: str = ""  # the start frame's, which approvals speak as
     command: Optional[Callable[[str, list[str], float], Any]] = None
     diagnostics: Optional[Callable[[], Any]] = None
+    wake_word: Optional[Callable[[Optional[str]], Any]] = None  # lists phrases, or switches to one
 
 
 class ConversationHub:

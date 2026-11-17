@@ -25,7 +25,7 @@ python_dependencies:
   - "onnxruntime>=1.20,<2; (sys_platform != 'darwin' or platform_machine != 'x86_64') and sys_platform != 'android'"
   - "transformers>=4.46,<6"
   - "huggingface_hub>=0.26,<2"
-provides_tools: [speak_this, play_tone, standby, mute, command, countdown, client_diagnostics]
+provides_tools: [speak_this, play_tone, standby, mute, command, countdown, client_diagnostics, set_wake_word]
 provides_hooks: [on_stream_start, on_stream_delta, pre_tool_call, post_tool_call, post_api_request]
 config_schema:
   vad_model:
@@ -100,3 +100,15 @@ config_schema:
     type: int
     default: 900
     description: "How long a countdown alarm rings if nobody ends it. Sent to the device as ring_seconds; the server also keeps the countdown this long past its deadline."
+  wake_word:
+    type: str
+    default: "Hey Sakura"
+    description: "Wake phrase for every named device. Devices ship with a Hey Sakura model."
+  device_wake_words:
+    type: dict
+    default: {}
+    description: "Wake phrase for particular devices by device_name, such as {Den Echo: Hey Arya}. The set_wake_word voice tool writes this."
+  wake_word_repositories:
+    type: list
+    default: [{repository: Keryxion/wakewords, ref: main}]
+    description: "Ordered GitHub wake-word dictionaries, each {repository, ref}; ref defaults to main. The first one listing a phrase supplies it. [] uses only cached models."
