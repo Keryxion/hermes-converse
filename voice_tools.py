@@ -16,7 +16,7 @@ SCHEMAS = {
         "description": (
             "Voice devices only. Request a gateway command for this conversation. The person must "
             "approve every call. Returns the gateway reply for you to summarize, not spoken. "
-            "If denied, acknowledge the denial and stop; do not retry or ask again in this turn. "
+            "If denied, acknowledge the denial and stop. Ask again only if the person explicitly asks again. "
             "Use any command in the gateway catalog, including its aliases and plugin commands. "
             "When asked to start a new session, new conversation, or start over, call with "
             "name new and args []; it takes effect after your final reply has played. "
@@ -131,7 +131,12 @@ def make_handlers(hub: Any) -> dict[str, Callable[..., Any]]:
             return _result("bad_command")
         from gateway.platforms.base_exec_approval import approval_timeout_seconds
 
-        return _result(await asyncio.wrap_future(attachment.command(name, list(argv), approval_timeout_seconds())))
+        result = await asyncio.wrap_future(attachment.command(name, list(argv), approval_timeout_seconds()))
+        if result == "denied":
+            return json.dumps({"result": "denied", "message": (
+                "The person did not approve this call. Acknowledge that it was not run and stop. "
+                "Only ask again if the person explicitly renews the request.")})
+        return _result(result)
 
     return {"speak_this": speak_this, "play_tone": play_tone, "standby": standby, "command": command}
 

@@ -89,7 +89,6 @@ class _VoiceTurn:
     skip_stream: bool = False  # followed mid-response: that response answered the earlier words only
     after: Optional["_VoiceTurn"] = None  # the request admitted behind this run, which follows it
     after_playback: Optional[Callable[[], Awaitable[None]]] = None
-    denied_commands: set[str] = field(default_factory=set)
 
 
 @dataclass

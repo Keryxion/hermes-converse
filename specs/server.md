@@ -588,9 +588,6 @@ approval applies only to this call. Only `once` accepted before the
 `approvals.timeout` deadline permits submission to the gateway. Denial,
 cancellation, or expiry returns `denied` and runs nothing. Late answers do not
 revive the request. This question does not resolve a Hermes execution approval.
-After denial or expiry, another call of the same canonical command in that turn
-returns `denied` without asking again, including calls using an alias. A new
-user turn may request it again.
 When Hermes asks for confirmation of the same gateway command, satisfy that
 confirmation once with this call's approval; do not change any approval setting.
 
@@ -625,6 +622,9 @@ Tool results are JSON objects with a `result` string, for example
 | `failed` | No command reply could be obtained. |
 | `not_attached` | No device is connected to ask. Nothing runs. |
 | `not_a_device` | The call was made from a chat that is not a voice device. Nothing runs. |
+
+`denied` also includes a `message` telling the agent to acknowledge the lack of
+approval and stop; a renewed user request needs a new approval.
 
 ## Countdowns
 
