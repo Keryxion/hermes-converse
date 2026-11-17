@@ -5,7 +5,7 @@ from collections import deque
 import pytest
 
 from hermes_converse.arbitrate import (
-    Arbitrator, DeviceAnnounce, LocalBus, POLICY_FIRST_TO_ENDPOINT, RECENT_GAPS, WakeClaim,
+    Arbitrator, DeviceAnnounce, LocalBus, POLICY_FIRST_TO_ENDPOINT, WakeClaim,
 )
 from hermes_converse.route import _wake_response
 from hermes_converse.settings import load_settings
@@ -258,7 +258,7 @@ async def test_election_waits_for_a_device_that_hears_the_claimant_only_as_long_
         await arb.register(name, device_name=name)
     arb._claimed.update(kitchen=20, family=20)
     arb._together.update({('kitchen', 'family'): 10, ('family', 'kitchen'): 10})
-    arb._skew[frozenset(('kitchen', 'family'))] = deque([0.05])
+    arb._skew[frozenset(('kitchen', 'family'))] = deque([0.05] * 30)
     # Both claim: guest is unlikely, so nobody is left to wait for.
     results = await asyncio.wait_for(asyncio.gather(
         arb.claim_wake('kitchen', claim_id='1', wake_word='Arya', confidence=0.6),
@@ -266,10 +266,10 @@ async def test_election_waits_for_a_device_that_hears_the_claimant_only_as_long_
     assert [r[:2] for r in results] == [(False, 'family'), (True, 'family')]
     await asyncio.sleep(0)
     arb._recent.clear()
-    # Kitchen alone: wait the learned gap plus the margin for family, not the window.
+    # Kitchen alone: wait for family as long as it has ever taken, not the window.
     started = asyncio.get_running_loop().time()
     assert (await arb.claim_wake('kitchen', claim_id='3', wake_word='Arya'))[0]
-    assert 0.13 <= asyncio.get_running_loop().time() - started < 1
+    assert 0.04 <= asyncio.get_running_loop().time() - started < 1
 
 
 @pytest.mark.asyncio
@@ -284,14 +284,11 @@ async def test_a_claim_that_misses_an_election_is_still_learned():
     assert frozenset(('kitchen', 'family')) in arb._skew
 
 
-@pytest.mark.asyncio
-async def test_one_late_claim_stops_counting_after_enough_ordinary_ones():
-    arb = Arbitrator(wake_window=0.5)
-    for name in ('kitchen', 'family'):
-        await arb.register(name, device_name=name)
-    gaps = arb._skew[frozenset(('kitchen', 'family'))] = deque([0.4], maxlen=RECENT_GAPS)
-    for _ in range(RECENT_GAPS):
-        await asyncio.gather(arb.claim_wake('kitchen', claim_id='1', wake_word='Arya'),
-                             arb.claim_wake('family', claim_id='2', wake_word='Arya'))
-        arb._recent.clear()
-    assert max(gaps) < 0.1
+def test_one_late_claim_among_many_does_not_lengthen_the_wait():
+    arb = Arbitrator(wake_window=0.75)
+    arb._claimed['kitchen'] = 20
+    arb._together['kitchen', 'family'] = 10
+    arb._skew[frozenset(('kitchen', 'family'))] = deque([0.02] * 30 + [0.4])
+    assert arb._wait_for('kitchen', 'family') == 0.02
+    assert arb._wait_for('kitchen', 'guest') == 0  # never heard together: unlikely to claim
+    assert arb._wait_for('family', 'guest') == 0.75  # nothing known: the whole window
