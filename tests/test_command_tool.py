@@ -303,6 +303,10 @@ async def test_server_started_new_waits_for_the_final_reply_not_the_approval(mon
         await ws.send_json({"type": "approval_response", "approval_id": frames[-1]["approval_id"], "choice": "once"})
         frames = await _frames_until(ws, "turn_done")
         await ws.send_json({"type": "state", "turn_id": frames[-1]["turn_id"], "state": "listening"})
+        # The approval outcome is spoken separately from the question and the final reply.
+        frames = await _frames_until(ws, "turn_done")
+        await ws.send_json({"type": "state", "turn_id": frames[-1]["turn_id"], "state": "listening"})
+        assert "Approved." in streamer.requests
         with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(ws.receive(), .15)
         assert fake.commands == [] and not ws.closed
