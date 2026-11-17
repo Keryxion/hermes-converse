@@ -101,3 +101,46 @@ async def test_no_assistant_name_and_the_re_ask(rig, monkeypatch):
     assert session.outputs[-1].text == ("Sorry, I did not catch that. The assistant wants to run the tests. Okay? "
                                         "Say yes or no.")
     rig.approvals._settle(pending, "deny", "denied")
+
+
+@pytest.mark.parametrize("answer", ["frame", "spoken", "spoken_late"])
+async def test_command_answers_after_the_deadline_cannot_authorize(rig, monkeypatch, answer):
+    import time
+
+    _session, frames = attach(rig)
+    asking = asyncio.create_task(rig.approvals.ask("den", "/new", "Start over?", 30))
+    await asyncio.sleep(0)
+    pending = rig.approvals._pending["den"]
+    if answer != "spoken_late":
+        pending.deadline = time.monotonic() - 1  # the watcher has not observed expiry yet
+    if answer == "frame":
+        rig.approvals.respond(rig.hub.attachment("den"), {
+            "approval_id": pending.request_id, "choice": "once"})
+    else:
+        def classify(*_):
+            pending.deadline = time.monotonic() - 1  # expiry while classifying the spoken answer
+            return "once"
+        monkeypatch.setattr(approvals, "_aux", classify)
+        await rig.approvals._answer(pending, "yes")
+    assert await asking is None
+    assert frames[-1]["outcome"] == "expired" and rig.resolved == []
+
+
+async def test_command_approval_expires_without_polling(rig, monkeypatch):
+    monkeypatch.setattr(approvals, "WATCH_SECONDS", 60)
+    session, frames = attach(rig)
+    assert await rig.approvals.ask("den", "/new", "Start over?", .01) is None
+    assert frames[-1]["outcome"] == "expired"
+    assert session.answer_hook is None and rig.resolved == []
+
+
+async def test_command_question_can_be_held_and_answers_never_go_to_hermes(rig):
+    asking = asyncio.create_task(rig.approvals.ask("den", "/new", "Start over?", 30))
+    await asyncio.sleep(0)
+    session, frames = attach(rig)
+    rig.approvals.attached(rig.hub.attachment("den"))
+    request = frames[0]
+    assert request["choices"] == ["once", "deny"]
+    assert [o.text for o in session.outputs] == ["Start over? Say yes or no."]
+    rig.approvals.respond(rig.hub.attachment("den"), {"approval_id": request["approval_id"], "choice": "once"})
+    assert await asking == "once" and rig.resolved == []

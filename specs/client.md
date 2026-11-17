@@ -261,7 +261,7 @@ refusal back in `reply`. The list can change when the server's
 Hermes is updated; ask again after each `ready` rather than storing it.
 
 A command that starts a new conversation, `new` or its alias `reset`, needs nothing special from the
-app. After answering, the server closes the connection with
+app. After the command changes the conversation and the server answers, it closes the connection with
 `4410 conversation_changed`. The app reconnects as it would after any drop, and
 `ready` comes back with `new_session: true`, which is where it clears its view
 ("Catching up", section 4). The earlier conversation is not deleted; it stays

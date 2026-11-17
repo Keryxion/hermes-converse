@@ -27,9 +27,10 @@ import logging
 import threading
 import time
 import uuid
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from functools import wraps
-from typing import Any, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
@@ -57,6 +58,7 @@ class TurnResult:
     error: Optional[str]  # what the client should hear about
     status: str  # completed | interrupted | cancelled | failed
     turn_id: Optional[str]
+    after_playback: Optional[Callable[[], Awaitable[None]]] = None
 
 
 @dataclass
@@ -86,6 +88,7 @@ class _VoiceTurn:
     heard: bool = False  # some of its audio had played when they did
     skip_stream: bool = False  # followed mid-response: that response answered the earlier words only
     after: Optional["_VoiceTurn"] = None  # the request admitted behind this run, which follows it
+    after_playback: Optional[Callable[[], Awaitable[None]]] = None
 
 
 @dataclass
@@ -96,6 +99,8 @@ class _Command:
     done: asyncio.Event = field(default_factory=asyncio.Event)
     started: bool = False
     reply: Optional[str] = None
+    inline: bool = False
+    approved: bool = False  # the person approved this exact voice-tool invocation
 
 
 class ConverseAdapter(BasePlatformAdapter):
@@ -110,6 +115,7 @@ class ConverseAdapter(BasePlatformAdapter):
         self._server_turns: dict[str, ServerTurn] = {}  # chat_id -> the server-started turn in flight
         self._processing: dict[str, int] = {}  # chat_id -> gateway turns being processed
         self._commands: dict[str, _Command] = {}  # chat_id -> the plugin's own command in flight
+        self._command_context: ContextVar[Optional[_Command]] = ContextVar("converse_command", default=None)
         self._active: dict[str, str] = {}  # chat_id -> message id the gateway is processing
         # Voice turns the device gave up on that the gateway has not finished: message id -> turn.
         self._abandoned: dict[str, _VoiceTurn] = {}
@@ -206,15 +212,26 @@ class ConverseAdapter(BasePlatformAdapter):
             if self._commands.get(source.chat_id) is command:
                 self._commands.pop(source.chat_id, None)
 
-    async def run_command(self, source: Any, text: str) -> Optional[str]:
+    async def run_command(self, source: Any, text: str, *, approved: bool = False) -> Optional[str]:
         """Run the gateway slash command *text* for the chat, as a chat user would. Its reply is
-        returned, not spoken. None when the gateway did not take it or it did not finish."""
+        returned, not spoken. None when no reply is available; an accepted queued command retains
+        its reply capture until replay."""
+        if source.chat_id in self._commands:
+            return None  # do not overwrite another command's reply capture
         event = MessageEvent(text=text, message_type=MessageType.COMMAND, source=source,
                              message_id=f"command-{uuid.uuid4().hex}")
-        command = _Command(event)
+        command = _Command(event, approved=approved)
+        command.inline = command.started = self._event_session_key(event) in self._active_sessions
+        token = self._command_context.set(command)
         self._commands[source.chat_id] = command
         try:
             await self.handle_message(event)
+            if command.inline:
+                # Hermes dispatches recognized mid-run commands without a processing bracket.
+                # An admitted plugin command can instead be queued: retain its capture until replay.
+                if command.reply is None and event._gateway_accepted:
+                    command.inline = command.started = False
+                return command.reply
             if not event._gateway_accepted:
                 logger.warning("converse: the gateway did not accept %r", text)
                 return None
@@ -225,8 +242,27 @@ class ConverseAdapter(BasePlatformAdapter):
             logger.warning("converse: %r did not finish in %.0fs", text, COMMAND_TIMEOUT)
             return None
         finally:
-            if self._commands.get(source.chat_id) is command:
+            self._command_context.reset(token)
+            if (self._commands.get(source.chat_id) is command
+                    and (command.started or not event._gateway_accepted)):
                 self._commands.pop(source.chat_id, None)
+
+    async def send_slash_confirm(self, chat_id: str, title: str, message: str, session_key: str,
+                                 confirm_id: str, metadata=None) -> SendResult:
+        """Apply an already-given voice approval to Hermes's confirmation for this exact command."""
+        from tools import slash_confirm
+
+        command = self._command_context.get() or self._commands.get(chat_id)
+        pending = slash_confirm.get_pending(session_key)
+        if (command is not None and command.approved and command.started and not command.done.is_set()
+                and command.event.source.chat_id == chat_id and self._event_session_key(command.event) == session_key
+                and pending is not None and pending["confirm_id"] == confirm_id
+                and pending["command"] == await asyncio.to_thread(
+                    command_catalog.canonical, command.event.get_command())):
+            command.approved = False  # one confirmation, never a persistent opt-out
+            command.reply = await slash_confirm.resolve(session_key, confirm_id, "once")
+            return SendResult(success=True)
+        return await super().send_slash_confirm(chat_id, title, message, session_key, confirm_id, metadata)
 
     # ── turn bracket ──
     def _own(self, event: MessageEvent) -> Optional[_VoiceTurn]:
@@ -265,6 +301,7 @@ class ConverseAdapter(BasePlatformAdapter):
         command = self._commands.get(chat_id)
         if command is not None and command.event.message_id == event.message_id:
             command.started = True
+            self._command_context.set(command)
             return
         turn = self._own(event)
         if turn is None:
@@ -287,6 +324,7 @@ class ConverseAdapter(BasePlatformAdapter):
         command = self._commands.get(chat_id)
         if command is not None and command.event.message_id == event.message_id:
             command.done.set()
+            self._commands.pop(chat_id, None)
             return
         turn = self._own(event)
         if turn is None:
@@ -320,8 +358,9 @@ class ConverseAdapter(BasePlatformAdapter):
         if (metadata or {}).get("_interim_send"):
             return SendResult(success=True, message_id=uuid.uuid4().hex)
         notify = bool((metadata or {}).get("notify"))
-        command = self._commands.get(chat_id)
-        if command is not None and command.started and not command.done.is_set():
+        command = self._command_context.get()
+        if (command is not None and command.event.source.chat_id == chat_id
+                and command.started and not command.done.is_set()):
             command.reply = content
             return SendResult(success=True, message_id=uuid.uuid4().hex)
         if self._active.get(chat_id) in self._abandoned:
@@ -340,7 +379,8 @@ class ConverseAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=uuid.uuid4().hex)
         event_id = f"send:{uuid.uuid4().hex}"
         status = self._hub.publish(chat_id, text, event_id, expires_at=time.time() + OUTPUT_TTL,
-                                   next_action="standby" if server_turn is not None and server_turn.standby else None)
+                                   next_action="standby" if server_turn is not None and server_turn.standby else None,
+                                   after_playback=server_turn.after_playback if server_turn is not None else None)
         if status == "accepted":
             return SendResult(success=True, message_id=event_id)
         # No live device (or it is saturated): report it; nothing is queued for a later connection.
@@ -583,7 +623,7 @@ class GatewayTurns:
         if turn.stopped or not turn.done.is_set():
             return TurnResult(turn.final or "", None, "interrupted", turn_id)
         if turn.outcome is ProcessingOutcome.SUCCESS or turn.final:
-            return TurnResult(turn.final or "", None, "completed", turn_id)
+            return TurnResult(turn.final or "", None, "completed", turn_id, turn.after_playback)
         if turn.outcome is ProcessingOutcome.CANCELLED:
             return TurnResult("", "agent run was cancelled", "cancelled", turn_id)
         return TurnResult("", "agent run failed", "failed", turn_id)
@@ -617,11 +657,16 @@ class GatewayTurns:
         """The canonical name of command or alias *name*; None when the gateway has no such command."""
         return command_catalog.canonical(name)
 
-    async def run_command(self, text: str) -> Optional[str]:
-        """End the turn in flight, then run the gateway command; its reply, or None on failure."""
-        await self.stop()
+    def session_id(self) -> Optional[str]:
+        """Hermes's current session for this device route, including after a reset."""
+        return self._adapter._session_store.peek_session_id(self._session_key)
+
+    async def run_command(self, text: str, *, stop: bool = True, approved: bool = False) -> Optional[str]:
+        """Run a command, stopping the turn first unless called from its own voice tool."""
+        if stop:
+            await self.stop()
         self._model = None  # a command such as /new may drop the model override; the next turn sets it again
-        return await self._adapter.run_command(self._source, text)
+        return await self._adapter.run_command(self._source, text, approved=approved)
 
     async def stop(self) -> None:
         """Interrupt the turn in flight (``cancel``, socket close) and wait — bounded — for it to settle."""

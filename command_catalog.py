@@ -23,6 +23,14 @@ def canonical(name: str) -> Optional[str]:
     return name if any(plugin == name for plugin, _d, _h in _iter_plugin_command_entries()) else None
 
 
+def description(name: str) -> str:
+    """The same description the commands frame lists for canonical *name*."""
+    cmd = resolve_command(name)
+    if cmd is not None:
+        return cmd.describe()
+    return next((d for plugin, d, _h in _iter_plugin_command_entries() if plugin == name), "")
+
+
 def catalog() -> list[dict[str, Any]]:
     """Every command a chat runs, in registry order, then plugin commands."""
     entries = []

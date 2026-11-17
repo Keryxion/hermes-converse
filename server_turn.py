@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from typing import Awaitable, Callable, Optional
+
 
 class ServerTurn:
     def __init__(self) -> None:
         self.spoken: list[str] = []
         self.exclusive = False
         self.standby = False
+        self.after_playback: Optional[Callable[[], Awaitable[None]]] = None
 
     def speak(self, text: str) -> None:
         self.exclusive = True

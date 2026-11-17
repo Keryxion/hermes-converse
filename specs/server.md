@@ -585,6 +585,8 @@ approval applies only to this call. Only `once` accepted before the
 `approvals.timeout` deadline permits submission to the gateway. Denial,
 cancellation, or expiry returns `denied` and runs nothing. Late answers do not
 revive the request. This question does not resolve a Hermes execution approval.
+When Hermes asks for confirmation of the same gateway command, satisfy that
+confirmation once with this call's approval; do not change any approval setting.
 
 A command that starts a new conversation (`new`, or any alias of it) returns
 `{"result":"Approved. The new conversation starts when this reply has played."}`
@@ -592,9 +594,11 @@ after approval. This acknowledges deferral, not execution. Wait until the
 calling turn's final reply has played (the device's `state` leaves `speaking`
 for that reply, or its playback tail ends), then submit the command and close
 the socket with `4410 conversation_changed` after its reply, as after the
-frame. Playback of the approval question or another turn does not trigger it.
-If the socket disconnects before the final reply has played, drop the deferred
-command.
+frame. Close only if Hermes actually changed the session; a refusal or a failed
+command leaves the socket open. Playback of the approval question or another
+turn does not trigger it.
+If the socket disconnects or the turn is cancelled or interrupted before the
+final reply has played, drop the deferred command.
 
 Other commands are submitted while the turn is running, without first stopping
 it. Hermes's mid-run command policy applies: approval does not override a busy
@@ -610,6 +614,7 @@ Tool results are JSON objects with a `result` string, for example
 | The command's reply | The gateway's response, including any access or busy refusal. |
 | `Approved. The new conversation starts when this reply has played.` | A new-conversation command is approved and deferred as above. |
 | `unknown_command` | Not a command or alias listed by `commands`. Nothing runs. |
+| `bad_command` | The name has a leading slash or an invalid form, or `args` is not an array of strings. Nothing runs. |
 | `denied` | The person did not approve it. Nothing runs. |
 | `failed` | No command reply could be obtained. |
 | `not_attached` | No device is connected to ask. Nothing runs. |

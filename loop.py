@@ -341,6 +341,7 @@ class ConversationOutput:
         self.unheard = unheard  # a reply barge-in cut before any of it played: spoken before the next request
         self.expires_at = float("inf")
         self.on_dequeue: Callable[[], None] = lambda: None
+        self.after_playback: Optional[Callable[[], Awaitable[None]]] = None
 
 
 class QuietTick:
@@ -1385,6 +1386,7 @@ async def drive_converse_turns(
     last_progress: Optional[Callable[[], float]] = None,
     message_ids: Any = None,
     present: Optional[Callable[[], bool]] = None,
+    after_turn: Optional[Callable[[], Awaitable[None]]] = None,
 ) -> None:
     """Run the per-transcript incremental-TTS turn loop.
 
@@ -1445,6 +1447,8 @@ async def drive_converse_turns(
         try:
             await _run_turn(d, turn, tt)
             await session.wait_for_playback_tail()
+            if item.after_playback is not None and not session.stopped and not turn.tts_stop.is_set():
+                await item.after_playback()
         except asyncio.CancelledError:
             tt.set_missing(outcome="interrupted", interrupted=True)
             raise
@@ -1525,6 +1529,8 @@ async def drive_converse_turns(
                 _discard_after_signoff(session, deferred_outputs)
                 getattr(session, "end_exchange", lambda: None)()
             await session.wait_for_playback_tail()
+            if after_turn is not None and not session.stopped and not turn.tts_stop.is_set():
+                await after_turn()
         except asyncio.CancelledError:
             tt.set_missing(outcome="interrupted", interrupted=True)
             raise

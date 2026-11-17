@@ -316,6 +316,28 @@ async def test_command_frame_runs_the_command_and_new_closes_the_socket(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_refused_new_command_does_not_close_the_socket():
+    class RefusedReset(FakeHermes):
+        async def handle(self, event):
+            if event.get_command() == "new":
+                return "Command access denied."
+            return await super().handle(event)
+
+    async with Harness(RefusedReset(API_KEY)) as client:
+        ws = await client.ws_connect("/v1/audio/converse", protocols=(VOICE_PROTOCOL, _key_protocol()))
+        try:
+            await ws.send_str(_start_msg())
+            assert (await ws.receive_json())["type"] == "ready"
+            await ws.send_json({"type": "command", "name": "new"})
+            assert await ws.receive_json() == {"type": "command", "name": "new", "reply": "Command access denied."}
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(ws.receive(), .05)
+            assert not ws.closed
+        finally:
+            await _end(ws)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("args", [[], ["Kitchen timers"], ["here", "3"]])
 async def test_command_argument_arrays_reach_the_gateway(monkeypatch, args):
     fake = FakeHermes(API_KEY)
