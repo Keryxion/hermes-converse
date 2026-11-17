@@ -50,6 +50,9 @@ from typing import Any, Awaitable, Callable, Optional
 
 from aiohttp import ClientError, ClientSession, ClientTimeout, web
 
+from . import command_catalog
+from .approvals import phrase, summary
+
 from .arbitrate import Arbitrator
 from .audio_transport import AudioTransport, audio_format
 from .opus import OpusError
@@ -512,6 +515,8 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
     if attachment is not None:
         # Tools run on worker threads; frames go out through the socket's own loop.
         attachment.send = lambda frame: asyncio.run_coroutine_threadsafe(ws.send_json(frame), loop)
+        attachment.command = lambda command, args, timeout: asyncio.run_coroutine_threadsafe(
+            _command_tool(command, args, timeout), loop)
         if getattr(hub, "countdowns", None) is not None:
             hub.countdowns.attached(attachment, getattr(client, "_source", None),
                                     settings.countdown_ring_timeout_seconds, loop)
@@ -522,6 +527,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
     wake_tasks: set[asyncio.Task] = set()
     relay = relay or Relay(ws)
     explicit_stop = False
+    after_reply = None  # only the final reply returned by _run_turn, never an approval output
     async def _reply_wake(frame: dict) -> None:
         reply, sent = None, False
         try:
@@ -599,7 +605,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                         await ws.send_json({"type": "commands", "commands": await asyncio.to_thread(listing)}
                                            if listing else {"type": "commands", "error": "failed"})
                     if frame.get("type") == "command":
-                        task = asyncio.create_task(_command(frame.get("name"), frame.get("args")))
+                        task = asyncio.create_task(_command(frame))
                         wake_tasks.add(task)
                         task.add_done_callback(wake_tasks.discard)
                     if frame.get("type") == "set_model":
@@ -636,13 +642,15 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
             logger.debug("converse client pump ended", exc_info=True)
         session.stop()
 
-    async def _command(name: Any, args: Any) -> None:
+    async def _command(frame: dict) -> None:
+        name = frame.get("name")
+        args = frame.get("args", [])
         reply: dict[str, Any] = {"type": "command", "name": name}
         command: Optional[str] = None
-        if args is not None:
+        if "args" in frame:
             reply["args"] = args
         if (not isinstance(name, str) or not re.fullmatch(r"[a-z0-9_-]{1,40}", name)
-                or (args is not None and not isinstance(args, str))):
+                or not isinstance(args, list) or not all(isinstance(arg, str) for arg in args)):
             reply["error"] = "bad_command"
         elif not hasattr(client, "run_command"):
             reply["error"] = "failed"
@@ -650,7 +658,8 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
             reply["error"] = "unknown_command"
         else:
             session.cancel()
-            text = f"/{name} {args or ''}".strip()
+            text = f"/{name} {' '.join(args)}".strip()
+            previous_session = await asyncio.to_thread(client.session_id) if command == "new" else None
             try:
                 result = await client.run_command(text)
             except Exception:
@@ -662,23 +671,95 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                 reply["reply"] = result
         if not ws.closed:
             await ws.send_json(reply)
-            if "reply" in reply and command == "new":  # or an alias of it, such as reset
+            if ("reply" in reply and command == "new"
+                    and await asyncio.to_thread(client.session_id) != previous_session):
                 # The client reconnects and finds the fresh conversation with a normal start.
                 _mark_closed(ws, "server", 4410)
                 await ws.close(code=4410, message=b"conversation_changed")
 
+    async def _command_tool(name: str, args: list[str], timeout: float) -> str:
+        gateway = getattr(hub, "gateway", None)
+        if gateway is None or ws.closed:
+            return "not_attached"
+        origin = gateway._server_turns.get(attachment.conversation_id)
+        if origin is None:
+            origin = gateway._turns.get(attachment.conversation_id)
+            if origin is not None and (origin.outcome is not None or origin.stopped):
+                origin = None
+            elif origin is not None:
+                # A tool call proves the agent is executing, even when Hermes omitted processing-start.
+                # Do not mark merely queued turns active at the handler's admission boundary.
+                origin.started = True
+        if origin is None:
+            return "failed"
+        canonical = await asyncio.to_thread(client.canonical_command, name)
+        if canonical is None:
+            return "unknown_command"
+        description = phrase(await asyncio.to_thread(command_catalog.description, canonical))
+        question = summary(attachment.assistant_name,
+                           f"run a command for you: {description}" + (f", {', '.join(args)}" if args else ""))
+        text = f"/{name} {' '.join(args)}".strip()
+        if await gateway.approvals.ask(attachment.conversation_id, text, question, timeout) != "once":
+            return "denied"
+        if getattr(origin, "stopped", False) or getattr(origin, "outcome", None) is not None:
+            return "denied"
+        if hub.attachment(attachment.conversation_id) is None:
+            return "not_attached"
+        if canonical == "new":
+            if ws.closed or hub.attachment(attachment.conversation_id) is not attachment:
+                return "not_attached"
+            async def start_new() -> None:
+                if ws.closed or hub.attachment(attachment.conversation_id) is not attachment:
+                    return
+                if origin.after_playback is not start_new:
+                    return
+                origin.after_playback = None
+                previous_session = await asyncio.to_thread(client.session_id)
+                try:
+                    result = await client.run_command(text, approved=True)
+                except Exception:
+                    logger.warning("converse: approved command %r failed after playback", text, exc_info=True)
+                    return
+                if result is None:
+                    logger.warning("converse: approved command %r failed after playback", text)
+                elif not ws.closed and await asyncio.to_thread(client.session_id) != previous_session:
+                    _mark_closed(ws, "server", 4410)
+                    await ws.close(code=4410, message=b"conversation_changed")
+
+            origin.after_playback = start_new
+            return "Approved. The new conversation starts when this reply has played."
+        try:
+            result = await client.run_command(text, stop=False, approved=True)
+        except Exception:
+            logger.warning("converse: approved command %r failed", text, exc_info=True)
+            return "failed"
+        return "failed" if result is None else result
+
+    async def _after_turn() -> None:
+        nonlocal after_reply
+        action, after_reply = after_reply, None
+        if action is not None:
+            await action()
+
     async def _run_turn(transcript: str, on_delta, *, interrupted: bool) -> tuple[str, Optional[str]]:
+        nonlocal after_reply
+        after_reply = None
         model, provider = selected_model  # Snapshot once; do not alter a turn already in flight.
+        commands = await asyncio.to_thread(client.commands) if hasattr(client, "commands") else None
         result = await client.run_turn(
             text=transcript, on_delta=on_delta,
             instructions=voice_system_prompt(
                 name,
-                device_name=named_device.device_name, recipient_id=named_device.recipient_id),
+                device_name=named_device.device_name, recipient_id=named_device.recipient_id, commands=commands),
             model=model, provider=provider)
+        after_reply = getattr(result, "after_playback", None)
         return result.reply, result.error
 
     def _interrupt_turn() -> None:
         # `cancel`: stop the turn in flight.
+        gateway = getattr(hub, "gateway", None)
+        if gateway is not None and attachment is not None:
+            gateway.approvals.on_stop(attachment.conversation_id)
         loop.create_task(client.stop())
 
     async def _drive_turns() -> None:
@@ -694,7 +775,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
             last_progress=lambda: client.last_progress,
             turn_timeout=settings.turn_timeout, tail_fallback=settings.tail_fallback,
             max_tts_chars=settings.max_tts_chars,
-            standby=lambda: client.standby,
+            standby=lambda: client.standby, after_turn=_after_turn,
         )
 
     detached = False

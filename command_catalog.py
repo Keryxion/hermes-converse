@@ -3,7 +3,8 @@ for Telegram's command menu.
 
 Like that menu, the list is the same for every device: the gateway checks who may run a command
 when it runs. Arguments have no schema in Hermes: ``args_hint`` (such as ``[name]``) and
-``subcommands`` are all it knows, so ``args`` stays free text the command parses.
+``subcommands`` are all it knows. The server joins the device's argument strings into gateway
+command text for the command itself to parse.
 """
 
 from __future__ import annotations
@@ -20,6 +21,14 @@ def canonical(name: str) -> Optional[str]:
     if cmd is not None:
         return cmd.name if cmd in _gateway_available_commands() else None
     return name if any(plugin == name for plugin, _d, _h in _iter_plugin_command_entries()) else None
+
+
+def description(name: str) -> str:
+    """The same description the commands frame lists for canonical *name*."""
+    cmd = resolve_command(name)
+    if cmd is not None:
+        return cmd.describe()
+    return next((d for plugin, d, _h in _iter_plugin_command_entries() if plugin == name), "")
 
 
 def catalog() -> list[dict[str, Any]]:

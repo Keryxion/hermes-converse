@@ -622,6 +622,89 @@ async def test_command_runs_through_the_gateway_and_the_chat_follows_the_new_ses
     assert rig.store.peek_session_id(key) == "sid-fresh"  # History reads whatever session the key names
 
 
+@pytest.mark.parametrize("busy", [False, True])
+async def test_command_does_not_capture_other_tasks_output(rig, busy):
+    turns, key = await _turns(rig)
+    device = Device()
+    rig.hub.attach("den", device)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def handler(event):
+        entered.set()
+        await release.wait()
+        return "Command reply."
+
+    rig.adapter.set_message_handler(handler)
+    if busy:
+        rig.adapter._active_sessions[key] = asyncio.Event()
+    task = asyncio.create_task(turns.run_command("/status", stop=False))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        await rig.adapter.send("den", "Other output.", metadata=NOTIFY)
+        release.set()
+        assert await asyncio.wait_for(task, 2) == "Command reply."
+        assert [o.text for o in device.outputs] == ["Other output."]
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        rig.adapter._active_sessions.pop(key, None)
+
+
+async def test_queued_plugin_command_reply_is_not_spoken_later(rig):
+    turns, key = await _turns(rig)
+    device = Device()
+    rig.hub.attach("den", device)
+    rig.adapter.set_message_handler(lambda event: asyncio.sleep(0, result="Plugin reply."))
+    rig.adapter._active_sessions[key] = asyncio.Event()
+    try:
+        assert await turns.run_command("/test-plugin", stop=False) is None
+        capture = rig.adapter._commands["den"]
+        assert not capture.started
+        # The agent's own final still reaches its device while the command is queued.
+        await rig.adapter.send("den", "Agent final.", metadata=NOTIFY)
+        rig.adapter._active_sessions.pop(key)
+        pending = rig.adapter.get_pending_message(key)
+        assert pending.text == "/test-plugin"
+        rig.adapter._start_session_processing(pending, key)
+        await asyncio.wait_for(capture.done.wait(), 2)
+        assert capture.reply == "Plugin reply."
+        assert [o.text for o in device.outputs] == ["Agent final."]
+        assert not rig.adapter._commands
+    finally:
+        rig.adapter._active_sessions.pop(key, None)
+
+
+@pytest.mark.parametrize("confirmed_name,approved,runs", [
+    ("new", True, True), ("new", False, False), ("reload-mcp", True, False),
+])
+async def test_voice_approval_only_confirms_the_same_command_once(rig, confirmed_name, approved, runs):
+    from gateway.platforms.event import MessageEvent, MessageType
+    from hermes_converse.platform_adapter import _Command
+    from tools import slash_confirm
+
+    turns, key = await _turns(rig)
+    executed = []
+
+    async def execute(choice):
+        executed.append(choice)
+        return "Reset done."
+
+    command = _Command(MessageEvent(text="/reset", message_type=MessageType.COMMAND, source=turns._source),
+                       started=True, approved=approved)
+    rig.adapter._commands["den"] = command
+    slash_confirm.register(key, "confirmation-1", confirmed_name, execute)
+    try:
+        result = await rig.adapter.send_slash_confirm("den", "Confirm", "Do it?", key, "confirmation-1")
+        assert result.success == runs
+        assert executed == (["once"] if runs else [])
+        if runs:
+            assert command.reply == "Reset done." and not command.approved
+            assert slash_confirm.get_pending(key) is None
+    finally:
+        slash_confirm.clear(key)
+        rig.adapter._commands.pop("den", None)
+
+
 async def test_new_socket_clears_a_model_left_by_an_earlier_one(rig):
     turns, key = await _turns(rig)
     rig.store.models[key] = {"model": "terra", "provider": "litellm"}

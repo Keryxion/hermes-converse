@@ -12,6 +12,7 @@ Two surfaces, both the real shapes:
 from __future__ import annotations
 
 import asyncio
+import uuid
 from types import SimpleNamespace
 from typing import Any, Optional
 
@@ -55,6 +56,7 @@ class FakeHermes:
         # Every voice turn the gateway admitted, in order.
         self.turns: list[dict[str, Any]] = []
         self.commands: list[str] = []
+        self.command_replies: dict[str, str] = {}  # commands this gateway answers itself, by name
         self._redirects: list[str] = []  # words that arrived while a turn ran, not yet folded into it
 
     # ── API server ──
@@ -98,12 +100,17 @@ class FakeHermes:
     async def handle(self, event: Any) -> Optional[str]:
         adapter = self.adapter
         key = adapter._source_session_key(event.source)
+        if event.get_command() in {"new", "reset"}:
+            self.store.ids[key] = uuid.uuid4().hex
         if event.get_command() == "model":
             self.commands.append(event.text)
             args = event.get_command_args().split()
             self.store.models[key] = None if args == ["reset"] else {
                 "model": args[0], **({"provider": args[2]} if len(args) > 2 else {})}
             return "Model switched."
+        if event.get_command() in self.command_replies:
+            self.commands.append(event.text)
+            return self.command_replies[event.get_command()]
         override = self.store.models.get(key) or {}
         turn = {"text": event.text, "instructions": event.channel_prompt, "chat_id": event.source.chat_id,
                 "chat_name": event.source.chat_name, "user_id": event.source.user_id,

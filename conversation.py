@@ -5,7 +5,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 import threading
 import time
-from typing import Any, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 from .loop import ConversationOutput
 
@@ -18,6 +18,7 @@ class Attachment:
     pending: int = 0
     send: Optional[Callable[[dict], Any]] = None  # sends a JSON frame to the device
     assistant_name: str = ""  # the start frame's, which approvals speak as
+    command: Optional[Callable[[str, list[str], float], Any]] = None
 
 
 class ConversationHub:
@@ -51,7 +52,8 @@ class ConversationHub:
                 self._attachments.pop(conversation_id)
 
     def publish(self, conversation_id: str, text: str, event_id: str, *,
-                expires_at: float, next_action: Optional[str] = None, unheard: bool = False) -> str:
+                expires_at: float, next_action: Optional[str] = None, unheard: bool = False,
+                after_playback: Optional[Callable[[], Awaitable[None]]] = None) -> str:
         with self._lock:
             item = self._attachments.get(conversation_id)
             if item is None or item.session.stopped:
@@ -67,6 +69,7 @@ class ConversationHub:
                 item.seen.popitem(last=False)
             item.pending += 1
             output = ConversationOutput(text, event_id, next_action=next_action, unheard=unheard)
+            output.after_playback = after_playback
             def consumed():
                 with self._lock:
                     item.pending -= 1
