@@ -243,7 +243,10 @@ person; `speaking` before the first PCM of each stretch of speech; `listening`
 when the turn waits on the person and their speech is being listened for.
 Ordinary, interrupted, failed, or superseded replies omit `next_action` from
 `turn_done`, preserving the device's interaction mode. Only an explicit standby
-decision sends `next_action: "standby"`; never send `next_action: "listen"`.
+decision sends `next_action: "standby"`. Send `next_action: "listen"` only to
+switch a device that is not listening into listening because the server wants
+the person's answer, such as a server-started reply that asks a question; leave
+it out otherwise, including for a device already listening.
 
 Pace reply PCM against the playback it implies so the server, not the client,
 holds the backlog. Track where the client's queued audio ends; before sending a
@@ -530,8 +533,9 @@ released push-to-talk stays in standby. The tool, the `next_action` value,
 and the device state
 share the one name. Standby is not mute: the device still hears its wake word.
 The server does not look for a sign-off phrase in the reply. A turn that does
-not call `standby` omits `next_action` from `turn_done`. Keep this field absent
-on cancellation, interruption, error, and timeout paths too.
+not call `standby` omits `next_action` from `turn_done`, unless the server
+switches the device into listening as above. Keep this field absent on
+cancellation, interruption, error, and timeout paths too.
 
 | Tool result | Meaning |
 |---|---|

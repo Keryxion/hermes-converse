@@ -201,7 +201,7 @@ endpointing on. The utterance cap still applies as a memory backstop.
 
 Quick taps and wake-word turns use normal endpointing. Send no PCM while the
 control is released, including after the reply completes. A `turn_done` without
-`next_action` does not reopen the microphone. Barge-in, `cancel`, `stop`, and
+`next_action` does not reopen the microphone; only `next_action: "listen"` does. Barge-in, `cancel`, `stop`, and
 every other frame keep their usual meaning, and `commit` with no utterance in progress is ignored.
 
 ### Commands
@@ -296,7 +296,7 @@ Countdowns are unaffected by a command.
 | `approval_request`, `approval_resolved` | the assistant needs permission before it acts, and when that is settled; see "Approvals" below |
 | `speaking` + binary frames | mono reply audio in `ready.output.format` at `output_rate` |
 | `interrupted` | the turn was cancelled (you barged in or sent `cancel`); stop playing |
-| `turn_done` | the reply is fully sent; optional `next_action: "standby"` ends the exchange after drain |
+| `turn_done` | the reply is fully sent; `next_action` is usually absent; `standby` ends the exchange and `listen` switches the client into listening, after drain |
 | `quiet` | session mode: the stream has been silent for another `quiet_interval` seconds |
 | `error` | the turn failed (spoken-safe text) |
 | `{"type":"tone","tone":"confirm"}` | Play the named tone (see `tones.md`): `confirm` or `error` when the assistant chooses to, `approval` just before the server asks for an approval. It is not a reply: no `turn_id`, and the device reports no state for it. |
@@ -586,20 +586,31 @@ To end the exchange, the server sends:
 {"type":"turn_done","turn_id":"turn-42","next_action":"standby"}
 ```
 
+To switch a client that is not listening into listening, the server sends:
+
+```json
+{"type":"turn_done","turn_id":"turn-42","next_action":"listen"}
+```
+
 | `next_action` | client behavior after playback drain |
 |---|---|
 | absent | Preserve the interaction mode: hands-free continues streaming for a follow-up; released push-to-talk stays in standby and sends no PCM. |
 | `standby` | Stop upstream PCM and return to local wake detection (or the non-wake client's idle UI). Keep the socket/session open for outbound events. |
+| `listen` | Enter listening: open an activation and stream microphone PCM for the next utterance, as after a wake grant (no wake claim), subject to explicit user mute. A client already listening keeps listening. |
 
-`next_action` is optional; `standby` is its only value. Completing a reply does
-not open microphone capture. Continue playback/drain handling, then apply the
+`next_action` is optional and absent most of the time. `standby` and `listen`
+are the only values; ignore any other. `listen` is the exception: the server
+sends it only when it wants the person's answer from a client that would not
+otherwise be listening, such as a server-started reply that asks a question, or
+released push-to-talk. Completing a reply does not otherwise open microphone
+capture. Continue playback/drain handling, then apply the
 latest completion's action and report the state it leads to. An updated
-`turn_done` without `next_action` clears an earlier pending standby action for
-that turn; it still preserves the client's interaction mode. Do not apply a
+`turn_done` without `next_action` clears an earlier pending standby or listen
+action for that turn; it still preserves the client's interaction mode. Do not apply a
 late completion from an abandoned turn to a newer activation.
 
 Cancellation, interruption, errors, and timeouts preserve the interaction mode;
-a partial or failed reply cannot request standby. Countdown tones restore the
+a partial or failed reply requests neither standby nor listen. Countdown tones restore the
 prior idle/listening state after drain (section 10). The server requests
 `standby` when the person has said they are done. Clients must not inspect
 reply text or interpret whether the agent expects a follow-up.
@@ -903,8 +914,9 @@ Use the same playback lifecycle as ordinary replies:
 No synthetic user `transcript` or wake event is sent. Both `thinking` and
 `speaking` must establish a turn even when no earlier frame exists for it.
 A client waiting for a wake word must accept and play that output. For an
-idle-originated turn, the server requests `next_action: "standby"`; do not
-open a user activation merely because the server spoke. For a targeted outbound turn while idle, temporarily enable
+idle-originated turn, the server requests `next_action: "standby"`, or
+`listen` when it wants an answer; do not open a user activation merely because
+the server spoke. For a targeted outbound turn while idle, temporarily enable
 microphone streaming for interruption/control detection when `thinking` or
 `speaking` arrives, subject to explicit user mute. This requires no local
 wake or arbitration. After the turn and playback drain, stop that temporary
