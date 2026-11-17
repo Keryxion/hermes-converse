@@ -324,7 +324,7 @@ The server learns which devices hear the same utterance from the claims
 themselves, by device name. Two claims for one wake phrase that arrive within a
 window of each other were the same utterance, whether or not they shared an
 election. For each pair of devices it keeps how often that happened and the
-largest gap between their arrivals.
+gaps between their arrivals the last 20 times.
 
 The chance that device B claims an utterance device A claimed is
 
@@ -337,7 +337,7 @@ that chance is at least 0.1 for any device that has claimed:
 
 | What is known about A and B | The election waits for B |
 |---|---|
-| They have claimed together | Until A's claim plus their largest gap plus 100 ms |
+| They have claimed together | Until A's claim plus the largest of those gaps plus 100 ms |
 | They have not, and the chance is at least 0.1 | The whole window |
 | The chance is below 0.1 | Not at all |
 

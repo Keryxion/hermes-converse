@@ -1,10 +1,11 @@
 """Wake elections are advisory and consume only client-reported wake signals."""
 import asyncio
+from collections import deque
 
 import pytest
 
 from hermes_converse.arbitrate import (
-    Arbitrator, DeviceAnnounce, LocalBus, POLICY_FIRST_TO_ENDPOINT, WakeClaim,
+    Arbitrator, DeviceAnnounce, LocalBus, POLICY_FIRST_TO_ENDPOINT, RECENT_GAPS, WakeClaim,
 )
 from hermes_converse.route import _wake_response
 from hermes_converse.settings import load_settings
@@ -257,7 +258,7 @@ async def test_election_waits_for_a_device_that_hears_the_claimant_only_as_long_
         await arb.register(name, device_name=name)
     arb._claimed.update(kitchen=20, family=20)
     arb._together.update({('kitchen', 'family'): 10, ('family', 'kitchen'): 10})
-    arb._skew[frozenset(('kitchen', 'family'))] = 0.05
+    arb._skew[frozenset(('kitchen', 'family'))] = deque([0.05])
     # Both claim: guest is unlikely, so nobody is left to wait for.
     results = await asyncio.wait_for(asyncio.gather(
         arb.claim_wake('kitchen', claim_id='1', wake_word='Arya', confidence=0.6),
@@ -281,3 +282,16 @@ async def test_a_claim_that_misses_an_election_is_still_learned():
     assert (await arb.claim_wake('family', claim_id='2', wake_word='Arya'))[0]  # its own election
     assert arb._together[('kitchen', 'family')] == 1
     assert frozenset(('kitchen', 'family')) in arb._skew
+
+
+@pytest.mark.asyncio
+async def test_one_late_claim_stops_counting_after_enough_ordinary_ones():
+    arb = Arbitrator(wake_window=0.5)
+    for name in ('kitchen', 'family'):
+        await arb.register(name, device_name=name)
+    gaps = arb._skew[frozenset(('kitchen', 'family'))] = deque([0.4], maxlen=RECENT_GAPS)
+    for _ in range(RECENT_GAPS):
+        await asyncio.gather(arb.claim_wake('kitchen', claim_id='1', wake_word='Arya'),
+                             arb.claim_wake('family', claim_id='2', wake_word='Arya'))
+        arb._recent.clear()
+    assert max(gaps) < 0.1
