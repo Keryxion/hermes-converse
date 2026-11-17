@@ -86,13 +86,18 @@ class Harness:
             wake_words = WakeWords(Path(tempfile.mkdtemp(prefix="converse-wake-")), open_fetch=FakeGitHub().open)
         self.route = ConverseRoute(settings_getter=getter, base_url_resolver=lambda: self.base["url"],
                                    device_store=device_store, wake_words=wake_words,
-                                   settings_setter=self.settings.__setitem__)
+                                   settings_setter=self._save_setting)
         self.route.wire(app)
         app['hub'] = self.route.hub
         self.app = app
         self.adapter = ConverseAdapter(PlatformConfig(enabled=True), self.route.hub,
                                        approval_choice=lambda: load_settings(getter).approval_choice)
         fake.install(self.adapter)
+
+    def _save_setting(self, key, value):
+        # As Hermes saves a plugin setting: a mapping merges into the one on disk.
+        old = self.settings.get(key)
+        self.settings[key] = {**old, **value} if isinstance(old, dict) and isinstance(value, dict) else value
 
     async def __aenter__(self):
         await self.adapter.connect()

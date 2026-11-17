@@ -396,7 +396,8 @@ For example, load the shared dictionary and a household dictionary:
 ```
 
 Combine entries from all configured dictionaries. For an identical exact
-`phrase`, the first repository in the list wins. Select that entry as a whole;
+`phrase`, the first repository in the list wins. Phrases that differ only by
+case or spacing share a cache folder and count as the same phrase. Select that entry as a whole;
 do not mix its model formats or evaluations with another dictionary's entry.
 Entry IDs are local to their repository. Reordering sources affects the next
 selection; it does not replace a device's installed model.
@@ -466,11 +467,12 @@ tool with `phrase: "Hey Arya"`. Without `phrase`, the tool lists the combined
 dictionary's phrases, their available model formats and descriptions, and the
 device's configured phrase. With a phrase, download
 and verify its models before persisting the setting or sending the command.
-A phrase that differs from a listed one only by case selects the listed one.
+A phrase that differs from a listed one only by case or spacing selects the listed one.
 The tool acts on the device attached to the calling conversation; it has no
-device argument. Persist the requested phrase in `device_wake_words` and send
-`set_wake_word` with its models on the open socket (client spec, section 8).
-A device override takes precedence over `wake_word`.
+device argument. Send `set_wake_word` with its models on the open socket
+(client spec, section 8), and save the phrase in `device_wake_words` when the
+device reports that it switched. A device override takes precedence over
+`wake_word`.
 
 When a connected device's configured phrase changes in the settings, select
 that phrase and send `set_wake_word` the same way, within a few seconds and
@@ -483,18 +485,16 @@ Allow one switch at a time per device. A sent command means the switch was
 requested; confirm that the device changed only after its `wake_word_set`
 reports `ok` for that phrase, within 30 seconds. An error, disconnect, or
 missing result does not confirm a switch. Report a failed switch as failed; the
-device keeps its previous model and phrase. When the device reports an error,
-put its `device_wake_words` entry back as it was. After a disconnect or a
-missing result the requested phrase stays configured, and the device receives
-it in `ready` when it reconnects. Reject a tool request with no models before
-changing the setting.
+device keeps its previous model and phrase, and `device_wake_words` is left
+unchanged, so the device hears its previous phrase in `ready` when it
+reconnects. Reject a tool request with no models before sending anything.
 `assistant_name` remains the client's choice, independent of the wake phrase.
 
 | Tool result | Meaning |
 |---|---|
 | `{"wake_word":"Hey Sakura","phrases":[{"phrase":"Hey Arya","formats":["micro_wake_word","open_wake_word"],"description":"..."}]}` | No `phrase` was given: the device's configured phrase and the phrases on offer. `unavailable_dictionaries` lists repositories that could not be refreshed. |
 | `{"result":"ok","phrase":"Hey Arya"}` | The device reported that it switched. |
-| `{"result":"failed","error":"..."}` | No switch was confirmed. `unknown_phrase`, `download_failed`, `hash_mismatch` and `setting_not_saved` come from the server before anything was sent; `model_unavailable`, `download_failed`, `hash_mismatch` and `load_failed` come from the device; `timeout` and `disconnected` mean it did not answer. |
+| `{"result":"failed","error":"..."}` | No switch was confirmed. `unknown_phrase`, `download_failed` and `hash_mismatch` come from the server before anything was sent; `model_unavailable`, `download_failed`, `hash_mismatch` and `load_failed` come from the device; `timeout` and `disconnected` mean it did not answer; `setting_not_saved` means the device switched but its setting could not be written. |
 | `{"result":"not_attached"}` | No device is connected to this conversation. |
 | `{"result":"not_a_device"}` | The call was made from a chat that is not a voice device. |
 

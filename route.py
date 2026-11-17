@@ -189,16 +189,12 @@ class ConverseRoute:
             raise web.HTTPNotFound()
         return web.FileResponse(path)
 
-    async def _set_device_wake_word(self, device_name: str, phrase: Optional[str]) -> None:
-        """Write one device's entry in ``device_wake_words``; None removes it."""
+    async def _set_device_wake_word(self, device_name: str, phrase: str) -> None:
+        """Write one device's entry in ``device_wake_words``."""
         if self._settings_setter is None:
             raise RuntimeError("settings are read-only")
         async with self._wake_setting_lock:
-            words = device_wake_words(self._settings_getter)
-            if phrase is None:
-                words.pop(device_name, None)
-            else:
-                words[device_name] = phrase
+            words = {**device_wake_words(self._settings_getter), device_name: phrase}
             await asyncio.to_thread(self._settings_setter, "device_wake_words", words)
 
     async def handle(self, request: web.Request) -> web.StreamResponse:

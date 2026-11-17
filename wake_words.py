@@ -31,7 +31,6 @@ ENGINES = ("micro_wake_word", "open_wake_word")
 ROUTE_PREFIX = "/v1/audio/wake"
 # What a device may report in ``wake_word_set`` when it could not switch.
 SWITCH_ERRORS = ("model_unavailable", "download_failed", "hash_mismatch", "load_failed")
-UNCONFIRMED = ("timeout", "disconnected")  # no answer: the device may or may not have switched
 SWITCH_TIMEOUT = 30.0  # for the device to download, verify, load and answer
 POLL_SECONDS = 5.0  # how often a connection re-reads its device's configured phrase
 HTTP_TIMEOUT = ClientTimeout(total=30, connect=5)
@@ -280,11 +279,12 @@ class WakeWords:
 
     @staticmethod
     def _combine(snapshots: list[dict]) -> list[dict]:
-        """One entry per exact phrase: the first source listing it supplies the whole entry."""
+        """One entry per phrase: the first source listing it supplies the whole entry. Phrases
+        that share a cache folder (the same but for case or spacing) count as one."""
         combined: dict[str, dict] = {}
         for snapshot in snapshots:
             for entry in snapshot["entries"]:
-                combined.setdefault(entry["phrase"], {
+                combined.setdefault(slug(entry["phrase"]), {
                     **entry, "repository": snapshot["repository"], "commit": snapshot["commit"]})
         return list(combined.values())
 
@@ -303,8 +303,7 @@ class WakeWords:
         async with self._lock, self._open_fetch() as fetch:
             snapshots, _ = await self._refresh(repositories, fetch)
             entries = self._combine(snapshots)
-            entry = next((item for item in entries if item["phrase"] == phrase), None) or next(
-                (item for item in entries if item["phrase"].casefold() == phrase.casefold()), None)
+            entry = next((item for item in entries if slug(item["phrase"]) == slug(phrase)), None)
             if entry is not None:
                 phrase = entry["phrase"]
                 await self._install(entry, fetch)
@@ -354,7 +353,10 @@ class WakeWords:
             files[manifest["model"]] = data
             files["manifest.json"] = json.dumps(manifest, indent=2).encode()
         files["source.json"] = json.dumps(source, indent=2).encode()
-        await asyncio.to_thread(self._write, folder, files)
+        try:
+            await asyncio.to_thread(self._write, folder, files)
+        except OSError as exc:
+            raise WakeWordError("download_failed") from exc
         logger.info("converse wake words: cached %r %s from %s@%s", entry["phrase"], entry.get("version"),
                     entry["repository"], entry["commit"][:12])
 
@@ -385,7 +387,7 @@ class WakeWordLink:
     sent to it one at a time, and the ``wake_word_set`` results that confirm them."""
 
     def __init__(self, ws: Any, words: WakeWords, device_name: str, *, get: Callable[..., Any],
-                 persist: Callable[[str, Optional[str]], Awaitable[None]]) -> None:
+                 persist: Callable[[str, str], Awaitable[None]]) -> None:
         self.ws = ws
         self._words = words
         self._device_name = device_name
@@ -415,7 +417,8 @@ class WakeWordLink:
         """Send the device its configured phrase whenever that changes while it is connected."""
         while True:
             try:
-                if self._phrase() != self._handled:
+                # Off the loop: after config.yaml changes, the first read parses it again.
+                if await asyncio.to_thread(self._phrase) != self._handled:
                     async with self._lock:
                         await self._follow_setting()
             except Exception:
@@ -423,7 +426,7 @@ class WakeWordLink:
             await asyncio.sleep(POLL_SECONDS)
 
     async def _follow_setting(self) -> None:
-        phrase = self._phrase()
+        phrase = await asyncio.to_thread(self._phrase)
         if phrase == self._handled:
             return
         self._handled = phrase  # asked once; a failure is not retried until the setting changes
@@ -443,31 +446,23 @@ class WakeWordLink:
         return result
 
     async def switch(self, phrase: str) -> dict:
-        """The tool's switch: verify the models, record the request, command the device, and
-        report ``ok`` only when the device says it changed."""
+        """The tool's switch: verify the models, command the device, and save the device's
+        setting and report ``ok`` only when the device says it changed."""
         async with self._lock:
-            previous = device_wake_words(self._get).get(self._device_name)
             try:
                 phrase, models = await self._words.select(phrase, self._repositories())
             except WakeWordError as exc:
                 return {"result": "failed", "error": str(exc)}
-            if self._closed or self.ws.closed:
-                return {"result": "not_attached"}
+            result = await self._command(phrase, models)
+            if result != "ok":
+                return {"result": "failed", "error": result}
+            self._handled = phrase
             try:
                 await self._persist(self._device_name, phrase)
             except Exception:
                 logger.warning("converse wake word: could not save the setting", exc_info=True)
                 return {"result": "failed", "error": "setting_not_saved"}
-            handled, self._handled = self._handled, phrase
-            result = await self._command(phrase, models)
-            if result == "ok":
-                return {"result": "ok", "phrase": phrase}
-            if result not in UNCONFIRMED:
-                # The device refused and keeps its phrase: the setting goes back with it.
-                with contextlib.suppress(Exception):
-                    await self._persist(self._device_name, previous)
-                self._handled = handled
-            return {"result": "failed", "error": result}
+            return {"result": "ok", "phrase": phrase}
 
     async def _command(self, phrase: str, models: dict) -> str:
         """Send ``set_wake_word`` and wait for this phrase's ``wake_word_set``."""

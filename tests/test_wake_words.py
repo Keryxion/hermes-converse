@@ -75,6 +75,14 @@ async def test_sources_combine_and_the_first_one_supplies_a_duplicate_phrase_who
             "description": f"Hey Arya from {HOUSE}"} in phrases
 
 
+async def test_phrases_that_share_a_cache_folder_are_one_phrase(words, github):
+    github.publish(HOUSE, {"hey  arya": {"onnx": b"house-arya-onnx"}}, ref="v1", commit="d")
+    phrases, _ = await words.listing(SOURCES)
+    assert [item["phrase"] for item in phrases] == ["Hey Sakura", "Hey Arya"]
+    assert await words.select("hey  arya", SOURCES) == ("Hey Arya", words.models("Hey Arya"))
+    assert _source(words, "Hey Arya")["repository"] == SHARED
+
+
 async def test_each_source_is_read_at_its_own_commit(words, github):
     await words.select("Computer", SOURCES)
     await words.select("Hey Arya", SOURCES)
@@ -356,15 +364,19 @@ async def test_a_switch_is_confirmed_only_after_the_device_reports_ok(connected)
 
 
 @pytest.mark.parametrize("error", ["model_unavailable", "download_failed", "hash_mismatch", "load_failed"])
-async def test_a_device_error_fails_the_switch_and_leaves_the_setting_as_it_was(connected, error):
+async def test_a_device_error_fails_the_switch_and_leaves_the_setting_as_it_was(connected, error, monkeypatch):
+    monkeypatch.setattr(wake_words, "POLL_SECONDS", .05)
     connected.settings["device_wake_words"] = {"Hall": "Hey Penny"}
-    task, _ = await _switch(connected, "Hey Arya")
-    await connected.ws.send_json({"type": "wake_word_set", "phrase": "Hey Arya", "status": "error", "error": error})
+    ws, _ = await _connect(connected.client, "Den Echo")
+    connected.env["HERMES_SESSION_CHAT_ID"] = next(
+        key for key, item in connected.hub._attachments.items() if item.session.device_name == "Den Echo")
+    task, _ = await _switch(connected, "Hey Arya", ws)
+    await ws.send_json({"type": "wake_word_set", "phrase": "Hey Arya", "status": "error", "error": error})
     assert await _result(task) == {"result": "failed", "error": error}
     assert connected.settings["device_wake_words"] == {"Hall": "Hey Penny"}
-    # The device kept Hey Sakura, so nothing more is sent to it.
-    await connected.ws.send_json({"type": "say", "text": "Still here."})
-    assert (await asyncio.wait_for(connected.ws.receive_json(), 2))["type"] != "set_wake_word"
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(ws.receive_json(), .3)  # the refused phrase is not sent again
+    await _end(ws)
 
 
 async def test_a_missing_or_mismatched_result_does_not_confirm_a_switch(connected, monkeypatch):
@@ -373,6 +385,7 @@ async def test_a_missing_or_mismatched_result_does_not_confirm_a_switch(connecte
     await connected.ws.send_json({"type": "wake_word_set", "phrase": "Hey Sakura", "status": "ok"})
     await connected.ws.send_json({"type": "wake_word_set", "status": "ok"})
     assert await _result(task) == {"result": "failed", "error": "timeout"}
+    assert "device_wake_words" not in connected.settings
     # A late answer to the expired command does not answer the next one.
     monkeypatch.setattr(wake_words, "SWITCH_TIMEOUT", 5)
     task, _ = await _switch(connected, "Computer")
@@ -387,6 +400,10 @@ async def test_a_disconnect_does_not_confirm_a_switch(connected):
     task, _ = await _switch(connected, "Hey Arya")
     await connected.ws.close()
     assert await _result(task) == {"result": "failed", "error": "disconnected"}
+    assert "device_wake_words" not in connected.settings
+    ws, ready = await _connect(connected.client)
+    assert ready["wake_word"]["phrase"] == "Hey Sakura"  # the previous phrase, as the tool reported
+    await _end(ws)
 
 
 async def test_switches_on_one_device_run_one_at_a_time(connected):
