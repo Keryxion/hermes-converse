@@ -240,11 +240,15 @@ reach with a control, such as a "New conversation" button, that names one:
 {"type":"command","name":"new"}
 ```
 
-`name` is the command without its slash. `args`, when the command takes any, is
-the rest of what a chat user would type after it:
+`name` is the command without a leading slash. `args` is an array of strings,
+one per argument. Omit it for no arguments, the same as `[]`:
 
 ```json
-{"type":"command","name":"title","args":"Kitchen timers"}
+{"type":"command","name":"title","args":["Kitchen timers"]}
+```
+
+```json
+{"type":"command","name":"compress","args":["here","3"]}
 ```
 
 The server ends any turn in flight, runs the command for the device's
@@ -273,18 +277,18 @@ server answers with every command a chat can run, in Hermes's own order:
 | `description` | One line to show beside it. |
 | `aliases` | Other names for the same command. |
 | `args_hint` | How the command reads `args`, for display: `<x>` is required, `[x]` optional, `a\|b` a choice. Empty when it takes none. |
-| `subcommands` | Words `args` may start with, for completion. Often empty. |
+| `subcommands` | Values the first argument may take, for completion. Often empty. |
 
-Hermes has no stricter description of arguments than `args_hint`, so `args` is
-free text and the command itself says when it is wrong. Commands that only run
-in a terminal are not listed. The list is the same for every device, like
+Hermes has no stricter description of arguments than `args_hint`; each command
+validates its arguments and returns its own explanation when they are wrong.
+Commands that only run in a terminal are not listed. The list is the same for every device, like
 Hermes's Telegram command menu: when the server's slash-command access settings
 keep a command from a device, it is still listed, and running it brings Hermes's
 refusal back in `reply`. The list can change when the server's
 Hermes is updated; ask again after each `ready` rather than storing it.
 
 A command that starts a new conversation, `new` or its alias `reset`, needs nothing special from the
-app. After answering, the server closes the connection with
+app. After the command changes the conversation and the server answers, it closes the connection with
 `4410 conversation_changed`. The app reconnects as it would after any drop, and
 `ready` comes back with `new_session: true`, which is where it clears its view
 ("Catching up", section 4). The earlier conversation is not deleted; it stays
@@ -300,7 +304,7 @@ nothing changes:
 
 | `error` | Meaning |
 |---|---|
-| `bad_command` | `name` is missing or is not lowercase letters, digits, `-` and `_` (at most 40), or `args` is not a string. |
+| `bad_command` | `name` is missing or is not lowercase letters, digits, `-` and `_` (at most 40), or a supplied `args` is not an array of strings. |
 | `unknown_command` | Hermes has no command by that name that runs outside a terminal. |
 | `failed` | The server did not accept the command, or it did not finish. |
 
@@ -549,7 +553,7 @@ When the assistant needs permission before it acts, the turn waits. The server
 plays the `approval` tone, asks out loud with a short summary, and also sends:
 
 ```json
-{"type":"approval_request","turn_id":"turn-42","approval_id":"approval-7","summary":"Open a network connection to the Kitchen speaker to read its logs. OK?","command":"nc 10.0.4.17 6053","choices":["once","session","always","deny"]}
+{"type":"approval_request","turn_id":"turn-42","approval_id":"approval-7","summary":"Arya wants to open a network connection to the Kitchen speaker to read its logs. Okay?","command":"nc 10.0.4.17 6053","choices":["once","session","always","deny"]}
 ```
 
 `thinking` frames continue while it waits. The person can answer by voice on any

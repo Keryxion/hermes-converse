@@ -341,6 +341,7 @@ class ConversationOutput:
         self.unheard = unheard  # a reply barge-in cut before any of it played: spoken before the next request
         self.expires_at = float("inf")
         self.on_dequeue: Callable[[], None] = lambda: None
+        self.after_playback: Optional[Callable[[], Awaitable[None]]] = None
 
 
 class QuietTick:
@@ -1255,12 +1256,23 @@ VOICE_PROMPT = (
     "summary. Speak useful authorized updates proactively; if no update is needed, honor "
     "the scheduler's silent-response protocol. Cancelling speech does not cancel a timer: "
     "use the countdown tool to cancel it. Use the scheduling tool to cancel a scheduled wake. "
+    "Use the command tool for this conversation's gateway commands. The server supplies their "
+    "catalog below: choose the command name, aliases, and arguments from that catalog, including "
+    "session management, status, settings, memory, and skills when listed. When the user asks "
+    "to start a new session, start a new conversation, or start over, call command with "
+    "{\"name\":\"new\",\"args\":[]}. The server asks the person for approval on every call and "
+    "enforces Hermes's access and busy-command policies. Report denial, failure, or busy refusal; "
+    "do not bypass it with shell commands or direct state edits. After a denial, acknowledge that "
+    "it was not run and stop. Ask again only if the person explicitly renews the request. "
+    "A new-session command takes effect "
+    "after your final reply has played: acknowledge its deferral briefly and finish your turn. "
     "If a tool or delivery integration is unavailable, say so instead of claiming success."
 )
 
 
 def voice_system_prompt(name: Optional[str] = None, *,
-                        device_name: Optional[str] = None, recipient_id: Optional[str] = None) -> str:
+                        device_name: Optional[str] = None, recipient_id: Optional[str] = None,
+                        commands: Optional[list[dict[str, Any]]] = None) -> str:
     """Ephemeral system prompt for one converse turn: an identity + wake-word preamble when *name*
     is given and the spoken-brevity rules."""
     name = (str(name).strip() if name is not None else "")
@@ -1287,6 +1299,9 @@ def voice_system_prompt(name: Optional[str] = None, *,
             "destination, use a routing-capable tool and clarify ambiguous labels; do not invent "
             "cross-device delivery or claim that it is supported when the tool cannot do it."
         )
+    if commands is not None:
+        import json
+        prompt += " Gateway command catalog: " + json.dumps(commands, ensure_ascii=False, separators=(",", ":"))
     return prompt
 
 
@@ -1385,6 +1400,7 @@ async def drive_converse_turns(
     last_progress: Optional[Callable[[], float]] = None,
     message_ids: Any = None,
     present: Optional[Callable[[], bool]] = None,
+    after_turn: Optional[Callable[[], Awaitable[None]]] = None,
 ) -> None:
     """Run the per-transcript incremental-TTS turn loop.
 
@@ -1445,6 +1461,8 @@ async def drive_converse_turns(
         try:
             await _run_turn(d, turn, tt)
             await session.wait_for_playback_tail()
+            if item.after_playback is not None and not session.stopped and not turn.tts_stop.is_set():
+                await item.after_playback()
         except asyncio.CancelledError:
             tt.set_missing(outcome="interrupted", interrupted=True)
             raise
@@ -1525,6 +1543,8 @@ async def drive_converse_turns(
                 _discard_after_signoff(session, deferred_outputs)
                 getattr(session, "end_exchange", lambda: None)()
             await session.wait_for_playback_tail()
+            if after_turn is not None and not session.stopped and not turn.tts_stop.is_set():
+                await after_turn()
         except asyncio.CancelledError:
             tt.set_missing(outcome="interrupted", interrupted=True)
             raise

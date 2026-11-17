@@ -1,14 +1,11 @@
-"""Voice approvals: ``approval_choice: ask`` (specs/server.md, "Approvals").
-
-Hermes owns the request, the choices and the timeout. This module only asks the person, by voice and
-by an ``approval_request`` frame, and answers Hermes once with ``resolve_gateway_approval``.
-"""
+"""Spoken and on-screen approvals for Hermes requests and the voice command tool."""
 
 from __future__ import annotations
 
 import asyncio
 import math
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -21,10 +18,13 @@ WATCH_SECONDS = 1.0
 SPEECH_TTL = 60.0
 
 SUMMARY_SYSTEM = (
-    "You turn a shell command awaiting permission into one yes-or-no question to read aloud. "
-    "Say what will happen in plain words, in twenty words or fewer, ending with a question mark. "
-    "Do not read the command out character by character and never repeat secrets. Reply with the question only."
+    "A voice assistant asks permission to run a shell command, aloud, as \"<name> wants to <phrase>. Okay?\". "
+    "Write only the phrase: what will happen, in plain words, in twenty words or fewer, as a verb phrase "
+    "that follows \"wants to\" (for example: open a network connection to the Kitchen speaker to read its logs). "
+    "No name, no question mark. Do not read the command out character by character and never repeat secrets. "
+    "Reply with the phrase only."
 )
+NO_NAME = "The assistant"  # who asks when no device has told its assistant_name
 ANSWER_SYSTEM = (
     "A voice assistant asked the user a yes-or-no question about running a command. Decide what the user's "
     "reply means. Reply with exactly one word from the allowed list.\n"
@@ -47,6 +47,22 @@ def _answers(choices: Any) -> str:
     if len(words) == 1:
         return f"Say {words[0]}."
     return "Say " + ", ".join(words[:-1]) + (", or " if len(words) > 2 else " or ") + words[-1] + "."
+
+
+def phrase(text: str) -> str:
+    """Hermes's description (or the model's phrase) as words that follow "wants to": "Start a new
+    session (fresh session ID + history)" -> "start a new session, with fresh session ID + history"."""
+    text = " ".join((text or "").split()).rstrip(" .!?;:,")
+    text = re.sub(r"\s*\(([^()]*)\)$", r", with \1", text).rstrip(" .!?;:,")
+    first = text.split(" ", 1)[0]
+    if not (len(first) > 1 and first[:2].isupper()):  # SSH, URL: an acronym keeps its capitals
+        text = text[:1].lower() + text[1:]
+    return text
+
+
+def summary(assistant_name: str, what: str) -> str:
+    """The spoken question: "Arya wants to <what will happen>. Okay?" """
+    return f"{assistant_name or NO_NAME} wants to {what}. Okay?"
 
 
 def _aux(system: str, user: str, max_tokens: int) -> str:
@@ -74,6 +90,10 @@ class _Pending:
     settled: bool = False
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     tasks: list = field(default_factory=list)
+    # The plugin's own question (the ``command`` tool), not Hermes's: the choice goes here, None
+    # when nobody answered by *deadline* (monotonic).
+    answer: Optional[asyncio.Future] = None
+    deadline: float = 0.0
 
 
 class Approvals:
@@ -105,26 +125,56 @@ class Approvals:
         self._pending[p.chat_id] = p
         p.tasks = [asyncio.ensure_future(self._prepare(p)), asyncio.ensure_future(self._watch(p))]
 
+    async def ask(self, chat_id: str, command: str, summary: str, timeout: float) -> Optional[str]:
+        """Ask the person about the plugin's own *command* as a Hermes request is asked, whatever
+        ``approval_choice`` says, with choices once and deny. Their choice, or None with no answer
+        within *timeout* seconds (``approvals.timeout``)."""
+        self._loop = asyncio.get_running_loop()
+        p = _Pending(f"command-{uuid.uuid4().hex}", "", chat_id, command, summary, ["once", "deny"],
+                     summary=summary, answer=self._loop.create_future(), deadline=time.monotonic() + timeout)
+        old = self._pending.get(chat_id)
+        if old is not None:
+            self._settle(old, "deny", "denied")
+        self._pending[chat_id] = p
+        p.tasks = [asyncio.ensure_future(self._watch(p))]
+        self._ask(p)
+        try:
+            async with asyncio.timeout_at(p.deadline):
+                return await p.answer
+        except TimeoutError:
+            self._settle(p, None, "expired")
+            return None
+        finally:
+            self._settle(p, "deny", "cancelled")  # the tool call went away; nothing if already settled
+
     async def _prepare(self, p: _Pending) -> None:
         user = f"Command:\n{p.command}\n\nDescription:\n{p.description}"
         try:
-            p.summary = await asyncio.to_thread(_aux, SUMMARY_SYSTEM, user, 80)
+            what = phrase(await asyncio.to_thread(_aux, SUMMARY_SYSTEM, user, 80))
         except Exception:
             logger.warning("converse: approval summary failed; using Hermes's description", exc_info=True)
-            p.summary = p.description or "Run a command that needs permission. OK?"
+            what = ""
+        attachment = self._hub.attachment(p.chat_id)
+        p.summary = summary(getattr(attachment, "assistant_name", ""),
+                            what or phrase(p.description) or "run a command that needs permission")
         if not p.settled:
             self._ask(p)
 
     async def _watch(self, p: _Pending) -> None:
-        """Hermes's own timeout ends the request; notice it. Keep the waiting turn alive meanwhile."""
+        """Hermes's own timeout ends the request (ours: its deadline); notice it. Keep the waiting turn
+        alive meanwhile."""
         from tools.approval import list_gateway_approvals
 
         while not p.settled:
             await asyncio.sleep(WATCH_SECONDS)
             if p.settled:
                 return
-            ids = {entry.get("request_id") for entry in list_gateway_approvals(p.session_key)}
-            if p.request_id not in ids:
+            if p.answer is not None:
+                expired = time.monotonic() >= p.deadline
+            else:
+                expired = p.request_id not in {entry.get("request_id")
+                                               for entry in list_gateway_approvals(p.session_key)}
+            if expired:
                 self._settle(p, None, "expired")
                 return
             turn = self._adapter._turns.get(p.chat_id)
@@ -186,6 +236,12 @@ class Approvals:
             self._ask(p)
 
     # ── answering ──
+    def _expired(self, p: _Pending) -> bool:
+        if p.answer is not None and time.monotonic() >= p.deadline:
+            self._settle(p, None, "expired")
+            return True
+        return False
+
     def respond(self, attachment: Any, frame: dict) -> None:
         """``approval_response`` from a device."""
         p = self._pending.get(attachment.conversation_id)
@@ -193,7 +249,8 @@ class Approvals:
         if (p is None or p.settled or p.device is not attachment or frame.get("approval_id") != p.request_id
                 or not isinstance(choice, str) or choice not in p.choices):
             return
-        self._settle(p, choice, "denied" if choice == "deny" else "approved")
+        if not self._expired(p):
+            self._settle(p, choice, "denied" if choice == "deny" else "approved")
 
     def _spoken(self, p: _Pending, attachment: Any, text: str) -> bool:
         """The session: captured speech while a request is pending. True = it was an answer."""
@@ -205,7 +262,7 @@ class Approvals:
 
     async def _answer(self, p: _Pending, text: str) -> None:
         async with p.lock:
-            if p.settled:
+            if p.settled or self._expired(p):
                 return
             try:
                 user = (f"Question: {p.summary}\nAllowed words: {', '.join(p.choices)}, unclear\n"
@@ -215,7 +272,7 @@ class Approvals:
             except Exception:
                 logger.warning("converse: approval answer call failed", exc_info=True)
                 word = "unclear"
-            if p.settled:
+            if p.settled or self._expired(p):
                 return
             if word == "deny" or ("deny" in p.choices and word == "no"):
                 self._settle(p, "deny", "denied")
@@ -240,7 +297,10 @@ class Approvals:
         if p.settled:
             return
         p.settled = True
-        if choice is not None:
+        if p.answer is not None:
+            if not p.answer.done():
+                p.answer.set_result(choice)
+        elif choice is not None:
             self._resolve(p, choice)
         if self._pending.get(p.chat_id) is p:
             del self._pending[p.chat_id]

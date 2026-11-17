@@ -5,7 +5,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 import threading
 import time
-from typing import Any, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 from .loop import ConversationOutput
 
@@ -17,6 +17,8 @@ class Attachment:
     seen: OrderedDict = field(default_factory=OrderedDict)
     pending: int = 0
     send: Optional[Callable[[dict], Any]] = None  # sends a JSON frame to the device
+    assistant_name: str = ""  # the start frame's, which approvals speak as
+    command: Optional[Callable[[str, list[str], float], Any]] = None
 
 
 class ConversationHub:
@@ -31,11 +33,11 @@ class ConversationHub:
         self.detached: dict[str, Any] = {}  # conversation id -> turn running after its socket left
         self.countdowns: Any = None  # set by countdowns.register_tool
 
-    def attach(self, conversation_id: str, session: Any) -> Attachment:
+    def attach(self, conversation_id: str, session: Any, assistant_name: str = "") -> Attachment:
         with self._lock:
             if conversation_id in self._attachments:
                 raise ValueError("conversation_in_use")
-            item = Attachment(session, conversation_id)
+            item = Attachment(session, conversation_id, assistant_name=assistant_name)
             self._attachments[conversation_id] = item
             return item
 
@@ -50,7 +52,8 @@ class ConversationHub:
                 self._attachments.pop(conversation_id)
 
     def publish(self, conversation_id: str, text: str, event_id: str, *,
-                expires_at: float, next_action: Optional[str] = None, unheard: bool = False) -> str:
+                expires_at: float, next_action: Optional[str] = None, unheard: bool = False,
+                after_playback: Optional[Callable[[], Awaitable[None]]] = None) -> str:
         with self._lock:
             item = self._attachments.get(conversation_id)
             if item is None or item.session.stopped:
@@ -66,6 +69,7 @@ class ConversationHub:
                 item.seen.popitem(last=False)
             item.pending += 1
             output = ConversationOutput(text, event_id, next_action=next_action, unheard=unheard)
+            output.after_playback = after_playback
             def consumed():
                 with self._lock:
                     item.pending -= 1

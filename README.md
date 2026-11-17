@@ -305,7 +305,7 @@ API-server client.
 | `synth.py` | one `text → int16 PCM` seam over streaming or one-shot TTS, plus resampling |
 | `speech.py` | the only module that imports Hermes core speech helpers |
 | `settings.py` | the settings schema |
-| `voice_tools.py` | the `speak_this`, `play_tone` and `standby` agent tools |
+| `voice_tools.py` | the `speak_this`, `play_tone`, `standby` and approved `command` agent tools |
 | `named.py` | named-device routing records and public Hermes conversation lookup/continuation |
 | `turn_detector.py`, `tracing.py` | the optional Smart Turn endpointer and host-configured OTEL tracing backend |
 

@@ -18,6 +18,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from hermes_converse import speech
 from hermes_converse.loop import voice_system_prompt
+from hermes_converse import command_catalog
 from gateway.config import PlatformConfig
 from hermes_converse.named import DeviceStore
 from hermes_converse.platform_adapter import ConverseAdapter
@@ -190,7 +191,7 @@ async def test_subprotocol_key_accept_full_turn_through_the_gateway(monkeypatch)
     assert turn["text"] == "turn it on"
     assert turn["chat_name"] == f"{ASSISTANT_NAME}: {DEVICE_NAME}"
     assert turn["instructions"] == voice_system_prompt(
-        ASSISTANT_NAME, device_name=DEVICE_NAME, recipient_id=ready["recipient_id"])
+        ASSISTANT_NAME, device_name=DEVICE_NAME, recipient_id=ready["recipient_id"], commands=command_catalog.catalog())
     assert turn["model"] is None and turn["provider"] is None and not fake.commands
     assert streamer.requests == ["Turn it on."]
 
@@ -287,7 +288,7 @@ async def test_settings_drive_the_model_and_the_prompt(monkeypatch):
     assert turn["model"] == "fast-model" and turn["provider"] == "local-llm"
     assert fake.commands == ["/model fast-model --provider local-llm"]
     assert turn["instructions"] == voice_system_prompt(
-        "Hal", device_name=DEVICE_NAME, recipient_id=ready["recipient_id"])
+        "Hal", device_name=DEVICE_NAME, recipient_id=ready["recipient_id"], commands=command_catalog.catalog())
 
 
 @pytest.mark.asyncio
@@ -304,15 +305,72 @@ async def test_command_frame_runs_the_command_and_new_closes_the_socket(monkeypa
         await ws.send_json({"type": "commands"})
         listing = await ws.receive_json()
         assert listing["type"] == "commands" and "new" in {entry["name"] for entry in listing["commands"]}
-        await ws.send_json({"type": "command", "name": "compress", "args": "keep it short"})
+        await ws.send_json({"type": "command", "name": "compress", "args": ["keep", "it", "short"]})
         frame = await ws.receive_json()
-        assert frame["name"] == "compress" and frame["args"] == "keep it short" and "reply" in frame
+        assert frame["name"] == "compress" and frame["args"] == ["keep", "it", "short"] and "reply" in frame
         await ws.send_json({"type": "command", "name": "reset"})  # an alias of new closes the socket too
         frame = await ws.receive_json()
         assert frame["type"] == "command" and frame["name"] == "reset" and "reply" in frame
         await ws.receive()
         assert ws.close_code == 4410
     assert [turn["text"] for turn in fake.turns] == ["/compress keep it short", "/reset"]  # the fake gateway has no commands of its own
+
+
+@pytest.mark.asyncio
+async def test_refused_new_command_does_not_close_the_socket():
+    class RefusedReset(FakeHermes):
+        async def handle(self, event):
+            if event.get_command() == "new":
+                return "Command access denied."
+            return await super().handle(event)
+
+    async with Harness(RefusedReset(API_KEY)) as client:
+        ws = await client.ws_connect("/v1/audio/converse", protocols=(VOICE_PROTOCOL, _key_protocol()))
+        try:
+            await ws.send_str(_start_msg())
+            assert (await ws.receive_json())["type"] == "ready"
+            await ws.send_json({"type": "command", "name": "new"})
+            assert await ws.receive_json() == {"type": "command", "name": "new", "reply": "Command access denied."}
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(ws.receive(), .05)
+            assert not ws.closed
+        finally:
+            await _end(ws)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("args", [[], ["Kitchen timers"], ["here", "3"]])
+async def test_command_argument_arrays_reach_the_gateway(monkeypatch, args):
+    fake = FakeHermes(API_KEY)
+    async with Harness(fake) as client:
+        ws = await client.ws_connect("/v1/audio/converse", protocols=(VOICE_PROTOCOL, _key_protocol()))
+        try:
+            await ws.send_str(_start_msg())
+            assert (await ws.receive_json())["type"] == "ready"
+            frame = {"type": "command", "name": "title", "args": args}
+            await ws.send_json(frame)
+            reply = await ws.receive_json()
+            assert reply == {**frame, "reply": "Turn it on."}
+            assert [turn["text"] for turn in fake.turns] == [f"/title {' '.join(args)}".strip()]
+        finally:
+            await _end(ws)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("args", ["Kitchen timers", None, 3, {}, ["here", 3], [None], [[]]])
+async def test_command_rejects_arguments_that_are_not_string_arrays(args):
+    fake = FakeHermes(API_KEY)
+    async with Harness(fake) as client:
+        ws = await client.ws_connect("/v1/audio/converse", protocols=(VOICE_PROTOCOL, _key_protocol()))
+        try:
+            await ws.send_str(_start_msg())
+            assert (await ws.receive_json())["type"] == "ready"
+            frame = {"type": "command", "name": "title", "args": args}
+            await ws.send_json(frame)
+            assert await ws.receive_json() == {**frame, "error": "bad_command"}
+            assert fake.turns == []
+        finally:
+            await _end(ws)
 
 
 @pytest.mark.asyncio

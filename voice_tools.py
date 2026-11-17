@@ -2,13 +2,31 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import re
 from typing import Any, Callable
 
 TOOLSET = "converse"
 TONES = ("confirm", "error")
 
 SCHEMAS = {
+    "command": {
+        "name": "command",
+        "description": (
+            "Voice devices only. Request a gateway command for this conversation. The person must "
+            "approve every call. Returns the gateway reply for you to summarize, not spoken. "
+            "If denied, acknowledge the denial and stop. Ask again only if the person explicitly asks again. "
+            "Use any command in the gateway catalog, including its aliases and plugin commands. "
+            "When asked to start a new session, new conversation, or start over, call with "
+            "name new and args []; it takes effect after your final reply has played. "
+            "Hermes may refuse commands while busy, including compress."),
+        "parameters": {"type": "object", "properties": {
+            "name": {"type": "string", "description": "Command name without a slash, such as new."},
+            "args": {"type": "array", "items": {"type": "string"},
+                     "description": "Command arguments, such as [here, 3] for compress; default []."}},
+            "required": ["name"]},
+    },
     "speak_this": {
         "name": "speak_this",
         "description": (
@@ -42,7 +60,7 @@ def _result(value: str) -> str:
     return json.dumps({"result": value})
 
 
-def make_handlers(hub: Any) -> dict[str, Callable[..., str]]:
+def make_handlers(hub: Any) -> dict[str, Callable[..., Any]]:
     def device() -> tuple[str, Any]:
         """("", attachment) for a voice device conversation, else (error result, None)."""
         from gateway.session_context import get_session_env
@@ -103,10 +121,28 @@ def make_handlers(hub: Any) -> dict[str, Callable[..., str]]:
                 turn.standby = True
         return _result("ok")
 
-    return {"speak_this": speak_this, "play_tone": play_tone, "standby": standby}
+    async def command(args: dict, **kw: Any) -> str:
+        error, attachment = device()
+        if attachment is None or attachment.command is None:
+            return _result(error or "not_attached")
+        name, argv = args.get("name"), args.get("args", [])
+        if (not isinstance(name, str) or not re.fullmatch(r"[a-z0-9_-]{1,40}", name)
+                or not isinstance(argv, list) or not all(isinstance(arg, str) for arg in argv)):
+            return _result("bad_command")
+        from gateway.platforms.base_exec_approval import approval_timeout_seconds
+
+        result = await asyncio.wrap_future(attachment.command(name, list(argv), approval_timeout_seconds()))
+        if result == "denied":
+            return json.dumps({"result": "denied", "message": (
+                "The person did not approve this call. Acknowledge that it was not run and stop. "
+                "Only ask again if the person explicitly renews the request.")})
+        return _result(result)
+
+    return {"speak_this": speak_this, "play_tone": play_tone, "standby": standby, "command": command}
 
 
 def register_tools(ctx: Any, hub: Any) -> None:
     for name, handler in make_handlers(hub).items():
         ctx.register_tool(name=name, toolset=TOOLSET, schema=SCHEMAS[name], handler=handler,
-                          description=SCHEMAS[name]["description"], emoji="🎙️")
+                          description=SCHEMAS[name]["description"], emoji="🎙️",
+                          is_async=asyncio.iscoroutinefunction(handler))
