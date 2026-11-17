@@ -1,0 +1,31 @@
+# Live Penny contract check. Suite: Keryxion/arya-test@ee29ca065d1f3f58c23cb877751e7f84d86388f8
+# Run only after the alpha workflow successfully deploys to Penny.
+when:
+  - event: deployment
+    environment: penny
+depends_on:
+  - alpha
+labels:
+  backend: docker
+  platform: linux/amd64
+steps:
+  - name: live-penny-free
+    image: python:3.13-slim
+    environment:
+      ARYA_API_KEY: { from_secret: arya_penny_api_key }
+      ARYA_TEST_BUNDLE: { from_secret: arya_test_source_ee29ca065d1f }
+      ARYA_URL: wss://penny.z13.org/v1/audio/converse
+      ARYA_SPEC_FILE: ${CI_WORKSPACE}/specs/client.md
+    commands:
+      - apt-get update -qq && apt-get install -y -qq --no-install-recommends espeak-ng ffmpeg libopus0
+      - |
+        python - <<'PY'
+        import base64, hashlib, io, os, pathlib, tarfile
+        bundle = base64.b64decode(os.environ.pop('ARYA_TEST_BUNDLE'), validate=True)
+        assert hashlib.sha256(bundle).hexdigest() == 'd31077531bbb40fc83291c79d8f525e968861edca81d46265c891f03dfe5e88f', 'Wrong Arya test source archive'
+        pathlib.Path('arya-test').mkdir()
+        with tarfile.open(fileobj=io.BytesIO(bundle), mode='r:gz') as archive:
+            archive.extractall('arya-test', filter='data')
+        PY
+      - unset ARYA_TEST_BUNDLE
+      - cd arya-test && sh ci/run.sh
