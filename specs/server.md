@@ -14,6 +14,13 @@ conversation. Decode input to PCM16 before the
 existing level, VAD, endpointing and STT pipeline; encode reply PCM after TTS
 resampling to `output_rate`.
 
+Opus needs the system libopus library on the server (`libopus0` on Debian and
+Ubuntu); install it with the plugin. PCM16 needs nothing. When `start` asks for
+a valid format the server cannot set up, such as Opus without libopus, send
+`audio_unavailable` and close with `4503`, and log the cause. That is separate
+from a malformed `start` (`4400 bad_start`) and from a conversation that cannot
+be opened (`4404 conversation_unavailable`); never fall back to another format.
+
 Count decoded samples for input timing and reply pacing; compressed byte
 lengths do not measure audio duration. Should a client send DTX anyway, decode
 its tiny DTX-only packets as digital silence so comfort noise does not teach the
@@ -96,8 +103,11 @@ conversation never has two agent runs at once; Hermes orders them.
 Cancellation is distinct from conversational continuation. Accept an explicit
 `cancel` for the matching turn immediately; ignore a stale targeted cancellation.
 An untargeted cancel also abandons a capture in progress. Stop the agent and TTS,
-discard that cancelled capture, emit the existing interruption/terminal frames,
-and leave the socket and conversation usable. `stop` closes the attachment.
+discard that cancelled capture, and send `interrupted` then `turn_done` for the
+turn that was cut; a capture abandoned with no turn running sends nothing.
+Leave the socket and conversation usable. After a turn's `interrupted`, send
+nothing more for it but its `turn_done`, and start no other turn's frames
+before that. `stop` closes the attachment.
 
 `heard` says the device detected a wake word during a turn. It is neither
 cancellation nor barge-in: log it with the session, the turn, and the wake
@@ -448,16 +458,31 @@ Hermes stores a message only once it is whole, which is why the ID follows the
 text instead of travelling with it: the user frame is sent after the agent turn
 starts, and the assistant's ID comes in a closing frame with empty text.
 
+Never send a user `transcript` without its `message_id`. Send it when Hermes
+has stored the message, with the stored message's text, which includes any
+earlier request carried into it. When a turn is cancelled or interrupted around
+the handover, settle the turn first, then look: send the frame before
+`interrupted` if the message is there, and no frame if it is not. If Hermes's
+messages cannot be read, send no user `transcript`.
+
+Text that is not a Hermes message gets no `transcript` frame of either kind:
+`say`, and the spoken approval summary. A server-started reply is a Hermes
+message and closes with its `message_id` like any other.
+
 When a client connects with `transcripts: true`, replay what it missed from
 Hermes's own messages for the device's conversation, right after `ready` and
 before any live frame. Keep no second copy.
 
 - Replay user and assistant messages only, as `transcript` frames with
   `replay: true`: no tool calls, tool results, reasoning, or system text.
-- An assistant message's `text` is what was submitted for speech in that turn,
-  the same text its live `transcript` frame carried. For a turn that used
-  `speak_this`, that is the text given to the tool, not the reply text. A turn
-  that said nothing is not replayed.
+- An assistant message's `text` is what the turn says aloud, worked out from
+  Hermes's messages and not from what was synthesized: the reply text with
+  Markdown removed, or, for a turn that used `speak_this`, the text given to the
+  tool. It is the same whether the reply was played in full, cut short, or
+  finished with nobody attached. A turn that says nothing, such as `[SILENT]`
+  or `speak_this` with `""`, is not replayed.
+- A turn still running is replayed up to its user message only. Its reply so
+  far goes in one more frame, as below.
 - With `after`, replay every such message after it, up to the most recent 100.
   Without `after`, or when `after` is not a message of the current
   conversation, replay the most recent 20.
@@ -468,6 +493,19 @@ before any live frame. Keep no second copy.
   deleted conversation.
 - Include messages that compaction has folded away when Hermes still has them.
 
+### A turn running at reconnect
+
+A replacement connection takes over the running turn. After the replay, send
+one assistant `transcript` with `replay: true` and no `message_id` holding the
+turn's text so far, by the same rule as replayed text and including what was
+generated while nobody was attached; then `state` with the turn's current
+state and a `thinking` frame at once, with the turn's counters as they stand;
+then any pending `approval_request`. Text pieces sent afterwards continue from
+the end of that frame, so the pieces a client appends to it add up to the text
+a later replay gives. Audio resumes with the first text generated after the
+reconnect, behind a new `speaking`; do not synthesize what was generated while
+nobody was attached, and do not resend audio.
+
 ### Nobody attached
 
 A turn can run with no device attached, because a turn outlives a dropped
@@ -475,7 +513,8 @@ connection and other producers start turns too. Its output goes nowhere, and
 that is expected:
 
 - Do not synthesize speech for it. The reply is in the conversation's history
-  and is replayed as a transcript when a client catches up.
+  and is replayed as a transcript when a client catches up, with the text it
+  would have said.
 - `speak_this`, `play_tone`, `standby`, `mute`, and `countdown` return `not_attached`,
   so the agent can tell nobody is there and tell another room or chat instead.
 - Nothing is queued to be spoken later.
@@ -484,7 +523,9 @@ that is expected:
 Verify: a reply that finished while the device was away is replayed as a
 transcript and never spoken; no speech is synthesized for it; connecting twice
 with the same `after` replays the same frames; connecting with the newest `message_id`
-replays none; a cancelled turn replays a user transcript with no reply; a
+replays none; a turn cancelled after its message was stored replays a user transcript with no
+reply, and one cancelled before that replays nothing; no user `transcript` is
+ever sent without a `message_id`; `say` sends no `transcript`; a
 reconnect during a turn receives the replay and then the rest of the turn live;
 a replayed frame never starts a turn on the client.
 
@@ -715,9 +756,13 @@ enforces it.
 Keep a countdown until its device sends `countdown` with `ended` for it, or
 until its deadline plus the ring timeout has passed. A device's `countdown` with
 `ringing` says it is ringing there (client spec, section 10); it started at its
-deadline. Send a device its countdowns again after
-`ready`, so one that reconnects or restarts shows them. The server does not ring
-anything itself and does not send a frame at the deadline.
+deadline. Send a device every countdown held for it again after `ready`,
+including one whose deadline has passed, so one that reconnects or restarts
+shows them; the device decides whether it still rings (client spec, section 10).
+A device's `ended` for a countdown, whenever it arrives, removes it: one that
+was dismissed or rang out while the device was disconnected is reported after
+`ready`. Ignore a report for a countdown the server does not hold. The server
+does not ring anything itself and does not send a frame at the deadline.
 
 ### Still ringing
 
@@ -749,8 +794,9 @@ ringing.
 
 Acceptance scenarios: a countdown set in the Kitchen counts down and rings only in
 the Kitchen. Exercise a call from a chat that is not a device, a device that is
-not attached, a reconnect before the deadline, a device that is off at the
-deadline, local dismissal, the `cancel` wake word while ringing (it does not end the countdown), other speech while ringing, a
+not attached, a reconnect before the deadline, a device that stays running but
+disconnected through the deadline, a dismissal while disconnected reported
+after reconnect, a device that is off at the deadline, local dismissal, the `cancel` wake word while ringing (it does not end the countdown), other speech while ringing, a
 reply and a wake word while ringing, snooze while pending and while ringing,
 cancel while ringing, still-ringing turns at 1, 2, 4 and 8 minutes and none
 after `ended`, two countdowns ringing at once (one turn naming both, a

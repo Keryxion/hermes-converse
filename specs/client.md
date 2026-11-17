@@ -24,6 +24,13 @@ changing the chat model.
 Server lifecycle and integration details are in [the server spec](server.md).
 What a client records for tracing is in [client tracing](client_tracing.md).
 
+**Acceptance** lists follow the behavior they check. Each case says what to send
+and which frames to expect, in order; frames not named may arrive between them.
+They are protocol cases: they hold on every server, whatever model answers. A
+case marked *model-dependent* also needs the model to make a particular choice,
+such as calling a tool; report it separately, and do not count it as a protocol
+failure.
+
 ## 1. Connect and authenticate
 
 Open the WebSocket. Your first frame must be a `start` frame.
@@ -55,9 +62,9 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 | `type` | always `"start"` |
 | `key` | API key (required unless you used the subprotocol) |
 | `audio_format` | `"pcm16"` (default) or `"opus"`, for both directions for this socket. |
-| `input_rate` | microphone sample rate (8000–48000 for PCM16, default 16000) |
-| `output_rate` | reply sample rate (default 24000) |
-| `quiet_interval` | session mode: seconds of silence between `quiet` frames (0 = none); send 1 |
+| `input_rate` | microphone sample rate, an integer (8000–48000 for PCM16, default 16000) |
+| `output_rate` | reply sample rate, an integer (8000–48000 for PCM16, default 24000) |
+| `quiet_interval` | session mode: seconds of silence between `quiet` frames, a number up to 3600 (0 = none, the default); send 1 |
 | `device_name` | The configured device label, such as `Den Echo` or `Kitchen`. Each device keeps its own conversation, titled `<assistant_name>: <device_name>`. |
 | `models` | Boolean; only `true` includes the model catalog in `ready`. Defaults to `false`. See section 11. |
 | `transcripts` | Boolean; request user and assistant transcript frames when `true`. Defaults to `false`. See section 4. |
@@ -69,6 +76,48 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 or carrying one of those fields, closes with `4400 bad_start`. The connection
 uses the Hermes profile that owns the server listener; `start` does not select
 a profile, and there is no profile-prefixed route.
+
+### What `start` accepts
+
+A name is a string of at most 98 characters as sent, with no control characters.
+The server trims it, collapses each run of whitespace inside it to one space, and
+applies Unicode NFC; `ready` carries the names in use, and two spellings that
+come out the same are the same device.
+
+| In `start` | Result |
+|---|---|
+| No first frame within 5 seconds; a binary frame; text that is not a JSON object; `type` other than `"start"` | `4400 bad_start` |
+| Missing or wrong key | `4401 unauthorized` |
+| A name that is missing, not a string, empty or only whitespace, over 98 characters, or contains a control character; a title `<assistant_name>: <device_name>` over 100 characters | `4400 bad_start` |
+| A `profile`, `name`, `conversation`, or `conversation_id` field | `4400 bad_start` |
+| `audio_format` other than `"pcm16"` or `"opus"` | `4400 bad_start` |
+| Opus with a rate that is not one of the integers 8000, 12000, 16000, 24000, 48000 | `4400 bad_start` |
+| PCM16 with a rate below 8000 or above 48000 | The nearest limit is used. |
+| PCM16 with a rate that is not an integer | The default is used. |
+| `quiet_interval` that is not a number, or is zero or negative | Off. |
+| `quiet_interval` above 3600 | 3600. |
+| `transcripts` or `models` other than `true` | `false`. |
+| `after` that is not a string | As if absent. |
+| `after` that is not a message of the device's conversation | `new_session: true` ("Catching up", section 4). |
+| A valid format the server cannot set up | `4503 audio_unavailable` |
+| Any other field | Ignored. |
+
+`ready` always states the rates and format in use; play and capture at those,
+not at what was asked for. Every close before `ready` is preceded by an error
+frame naming it, such as `{"type":"error","error":"bad_start"}`.
+
+**Acceptance**
+
+- Send `start` with `"device_name": "  Den   Echo "`. Expect `ready` with
+  `"device_name": "Den Echo"`.
+- Send `start` with `"device_name": ""`, then with a 99-character name, then
+  with `"name": "x"` added. Expect `error` `bad_start` and close 4400 each time.
+- Send PCM16 `start` with `"output_rate": 96000`. Expect `ready` with
+  `output.sample_rate` 48000.
+- Send `start` with `"quiet_interval": "soon"`, then stream 10 seconds of
+  silence. Expect `ready` and no `quiet`.
+- Send `start` with `"audio_format": "opus", "output_rate": 44100`. Expect
+  `error` `bad_start` and close 4400.
 
 For a wake-word client, detect the wake word locally, buffer microphone
 PCM while awaiting arbitration for up to **1000 ms**, and start streaming
@@ -115,7 +164,8 @@ fields are unchanged:
 
 Omitting `audio_format` keeps PCM16. Opus accepts rates 8000, 12000, 16000,
 24000 and 48000 in either direction, with the same defaults as PCM16. An unknown
-format or invalid Opus rate closes with `4400 bad_start`; there is no silent
+format or invalid Opus rate closes with `4400 bad_start`, and a server that
+cannot set Opus up closes with `4503 audio_unavailable`; there is no silent
 fallback. The format stays fixed until reconnect.
 
 Each binary WebSocket message is exactly one raw Opus packet containing 20 ms
@@ -148,9 +198,18 @@ may already have happened.
 | close or error | what to do |
 |---|---|
 | `4409 attachment_replaced` | Another connection with the same names replaced this one. Stop sending on it. |
-| `4404 conversation_unavailable` | The conversation could not be opened. Show the failure rather than claiming restored context. |
+| `4404 conversation_unavailable` | The conversation could not be opened. Show the failure rather than claiming restored context. It says nothing about audio. |
+| `4503 audio_unavailable` | `start` was valid, but the server cannot set up the requested `audio_format`, for example Opus on a server without its codec. Reconnect with `pcm16`, which every server provides. |
 | `4410 conversation_changed` | The device's conversation is a different one now, for example after the `new` command. Reconnect at once; `ready` then says whether the cursor still applies ("Catching up", section 4). |
 | `conversation_busy` error before `ready` | Earlier work is still stopping. Retry later. |
+
+**Acceptance**
+
+- Send a valid Opus `start`. Expect `ready` with `input.format` and
+  `output.format` `"opus"`, or `error` `audio_unavailable` and close 4503.
+  Never `conversation_unavailable`, and never `ready` with `"pcm16"`.
+- After close 4503, send the same `start` with `"audio_format": "pcm16"`.
+  Expect `ready`.
 
 ## 3. Client control frames (send anytime)
 
@@ -168,7 +227,7 @@ All are JSON text frames:
 | `{"type": "countdown", "countdown_id": "...", "ringing": true}` | A countdown is ringing, or with `ended` has ended; see section 10. |
 | `{"type": "commands"}` | Ask which commands the server runs; see "Commands" below. |
 | `{"type": "command", "name": "new"}` | Run a Hermes command for this device's conversation, such as starting a fresh one; see "Commands" below. |
-| `{"type": "say", "text": "..."}` | Speaks the given text (trimmed, at most 400 characters) as a reply of its own: `thinking`, `speaking` + PCM, then `turn_done` with `next_action: "standby"`. No agent turn runs and nothing is added to the conversation. For fixed device prompts such as a spoken help reminder. Empty or non-string text is ignored. |
+| `{"type": "say", "text": "..."}` | Speaks the given text (trimmed, at most 400 characters) as a reply of its own: `thinking`, `speaking` + PCM, then `turn_done` with `next_action: "standby"`. No agent turn runs, nothing is added to the conversation, and no `transcript` frame is sent for it. For fixed device prompts such as a spoken help reminder. Empty or non-string text is ignored. |
 | `{"type": "approval_response", "approval_id": "...", "choice": "once"}` | Answer a pending approval from a screen with one of its `choices`; see "Approvals" in section 4. |
 
 **`cancel` vs `stop`:** `stop` tears down the session; `cancel` only kills the
@@ -177,6 +236,36 @@ to keep the conversation going. Nothing heard is a `cancel`: neither the
 assistant's wake word nor the `cancel` wake word cancels a turn. A wake word
 heard during a turn is reported with `heard` (section 4, "A wake word heard
 during a turn").
+
+### What a control frame accepts
+
+A frame the server cannot use never closes the connection, with one exception:
+a bad Opus packet.
+
+| Sent | Result |
+|---|---|
+| Text that is not JSON, JSON that is not an object, or an unknown `type` | Ignored. |
+| `stop` or `commit` with a value other than `true` | Ignored. |
+| `cancel` whose `turn_id` is not the current turn's, or not a string | Ignored. |
+| `endpointing` whose `on` is not a boolean | `on` is ignored; `"commit": true` still commits. |
+| `state` with no string `turn_id` | Ignored. |
+| `countdown` with no string `countdown_id`, with one the server does not have, or with neither `"ringing": true` nor `"ended": true` | Ignored. |
+| `say` whose `text` is not a string or is empty after trimming | Ignored. |
+| `say` whose `text` is over 400 characters | The first 400 are spoken. |
+| `approval_response` for another request, a second one, or a `choice` not offered | Ignored. |
+| `wake` without a nonempty string `claim_id` and `wake_word` | `{"type":"error","error":"bad_wake"}` (section 8). |
+| `command` with a bad `name` or `args` | `command` with `error` ("Commands" below). |
+| `set_model` with a bad `request_id`, `model`, or `provider` | `model_error` (section 11). |
+| A malformed, non-mono, or non-20-ms Opus packet | `4400 bad_audio` |
+
+**Acceptance**
+
+- Send `not json`, `[1]`, `{"type":"nope"}`, `{"type":"cancel","turn_id":7}`,
+  `{"type":"endpointing","on":"yes"}`, and `{"type":"say","text":5}`. Expect no
+  frame in answer and the socket still open: a following `{"type":"commands"}`
+  is answered.
+- Send `{"type":"wake","claim_id":""}`. Expect `error` `bad_wake`; the socket
+  stays open.
 
 ### Push to talk
 
@@ -200,8 +289,8 @@ as last set until the device changes it, and each connection starts with
 endpointing on. The utterance cap still applies as a memory backstop.
 
 Quick taps and wake-word turns use normal endpointing. Send no PCM while the
-control is released, including after the reply completes. A `turn_done` without
-`next_action` does not reopen the microphone; only `next_action: "listen"` does. Barge-in, `cancel`, `stop`, and
+control is released, including after the reply completes. What follows `turn_done` is in the table under "Handling
+`turn_done.next_action`" (section 4). Barge-in, `cancel`, `stop`, and
 every other frame keep their usual meaning, and `commit` with no utterance in progress is ignored.
 
 ### Commands
@@ -412,15 +501,97 @@ Explicit `cancel` stops the matching turn without submitting a user message:
 ```
 
 A stale targeted cancel cannot stop a newer turn. An untargeted
-`{"type":"cancel"}` also abandons a capture in progress. The connection and
+`{"type":"cancel"}` also abandons a capture in progress: the audio is dropped,
+and when no turn is running no frame answers it. The connection and
 conversation remain usable. `stop` closes the attachment instead.
+
+### Frame order when a turn is cut
+
+Binary audio carries no `turn_id`, so the order is the contract:
+
+- Every binary frame belongs to the turn of the latest `speaking` frame.
+- After `interrupted` for a turn, the server sends no more audio and no more
+  frames for it except its `turn_done`. `thinking`, transcript pieces, and audio
+  sent before `interrupted` may still arrive ahead of it; they belong to the old
+  turn.
+- A continuation's first frame comes after the old turn's `turn_done`, and its
+  audio only after its own `speaking`.
+- On `interrupted`, discard the turn's queued audio at once, then report the
+  state you move to.
+
+Speech during thinking (turn A is cut, B answers the continuation):
+
+```
+← {"type":"state","turn_id":"A","state":"thinking"}
+← {"type":"thinking","turn_id":"A","tool_calls":0,"reasoning_tokens":null}
+← {"type":"transcript","role":"user","turn_id":"A","message_id":"m-10","text":"Turn on the light"}
+     (the person speaks)
+← {"type":"interrupted","turn_id":"A"}
+← {"type":"turn_done","turn_id":"A"}
+     (the person stops; the server endpoints and transcribes)
+← {"type":"state","turn_id":"B","state":"thinking"}
+← {"type":"thinking","turn_id":"B","tool_calls":0,"reasoning_tokens":null}
+← {"type":"transcript","role":"user","turn_id":"B","message_id":"m-11","text":"and make it warm white"}
+← {"type":"state","turn_id":"B","state":"speaking"}
+← {"type":"speaking","turn_id":"B"}
+← binary audio for B
+← {"type":"turn_done","turn_id":"B"}
+```
+
+Speech during the reply's audio:
+
+```
+← {"type":"speaking","turn_id":"A"}
+← binary audio for A
+     (the person speaks)
+← {"type":"interrupted","turn_id":"A"}      discard A's queued audio
+← {"type":"turn_done","turn_id":"A"}
+→ {"type":"state","turn_id":"A","state":"listening"}
+← {"type":"state","turn_id":"B","state":"thinking"}   and B continues as above
+```
+
+Speech after `turn_done`, while the reply is still playing:
+
+```
+← binary audio for A
+← {"type":"turn_done","turn_id":"A","next_action":"standby"}
+     (the device is still playing; the person speaks)
+← {"type":"interrupted","turn_id":"A"}      discard A's queued audio
+← {"type":"turn_done","turn_id":"A"}        replaces the earlier one: no standby
+→ {"type":"state","turn_id":"A","state":"listening"}
+← {"type":"state","turn_id":"B","state":"thinking"}   and B continues as above
+```
+
+`cancel` gives the same frames for A in each of the three cases, and no turn B:
+
+```
+→ {"type":"cancel","turn_id":"A"}
+← {"type":"interrupted","turn_id":"A"}
+← {"type":"turn_done","turn_id":"A"}
+```
+
+**Acceptance**
+
+- Start a turn and send `cancel` with its `turn_id` after its first `thinking`.
+  Expect `interrupted` then `turn_done` without `next_action`, both for that
+  turn, then no frame and no audio for it. A new utterance then gets a new turn.
+- Send `cancel` with that same `turn_id` again during the next turn. Expect the
+  next turn to complete untouched.
+- During a reply's audio, send speech. Expect `interrupted` then `turn_done`
+  for the reply, no binary frame between `interrupted` and the next `speaking`,
+  then a turn with a new `turn_id`.
+- Receive `turn_done` and do not report leaving `speaking`; send speech. Expect
+  `interrupted` then a second `turn_done` without `next_action` for the same
+  turn, then a turn with a new `turn_id`.
+- Send `{"type":"cancel"}` while streaming speech with no turn running. Expect
+  no `thinking` and no turn for that speech.
 
 Do not use an `agentTurn`, thinking, or playback flag to suppress PCM during
 an activation. Play incoming PCM and send microphone PCM concurrently.
 Local echo cancellation may clean the signal, but must preserve user speech.
 Do not replace microphone audio with synthetic silence during playback.
-On unmute, resume live audio only if the activation is still open; never
-replay audio accumulated while muted.
+Unmuting lands in standby ("Handling `turn_done.next_action`"); never replay
+audio accumulated while muted.
 
 Muting while listening commits what was already said: stop microphone capture,
 send all audio already captured in order, then send `{"commit": true}` before
@@ -484,8 +655,8 @@ a completed, cancelled, or stale turn.
 
 Nothing else changes the state during a turn: `thinking` frames carry liveness
 and counters, approval frames open and close the on-screen box, and `speaking`
-marks where the audio begins. After `turn_done`, preserve the interaction mode
-unless `next_action` says otherwise, as below. States the device
+marks where the audio begins. What follows `turn_done` is in the table
+under "Handling `turn_done.next_action`". States the device
 knows by itself, such as
 connecting, arbitrating, or muted, are the device's own (`animations.md`).
 
@@ -614,54 +785,87 @@ is sent again as a new `approval_request` with the same `approval_id`; show it. 
 
 ### Handling `turn_done.next_action`
 
-An ordinary completion preserves the client's interaction mode:
+`turn_done` ends every turn, and `next_action` on it is optional:
 
 ```json
 {"type":"turn_done","turn_id":"turn-42"}
 ```
 
-To end the exchange, the server sends:
-
 ```json
 {"type":"turn_done","turn_id":"turn-42","next_action":"standby"}
 ```
-
-When the person asks the device to stop listening, the server sends:
 
 ```json
 {"type":"turn_done","turn_id":"turn-42","next_action":"mute"}
 ```
 
-To switch a client that is not listening into listening, the server sends:
-
 ```json
 {"type":"turn_done","turn_id":"turn-42","next_action":"listen"}
 ```
 
-| `next_action` | client behavior |
-|---|---|
-| absent | After playback drains, preserve the interaction mode: hands-free continues streaming for a follow-up; released push-to-talk stays in standby and sends no PCM. |
-| `standby` | After playback drains, stop upstream PCM and return to local wake detection (or the non-wake client's idle UI). Keep the socket/session open for outbound events. |
-| `mute` | On receipt, without waiting for playback to drain: mute, as the device's own mute control does. The reply keeps playing. The exchange ends as for `standby`: once unmuted, the device is in standby. Only the person unmutes, on the device. |
-| `listen` | After playback drains, enter listening: open an activation and stream microphone PCM for the next utterance, as after a wake grant (no wake claim), subject to explicit user mute. A client already listening keeps listening. |
+`listen`, `standby`, and `mute` are the only values; treat any other as absent.
+They are the three states the microphone can be in, and `next_action` names
+the one to move to:
 
-`next_action` is optional and absent most of the time. `standby`, `mute`, and
-`listen` are the only values; ignore any other. `listen` is the exception: the server
-sends it only when it wants the person's answer from a client that would not
-otherwise be listening, such as a server-started reply that asks a question, or
-released push-to-talk. Completing a reply does not otherwise open microphone
-capture. Apply `mute` on receipt. Otherwise continue playback/drain handling, then apply the
-latest completion's action and report the state it leads to. An updated
-`turn_done` without `next_action` clears an earlier pending standby or listen
-action for that turn; it still preserves the client's interaction mode. Do not apply a
-late completion from an abandoned turn to a newer activation.
+| State | Microphone | Left by |
+|---|---|---|
+| Listening | An activation is open; PCM streams to the server. | `quiet` (section 5), `standby`, `mute`, or the device's own controls. |
+| Standby | No PCM. The wake word or Talk opens an activation. A held Talk button streams only while held. | The wake word, Talk, or `listen`. |
+| Muted | No PCM, and no wake word. | Only the person, on the device. Unmuting always lands in standby. |
 
-Cancellation, interruption, errors, and timeouts preserve the interaction mode;
-a partial or failed reply requests no `next_action`. Countdown tones restore the
-prior idle/listening state after drain (section 10). The server requests
-`standby` when the person has said they are done, and `mute` when they have
-asked the device to stop listening. Clients must not inspect
-reply text or interpret whether the agent expects a follow-up.
+How each is shown is in `animations.md`. What the microphone does after a turn
+depends on how the turn ended and on the state the device was in when the turn
+started. This table is the whole rule:
+
+| The turn ended with | Was listening | Was in standby | Was muted |
+|---|---|---|---|
+| `turn_done`, no `next_action` | Stay listening for a follow-up. | Stay in standby. | Stay muted. |
+| `turn_done`, `listen` | Stay listening. | Listen: open an activation and stream, with no wake claim. | Stay muted. |
+| `turn_done`, `standby` | Standby. | Stay in standby. | Stay muted. |
+| `turn_done`, `mute` | Mute. | Mute. | Stay muted. |
+| `error`, then `turn_done` | Stay listening. | Stay in standby. | Stay muted. |
+| `interrupted`, then `turn_done`, after this device's `cancel` | Stay listening. | Stay in standby. | Stay muted. |
+| `interrupted`, then `turn_done`, with no `cancel` from this device: the person spoke | Stay listening; the continuation follows. | Listen; the continuation follows. | Stay muted. |
+
+Apply `mute` on receipt: the reply keeps playing with the microphone already
+off. Apply every other row once the turn's audio has drained or been discarded.
+Then report the state you are in.
+
+A device in standby streams temporarily during a server-started reply so the
+person can interrupt it (section 9). That is still standby: stop the stream
+when the row is applied, unless the row says listen.
+
+Muting is the same whoever asks: the device's own control, or `mute`. It ends
+the exchange, and nothing the server sends unmutes.
+
+The `turn_done` of a failed or interrupted turn never carries `next_action`.
+When `interrupted` and a second `turn_done` arrive for a turn whose `turn_done`
+already came, the reply was interrupted while it was still playing: the second
+one replaces the first, so a pending `standby` or `listen` is dropped and the
+last row applies. A `mute` already applied stays. Do not apply a completion
+from an abandoned turn to a newer activation.
+
+The server sends `standby` when the person has said they are done, `mute` when
+they have asked the device to stop listening, and `listen` only when it wants
+the person's answer from a device that would not otherwise be listening.
+Clients must not inspect reply text or interpret whether the agent expects a
+follow-up. Countdown tones restore the prior state after drain (section 10).
+
+**Acceptance**
+
+- Listening: complete a turn. Expect `turn_done` without `next_action`; keep
+  streaming, speak again without a wake claim, and expect a new turn.
+- Push to talk: send `endpointing` off, speech, then `endpointing` on with
+  `commit`. Expect one turn and `turn_done` without `next_action`. Send no PCM
+  afterwards and expect no further turn.
+- Standby: send `say` while sending no PCM. Expect `speaking`, audio, and
+  `turn_done` with `next_action: "standby"`.
+- Every `turn_done` that follows `interrupted` or `error` for its turn has no
+  `next_action`.
+- *Model-dependent:* say "thanks, that's all". Expect `turn_done` with
+  `next_action: "standby"`.
+- *Model-dependent:* say "stop listening". Expect `turn_done` with
+  `next_action: "mute"`.
 
 ### User and assistant transcripts
 
@@ -696,25 +900,63 @@ carry no `message_id`.
 
 When the reply is complete, one closing frame follows with empty `text` and the
 reply's `message_id`. It adds nothing to show: it says the reply is whole and
-gives the ID to keep as the catch-up cursor. Every reply ends this way, so a
-one-sentence reply is two frames. A reply that is interrupted has no closing
-frame. This applies to ordinary replies and outbound conversation output.
-Silent turns need no assistant frame.
+gives the ID to keep as the catch-up cursor. Every reply that is a message of
+the conversation ends this way, so a one-sentence reply is two frames. That
+covers ordinary replies and server-started replies (section 9). A reply that is
+interrupted or fails has no closing frame, and a silent turn has no assistant
+frame at all.
+
+Speech that is not a message of the conversation has no `transcript` frames,
+neither pieces nor a closing frame, and is never replayed: `say`, and the
+spoken question of an approval. So every `message_id` a client receives names a
+message of the conversation and works as `after`.
 
 When a reply is interrupted and the request is run again, the new reply arrives
 under a new `turn_id`, with no user `transcript` between the two. Replace the
 interrupted reply with the new one; do not show both. An interrupted reply with
 a new user `transcript` after it stays, marked as interrupted.
 
-A user `transcript` is one frame and always carries `message_id`. It arrives
-once the agent turn has started, so it follows that turn's first `thinking`
-frame. A `message_id` is unique in
-the conversation; treat it as opaque.
+A user `transcript` is one frame and always carries `message_id`. It is sent
+when the request has become a message of the conversation, so it follows that
+turn's first `thinking` frame and comes before its `interrupted`, `error`, or
+`turn_done`. Its `text` is that message. A `message_id` is unique in the
+conversation; treat it as opaque.
 
-The text describes what was prepared for speech, not what the user heard. For
-an interrupted or failed turn, send only text already submitted to speech if
-available, and keep the interruption or error visible. Do not send reasoning,
-tool payloads, credentials, or internal errors.
+A request that never became a message has no user `transcript`, live or
+replayed. Where a `cancel` or an interruption lands decides which:
+
+| The turn is cut | Live | Replayed later |
+|---|---|---|
+| Before the request reaches the conversation: during capture, transcription, or before the agent starts | No user `transcript`. | Nothing. Words cut by the person's further speech are not lost: they become part of the continuation's message. |
+| While it is being handed over | The server waits to learn which it was. A user `transcript` with its `message_id` comes before `interrupted` if the message was stored; otherwise none. | The same as live. |
+| After the message is stored | The user `transcript`, with its `message_id`. | The user `transcript`, with no assistant transcript after it when no reply was stored: show it as not answered. |
+
+Live and replay always agree: a client that saw no user `transcript` for a
+turn will not be sent one on catching up, and one it saw will be there.
+
+Assistant text is what the reply says aloud: the reply text with Markdown
+removed, or the text given to the assistant's speech tool. Live pieces stop
+where the reply was cut, so an interrupted or failed turn shows only the text
+already sent for speech; keep the interruption or error visible. It is what was
+prepared for speech, not what the person heard. Reasoning, tool payloads,
+credentials, and internal errors are never sent.
+
+**Acceptance**
+
+- With `transcripts: true`, complete a turn. Expect, for one `turn_id`:
+  `thinking`, a user `transcript` with `message_id`, assistant pieces without
+  `message_id`, each before the audio that speaks it, then an assistant
+  `transcript` with empty `text` and a `message_id`, then `turn_done`.
+- Send `cancel` at each point of a turn: on its first `thinking`, after its
+  user `transcript`, during its audio. Every user `transcript` received has a
+  `message_id`. Reconnect with `after` set to the last `message_id` from before
+  the turn: the replay has a user `transcript` for the turn exactly when one
+  arrived live, with the same `message_id`.
+- Send `say` with `transcripts: true`. Expect `speaking`, audio, `turn_done`,
+  and no `transcript` frame. Reconnect: the text is not replayed.
+- Reconnect with `after` set to each `message_id` received. `ready` has
+  `new_session: false` every time.
+- Without `transcripts: true`, complete a turn. Expect no `transcript` frame.
 
 ### Catching up
 
@@ -755,8 +997,11 @@ When `start` carries `after`, `ready` carries `new_session`:
 This is the one place a client learns the conversation was cleared, however it
 happened.
 
-A replayed assistant transcript is the whole reply in one frame. If the client
-already shows pieces for that `turn_id`, replace them with it.
+A replayed assistant transcript is the whole reply in one frame: everything
+the reply says aloud, however much of it was played. A reply that finished
+while no device was connected was never spoken, and is replayed with the text
+it would have said. A reply that says nothing is not replayed. If the client
+already shows pieces for that `turn_id`, replace them with the replayed frame.
 
 A `replay` transcript is only for display. It does not start a turn: do not arm
 a timer, show thinking, play audio, resend the request, or open the microphone
@@ -765,10 +1010,66 @@ turn running, was not answered: show it that way.
 
 A turn does not end because the connection dropped. If the person asked
 something and the app went away, the assistant still finishes, and the answer is
-there to catch up on. It is not spoken later. A turn still running on reconnect
-continues live: its `thinking`, `speaking`, and `turn_done` frames arrive on the
-new connection after the replayed transcripts. `{"stop": true}` and `cancel`
+there to catch up on. It is not spoken later. `{"stop": true}` and `cancel`
 still end a turn.
+
+### Reconnecting during a turn
+
+When the connection drops, discard any reply audio still queued. A turn still
+running when the client reconnects continues on the new connection. After
+`ready`, in this order:
+
+1. The replayed transcripts, as above. The running turn's user `transcript` is
+   among them once it is a message.
+2. With `transcripts: true`, when the running turn has reply text: one
+   assistant `transcript` with that `turn_id`, `replay: true`, and no
+   `message_id`, holding the reply's text so far, including text prepared
+   while the client was away. Replace any pieces shown for that `turn_id` with
+   it. It is not a cursor.
+3. `state` for the turn with its current state, then `thinking` with the turn's
+   counters. The counters carry on from where they were; they do not restart at
+   zero. `thinking` then repeats every 5 seconds as before.
+4. `approval_request` again, if the turn is waiting on one.
+5. The rest of the turn, live: further assistant pieces to append after the
+   frame from step 2, `speaking` and audio, the closing `transcript` with the
+   reply's `message_id`, and `turn_done`.
+
+```
+→ {"type":"start", ..., "transcripts":true,"after":"m-122"}
+← {"type":"ready", ..., "new_session":false}
+← {"type":"transcript","message_id":"m-123","role":"user","turn_id":"turn-41","text":"What's on my calendar tomorrow?","replay":true}
+← {"type":"transcript","role":"assistant","turn_id":"turn-41","text":"Two things tomorrow.","replay":true}
+← {"type":"state","turn_id":"turn-41","state":"thinking"}
+← {"type":"thinking","turn_id":"turn-41","tool_calls":3,"reasoning_tokens":2400}
+← {"type":"transcript","role":"assistant","turn_id":"turn-41","text":" The dentist at nine and lunch with Sam."}
+← {"type":"state","turn_id":"turn-41","state":"speaking"}
+← {"type":"speaking","turn_id":"turn-41"}
+← binary audio
+← {"type":"transcript","message_id":"m-124","role":"assistant","turn_id":"turn-41","text":""}
+← {"type":"turn_done","turn_id":"turn-41"}
+```
+
+No audio is sent twice, and none is sent for text prepared while the client was
+away: audio starts with the first text prepared after the reconnect, behind a
+new `speaking` and with fresh codec state. A turn that finished while the client
+was away sends nothing live; it is all in the replay.
+
+**Acceptance**
+
+- Complete a turn, close the socket, reconnect with `after` set to the turn's
+  user `message_id`. Expect `ready`, then one assistant `transcript` with
+  `replay: true`, the whole reply as `text`, and the `message_id` the closing
+  frame carried; no `thinking`, `speaking`, or audio.
+- Reconnect twice with the same `after`. Expect the same replayed frames.
+  Reconnect with the newest `message_id`. Expect none.
+- Start a turn, close the socket before its reply, and reconnect after the
+  reply has had time to finish. Expect the reply as a replayed `transcript` and
+  no audio for it.
+- Start a turn that takes several seconds, close the socket after its first
+  `thinking`, and reconnect at once. Expect `ready`, the replay, then `state`
+  and `thinking` for the same `turn_id` with `tool_calls` no lower than before,
+  then `turn_done` for it. Appending the live pieces to the step 2 frame gives
+  the same text a later replay gives for that `message_id`.
 
 ## 5. Session mode (`quiet_interval > 0`)
 
@@ -795,9 +1096,8 @@ not counted.
 Silence sent before you stopped streaming does not carry over. After manual
 Talk, ignore `quiet` until the person's first request (a new turn starts); the
 person pressed Talk to speak, so silence before they do is not a reason to stop
-listening. After that request, `quiet` returns to standby as usual. Optional
-`turn_done.next_action: "standby"` ends the exchange after playback drain;
-otherwise preserve the interaction mode.
+listening. After that request, `quiet` returns to standby as usual. A `turn_done` with `next_action: "standby"` also returns to standby
+("Handling `turn_done.next_action`", section 4).
 
 ## 6. Typical flow
 
@@ -1003,12 +1303,12 @@ The frame arrives when the countdown is set, not when it ends:
 
 `deadline_unix_ms` is server time; convert it with the clock offset from `ready`
 (section 2). `label` may be absent. A device with a screen shows the time
-remaining and the label. The server sends a device its countdowns again after
-`ready`.
+remaining and the label.
 
-A `countdown` with a `countdown_id` the device already has replaces it. This is
-how a countdown is extended or snoozed: if it was ringing, stop the tone and
-count down to the new deadline.
+A `countdown` with a `countdown_id` the device already has and a different
+deadline replaces it. This is how a countdown is extended or snoozed: if it was
+ringing, stop the tone and count down to the new deadline. One with the same
+deadline changes nothing: a ringing countdown keeps ringing.
 
 A countdown can be cancelled, whether it is still counting or already ringing:
 
@@ -1020,8 +1320,11 @@ A countdown can be cancelled, whether it is still counting or already ringing:
 
 At the deadline the device rings, whether or not it is connected. Every client
 bundles four sounds: `alarm-1`, `alarm-2`, `alarm-3`, and `alarm-4`. Play the
-one named in `sound`, repeating it. A countdown whose deadline passed while the
-device was off is not rung late.
+one named in `sound`, repeating it.
+
+A countdown is never rung late. A device starts ringing only within 5 seconds
+of the deadline. If it could not, because it was off or suspended then, or
+first learns of the countdown later, the countdown has ended without ringing.
 
 The alarm keeps ringing until the first of:
 
@@ -1048,6 +1351,51 @@ The frames carry no time. A countdown rings at its `deadline_unix_ms` and is
 never rung late, so the server already knows when it started ringing. Ringing
 does not change the device's voice state; a ringing countdown is shown
 alongside it (`animations.md`).
+
+### Reconnecting
+
+The device keeps its countdowns and their time while disconnected; a dropped
+connection changes nothing about them. It also remembers each countdown that
+has ended until `ring_seconds` after its deadline.
+
+After each `ready` the server sends every countdown it holds for the device
+again, as ordinary `countdown` frames, including ones whose deadline has
+passed. It cannot tell a device that kept running from one that restarted; the
+device decides from what it has:
+
+| The device receives `countdown` for | It |
+|---|---|
+| One it has, still counting, same deadline | Changes nothing. |
+| One it has, ringing, same deadline | Keeps ringing. |
+| One it does not have, deadline ahead or less than 5 seconds past | Counts down and rings as usual. This is a device that restarted before the deadline. |
+| One it does not have, deadline more than 5 seconds past | Does not ring. Sends `ended`. This is a device that was off at the deadline. |
+| One it remembers as ended: dismissed, or rung out, while disconnected | Does not ring. Sends `ended`. |
+
+After each `ready` the device also sends, without waiting for those frames,
+`ringing` for each countdown ringing now and `ended` for each that ended while
+it was disconnected. A countdown the server does not send again is not
+cancelled: keep it.
+
+**Acceptance**
+
+Set the countdowns with the model, or have the device under test receive the
+frames below from a test server; either way the cases are about the frames.
+
+- Receive a `countdown` 30 seconds ahead, reconnect before the deadline. Expect
+  the same `countdown` frame again after `ready`, with the same `countdown_id`
+  and `deadline_unix_ms`. The device rings once, at the deadline.
+- Disconnect before the deadline and stay disconnected past it. The device
+  rings on time. Reconnect while it rings: it sends `ringing`, receives the
+  `countdown` again, and keeps ringing without restarting the sound.
+- Dismiss the ringing countdown while disconnected, then reconnect. The device
+  sends `ended`, stays silent when the `countdown` arrives again, and after
+  another reconnect the server no longer sends it.
+- Restart the device before the deadline and reconnect. It counts down and
+  rings on time.
+- Keep the device off through the deadline, start it 10 seconds later, and
+  connect. It does not ring and sends `ended`.
+- *Model-dependent:* say "set a timer for one minute". Expect a `countdown`
+  frame with a deadline about 60 seconds ahead.
 
 ### Several at once
 
