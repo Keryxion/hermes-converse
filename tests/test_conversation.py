@@ -117,6 +117,11 @@ async def test_second_output_waits_for_matching_speaker_drain(monkeypatch):
         await ws.close()
 
 
+def _said(frames):
+    """The text of a turn's user transcript."""
+    return next(f['text'] for f in frames if f['type'] == 'transcript' and f['role'] == 'user')
+
+
 @pytest.mark.asyncio
 async def test_cancel_thinking_stale_id_ignored_and_run_stopped(monkeypatch):
     fake = FakeHermes(API_KEY, deltas=(), hang=True)
@@ -125,10 +130,10 @@ async def test_cancel_thinking_stale_id_ignored_and_run_stopped(monkeypatch):
         ws, _ = await connect(client, transcripts=True)
         for frame in _speech_then_silence_pcm():
             await ws.send_bytes(frame)
-        transcript = await ws.receive_json(timeout=2)
-        assert transcript['type'] == 'transcript'
         assert (await ws.receive_json(timeout=2))['state'] == 'thinking'
         assert (await ws.receive_json(timeout=2))['type'] == 'thinking'
+        transcript = await ws.receive_json(timeout=2)
+        assert transcript['type'] == 'transcript' and transcript['message_id']
         await ws.send_json({'type': 'cancel', 'turn_id': 'stale'})
         with pytest.raises(TimeoutError):
             await ws.receive_json(timeout=.1)
@@ -181,9 +186,9 @@ async def test_voice_continuation_reaches_the_running_turn(monkeypatch, phase):
         ws, _ = await connect(client, transcripts=True)
         for frame in _speech_then_silence_pcm():
             await ws.send_bytes(frame)
-        assert (await ws.receive_json(timeout=2))['type'] == 'transcript'
         assert (await ws.receive_json(timeout=2))['state'] == 'thinking'
         assert (await ws.receive_json(timeout=2))['type'] == 'thinking'
+        assert (await ws.receive_json(timeout=2))['message_id']  # the user transcript, once stored
         if phase == 'speaking':
             assert (await ws.receive_json(timeout=2))['type'] == 'transcript'  # ahead of its audio
             assert (await ws.receive_json(timeout=2))['state'] == 'speaking'
@@ -195,10 +200,11 @@ async def test_voice_continuation_reaches_the_running_turn(monkeypatch, phase):
         # A reply cut off while speaking also reports what was said.
         assert [f['type'] for f in frames if f['type'] != 'transcript'] == ['interrupted', 'turn_done']
         following, pcm = await _collect_turn(ws, timeout=3)
-        assert [f['type'] for f in following] == ['transcript', 'state', 'thinking', 'transcript', 'state', 'speaking',
-                                                  'turn_done']
-        assert following[0]['text'] == 'and the continuation'
-        assert following[3]['text'] == 'Updated.'
+        assert [f['type'] for f in following] == ['state', 'thinking', 'transcript', 'transcript', 'state',
+                                                  'speaking', 'transcript', 'turn_done']
+        assert (following[2]['text'], following[2]['message_id']) == ('and the continuation', '2')
+        assert following[3]['text'] == 'Updated.' and 'message_id' not in following[3]
+        assert (following[6]['text'], following[6]['message_id']) == ('', '3')  # the reply is whole
         assert pcm and seen['n'] == 2 and fake.stopped == []
         assert [(t['text'], t['redirects'], t['status']) for t in fake.turns] == [
             ('first request', ['and the continuation'], 'completed')]
@@ -247,7 +253,7 @@ async def test_output_waits_for_in_progress_capture_even_if_stt_is_empty(monkeyp
             await ws.send_bytes(frame)
         if transcript:
             first, _ = await _collect_turn(ws)
-            assert first[0]['type'] == 'transcript'
+            assert _said(first) == transcript
         output, pcm = await _collect_turn(ws)
         assert output[0]['event_id'] == 'event-1' and pcm
         assert len(fake.turns) == bool(transcript)
@@ -317,9 +323,9 @@ async def test_finished_reply_cut_before_any_audio_is_spoken_before_the_next_req
         ws, _ = await connect(client, transcripts=True)
         for frame in _speech_then_silence_pcm():
             await ws.send_bytes(frame)
-        assert (await ws.receive_json(timeout=2))['type'] == 'transcript'
         assert (await ws.receive_json(timeout=2))['state'] == 'thinking'
         assert (await ws.receive_json(timeout=2))['type'] == 'thinking'
+        assert (await ws.receive_json(timeout=2))['message_id']  # the user transcript, once stored
         reply = await ws.receive_json(timeout=2)
         assert (reply['role'], reply['text']) == ('assistant', 'Rinse with plain water.')
         for frame in _speech_then_silence_pcm():
@@ -330,10 +336,12 @@ async def test_finished_reply_cut_before_any_audio_is_spoken_before_the_next_req
         assert [f['type'] for f in old] == ['interrupted', 'turn_done'] and not pcm
         replay, pcm = await _collect_turn(ws, timeout=3)
         assert pcm and replay[0]['event_id'].startswith('unheard:')
-        assert [f['text'] for f in replay if f['type'] == 'transcript'] == ['Rinse with plain water.']
+        said = [f for f in replay if f['type'] == 'transcript']
+        assert [f['text'] for f in said] == ['Rinse with plain water.', '']  # then the stored reply's id
+        assert said[-1]['message_id'] == '2'
         assert "next_action" not in replay[-1]
         following, _ = await _collect_turn(ws, timeout=3)
-        assert following[0]['text'] == 'can I put the remote somewhere'
+        assert _said(following) == 'can I put the remote somewhere'
         assert [t['text'] for t in fake.turns] == ['my floors look gross', 'can I put the remote somewhere']
         assert fake.stopped == []
         await ws.close()
@@ -360,15 +368,15 @@ async def test_spoken_cancellation_is_distinct_from_continuation(monkeypatch, qu
         ws, _ = await connect(client, quiet_interval=quiet_interval, transcripts=True)
         for frame in _speech_then_silence_pcm():
             await ws.send_bytes(frame)
-        assert (await ws.receive_json(timeout=2))['type'] == 'transcript'
         assert (await ws.receive_json(timeout=2))['state'] == 'thinking'
         assert (await ws.receive_json(timeout=2))['type'] == 'thinking'
+        assert (await ws.receive_json(timeout=2))['message_id']  # the user transcript, once stored
         for frame in _speech_then_silence_pcm():
             await ws.send_bytes(frame)
         old, _ = await _collect_turn(ws)
         assert [f['type'] for f in old] == ['interrupted', 'turn_done']
         following, _ = await _collect_turn(ws)
-        assert following[0]['text'] == words
+        assert _said(following) == words
         # The words are a message to the running turn, which answers them; nothing stops it.
         assert [(t['text'], t['redirects']) for t in fake.turns] == [('turn on the light', [words])]
         assert fake.stopped == []
@@ -397,7 +405,7 @@ async def test_tail_barge_captures_continuation_before_old_drain(monkeypatch):
         assert interrupted[-1]['turn_id'] == original[-1]['turn_id']
         await ws.send_json({'type': 'state', 'turn_id': original[-1]['turn_id'], 'state': 'listening'})
         following, pcm = await _collect_turn(ws)
-        assert following[0]['text'] == 'additional idea' and pcm
+        assert _said(following) == 'additional idea' and pcm
         assert following[0]['turn_id'] != original[-1]['turn_id']
         assert len(fake.turns) == 2
         await ws.close()

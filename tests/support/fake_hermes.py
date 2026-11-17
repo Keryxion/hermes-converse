@@ -25,6 +25,17 @@ class FakeStore:
     def __init__(self) -> None:
         self.ids: dict[str, str] = {}
         self.models: dict[str, Optional[dict]] = {}
+        self.messages: dict[str, list[dict]] = {}  # session id -> its stored messages
+        self._next_id = 0
+
+    def add(self, session_id, role, content, platform_message_id=None) -> None:
+        self._next_id += 1
+        self.messages.setdefault(session_id, []).append({
+            "id": self._next_id, "role": role, "content": content, "tool_calls": None,
+            "platform_message_id": platform_message_id, "display_kind": None})
+
+    def _db_for_session_id(self, session_id):
+        return SimpleNamespace(get_messages=lambda sid, **_: list(self.messages.get(sid, [])))
 
     def get_or_create_session(self, source, force_new=False, touch_activity=True):
         key = f"agent:main:converse:dm:{source.chat_id}"
@@ -94,6 +105,7 @@ class FakeHermes:
         if running is None or event.get_command():
             return False
         running["redirects"].append(event.text)
+        self.store.add(self.store.peek_session_id(session_key), "user", event.text, str(event.message_id))
         self._redirects.append(event.text)
         return True
 
@@ -117,6 +129,7 @@ class FakeHermes:
                 "user_name": event.source.user_name, "model": override.get("model"),
                 "provider": override.get("provider"), "status": "running", "output": "", "redirects": []}
         self.turns.append(turn)
+        self.store.add(self.store.peek_session_id(key), "user", event.text, str(event.message_id))
         self.begin(turn)
         if self.fail is not None:
             turn["status"] = "failed"
@@ -147,6 +160,8 @@ class FakeHermes:
             turn["status"] = "interrupted"
             return None
         turn["status"], turn["output"] = "completed", "".join(self.deltas)
+        if turn["output"]:
+            self.store.add(sid, "assistant", turn["output"])
         return turn["output"] or None
 
     def begin(self, turn: dict[str, Any]) -> None:

@@ -32,7 +32,7 @@ async def test_voice_turn_runs_in_the_gateway_conversation(tmp_path, monkeypatch
         assert ready["type"] == "ready" and ready["device_name"] == "Den Echo" and ready["recipient_id"]
         frames, pcm = await _say(ws)
         kinds = [f["type"] for f in frames]
-        assert kinds[:3] == ["transcript", "state", "thinking"] and "speaking" in kinds and kinds[-1] == "turn_done"
+        assert kinds[:3] == ["state", "thinking", "transcript"] and "speaking" in kinds and kinds[-1] == "turn_done"
         assert pcm
         spoken = next(f for f in frames if f["type"] == "transcript" and f["role"] == "assistant")
         assert spoken["text"] == "Hello."
@@ -113,3 +113,66 @@ async def test_device_is_refused_when_the_platform_is_not_hosted(tmp_path, monke
         await harness.adapter.disconnect()
         _, refused = await _connect(client)
         assert refused == {"type": "error", "error": "conversation_unavailable"}
+
+
+async def test_reconnecting_during_a_turn_is_told_where_it_stands(tmp_path, monkeypatch):
+    fake = _patch(monkeypatch)
+    fake.hang, fake.tool_calls = True, 2
+    harness = Harness(fake, device_store=DeviceStore(tmp_path / "devices.db"))
+    async with harness as client:
+        ws, _ = await _connect(client)
+        for chunk in _speech_then_silence_pcm():
+            await ws.send_bytes(chunk)
+        live = []
+        while not any(f["type"] == "transcript" and f["role"] == "assistant" for f in live):
+            live.append(await ws.receive_json(timeout=3))
+        turn_id = live[0]["turn_id"]
+        user = next(f for f in live if f["type"] == "transcript" and f["role"] == "user")
+        await ws.close()
+        for _ in range(100):
+            if harness.route.hub.detached:
+                break
+            await asyncio.sleep(0.01)
+        ws, ready = await _connect(client)
+        assert ready["type"] == "ready"
+        # The replay names the turn as live did, and holds its user message only.
+        replayed = await ws.receive_json(timeout=3)
+        assert replayed == {**user, "replay": True}
+        so_far = await ws.receive_json(timeout=3)
+        assert so_far == {"type": "transcript", "role": "assistant", "turn_id": turn_id,
+                          "text": "Hello.", "replay": True}
+        state = await ws.receive_json(timeout=3)
+        assert (state["type"], state["state"], state["turn_id"]) == ("state", "thinking", turn_id)
+        thinking = await ws.receive_json(timeout=3)
+        assert (thinking["type"], thinking["turn_id"], thinking["tool_calls"]) == ("thinking", turn_id, 2)
+        fake.hang = False
+        rest, _ = await _collect_turn(ws)
+        closing = next(f for f in rest if f["type"] == "transcript")
+        assert closing["text"] == "" and closing["message_id"] and closing["turn_id"] == turn_id
+        assert rest[-1] == {"type": "turn_done", "turn_id": turn_id}
+        await ws.close()
+
+
+async def test_opus_the_server_cannot_set_up_is_audio_unavailable(tmp_path, monkeypatch):
+    fake = _patch(monkeypatch)
+
+    def missing():
+        raise OSError("Opus audio requires the system libopus library")
+    monkeypatch.setattr("hermes_converse.opus._library", missing)
+    async with Harness(fake, device_store=DeviceStore(tmp_path / "devices.db")) as client:
+        ws, refused = await _connect(client, audio_format="opus")
+        assert refused == {"type": "error", "error": "audio_unavailable"}
+        assert (await ws.receive(timeout=3)).data == 4503
+        _, ready = await _connect(client)  # PCM16 is unaffected
+        assert ready["type"] == "ready" and ready["output"]["format"] == "pcm16"
+
+
+async def test_say_sends_no_transcript(tmp_path, monkeypatch):
+    fake = _patch(monkeypatch)
+    async with Harness(fake, device_store=DeviceStore(tmp_path / "devices.db")) as client:
+        ws, _ = await _connect(client)
+        await ws.send_json({"type": "say", "text": "Say hey Arya to talk to me."})
+        frames, pcm = await _collect_turn(ws)
+        assert pcm and [f["type"] for f in frames if f["type"] == "transcript"] == []
+        assert frames[-1]["next_action"] == "standby"
+        await ws.close()

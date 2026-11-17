@@ -51,6 +51,8 @@ def test_an_interrupted_turns_notice_is_not_replayed():
     rows = [row(1, "user", "Put that on the PR."),
             row(2, "assistant", "Operation interrupted: waiting for model response (10.6s elapsed).")]
     assert [(f["message_id"], f["role"]) for f in replay_frames(rows, None)] == [("1", "user")]
+
+
 @pytest.mark.parametrize("method,payload", [("send_json", {"type": "thinking"}), ("send_bytes", b"audio")])
 async def test_socket_write_failure_detaches_the_relay_instead_of_cancelling_the_turn(method, payload):
     from hermes_converse.catchup import Relay
@@ -65,3 +67,44 @@ async def test_socket_write_failure_detaches_the_relay_instead_of_cancelling_the
     relay = Relay(Gone())
     await getattr(relay, method)(payload)
     assert not relay.attached
+
+
+def _ids(rows, key="t1"):
+    import asyncio
+    from types import SimpleNamespace
+
+    from hermes_converse.catchup import MessageIds
+
+    return asyncio, MessageIds(SimpleNamespace(message_key=key, history=SimpleNamespace(rows=lambda: rows)))
+
+
+def test_user_message_is_the_stored_one_or_nothing():
+    asyncio, ids = _ids([row(4, "user", "earlier words\nand these", platform_message_id="t1")])
+
+    async def stored():
+        return await ids.user_message(asyncio.Event())
+    assert asyncio.run(stored()) == ("4", "earlier words\nand these")
+
+    asyncio, ids = _ids([row(4, "user", "another turn", platform_message_id="t0")])
+
+    async def settled_without_one():
+        settled = asyncio.Event()
+        settled.set()  # the turn is over: one look decides, with no waiting
+        return await asyncio.wait_for(ids.user_message(settled), 1)
+    assert asyncio.run(settled_without_one()) is None
+
+    asyncio, ids = _ids(None)  # Hermes's messages cannot be read
+
+    async def unreadable():
+        return await asyncio.wait_for(ids.user_message(asyncio.Event()), 1)
+    assert asyncio.run(unreadable()) is None
+
+
+def test_output_id_is_the_stored_reply_that_said_it():
+    rows = [row(1, "user", "hi", platform_message_id="t1"), row(2, "assistant", "Your **timer** is done."),
+            row(3, "user", "[wake]"), row(4, "assistant", "Dinner at six.")]
+    asyncio, ids = _ids(rows)
+    assert asyncio.run(ids.output_id("Your timer is done.")) == "2"
+    assert asyncio.run(ids.output_id("something reworded")) == "4"
+    asyncio, ids = _ids([])
+    assert asyncio.run(ids.output_id("anything")) is None

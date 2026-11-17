@@ -53,36 +53,45 @@ class MessageIds:
     def __init__(self, client: Any) -> None:
         self._client = client
 
-    def _find(self) -> tuple[Optional[int], Optional[int], bool]:
+    def _find(self) -> tuple[Optional[dict], Optional[int], bool]:
         key = self._client.message_key
-        user_id = assistant_id = None
+        user = assistant_id = None
         rows = self._client.history.rows()
         for row in rows or []:
-            if user_id is None:
+            if user is None:
                 if key and row.get("platform_message_id") == key and row.get("role") == "user":
-                    user_id = row["id"]
+                    user = row
             elif row.get("role") == "assistant":
                 assistant_id = row["id"]
             elif row.get("role") == "user":
                 break
-        return user_id, assistant_id, rows is not None
+        return user, assistant_id, rows is not None
 
-    async def readable(self) -> bool:
-        """Whether Hermes's messages for this conversation can be read at all."""
-        return await asyncio.get_running_loop().run_in_executor(
-            None, lambda: self._client.history.rows() is not None)
-
-    async def user_id(self, timeout: float = 5.0) -> Optional[str]:
-        """The user message's id. Hermes writes it as the agent starts, so wait for it briefly."""
+    async def user_message(self, settled: asyncio.Event, timeout: float = 5.0) -> Optional[tuple[str, str]]:
+        """The stored user message's id and text. Hermes writes it as the agent starts, so wait for
+        it briefly; once the turn has *settled*, one last look decides. None when it was not stored."""
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         while True:
-            found, _, readable = await loop.run_in_executor(None, self._find)
-            if found is not None:
-                return str(found)
-            if not readable or loop.time() >= deadline:
+            last = settled.is_set() or loop.time() >= deadline
+            row, _, readable = await loop.run_in_executor(None, self._find)
+            if row is not None:
+                content = row.get("content")
+                return str(row["id"]), content if isinstance(content, str) else ""
+            if not readable or last:
                 return None
             await asyncio.sleep(0.1)
+
+    async def output_id(self, text: str) -> Optional[str]:
+        """The id of the stored reply a server-started turn just spoke: the latest assistant
+        message that says *text*, else the latest one."""
+        rows = await asyncio.get_running_loop().run_in_executor(None, self._client.history.rows)
+        replies = [f for f in replay_frames(rows or [], None) if f["role"] == "assistant"]
+        said = " ".join(text.split())
+        for frame in reversed(replies):
+            if " ".join(frame["text"].split()) == said:
+                return frame["message_id"]
+        return replies[-1]["message_id"] if replies else None
 
     async def assistant_id(self) -> Optional[str]:
         """The id of the turn's last assistant message, once the turn has settled."""
@@ -223,3 +232,4 @@ class Detached:
     client: Any  # the GatewayTurns running it
     session: Any  # the dropped connection's session, which can still cancel the turn
     driver: asyncio.Future
+    control: Any = None  # the driver's hooks: `resume` tells a new connection where the turn stands
