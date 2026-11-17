@@ -44,6 +44,64 @@ async def test_voice_turn_runs_in_the_gateway_conversation(tmp_path, monkeypatch
     assert "Your name is Arya" in turn["instructions"] and '"device_name": "Den Echo"' in turn["instructions"]
 
 
+async def test_typed_text_runs_in_gateway_without_microphone(tmp_path, monkeypatch):
+    fake = _patch(monkeypatch)
+    async with Harness(fake, device_store=DeviceStore(tmp_path / "devices.db")) as client:
+        ws, ready = await _connect(client)
+        await ws.send_json({"type": "text", "text": "  Send diagnostic report  ", "request_id": "draft-1"})
+        assert await ws.receive_json(timeout=3) == {
+            "type": "text_ack", "request_id": "draft-1", "accepted": True}
+        frames, pcm = await _collect_turn(ws)
+        assert pcm
+        assert any(f["type"] == "transcript" and f["role"] == "user"
+                   and f["text"] == "Send diagnostic report" for f in frames)
+        assert frames[-1]["type"] == "turn_done"
+        await ws.close()
+    assert len(fake.turns) == 1
+    assert fake.turns[0]["text"] == "Send diagnostic report"
+    assert fake.turns[0]["user_id"] == ready["recipient_id"]
+
+
+async def test_typed_text_rejects_invalid_payloads_without_turn(monkeypatch):
+    fake = _patch(monkeypatch)
+    async with Harness(fake) as client:
+        ws, _ = await _connect(client)
+        for request_id, text, error in [
+            ("", "hello", "bad_request_id"),
+            ("a space", "hello", "bad_request_id"),
+            ("id-1", "  ", "bad_text"),
+            ("id-2", 5, "bad_text"),
+            ("id-3", "🙂" * 16385, "bad_text"),
+            ("x" * 81, "hello", "bad_request_id"),
+        ]:
+            await ws.send_json({"type": "text", "request_id": request_id, "text": text})
+            assert await ws.receive_json(timeout=3) == {
+                "type": "text_ack", "request_id": request_id if error == "bad_text" else "",
+                "accepted": False, "error": error}
+        await ws.close()
+    assert fake.turns == []
+
+
+async def test_typed_text_accepts_64kb_utf8_boundary(monkeypatch):
+    fake = _patch(monkeypatch)
+    async with Harness(fake) as client:
+        ws, _ = await _connect(client)
+        text = "🙂" * 16384
+        await ws.send_json({"type": "text", "text": text, "request_id": "boundary"})
+        assert await ws.receive_json(timeout=3) == {
+            "type": "text_ack", "request_id": "boundary", "accepted": True}
+        await ws.send_json({"type": "text", "text": "again", "request_id": "boundary"})
+        # A turn may emit frames between independent acknowledgements.
+        while True:
+            frame = await ws.receive_json(timeout=3)
+            if frame["type"] == "text_ack":
+                break
+        assert frame == {"type": "text_ack", "request_id": "boundary", "accepted": False,
+                         "error": "duplicate_request_id"}
+        # The gateway turn may still be running; the acknowledgement is queue admission only.
+        await ws.close()
+
+
 async def test_reconnect_keeps_the_same_gateway_conversation(tmp_path, monkeypatch):
     fake = _patch(monkeypatch)
     async with Harness(fake, device_store=DeviceStore(tmp_path / "devices.db")) as client:

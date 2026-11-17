@@ -66,7 +66,7 @@ from .named import DeviceStore, NamedError, parse_names
 from .platform_adapter import GatewayTurns
 from .model_selection import parse_model_selection, public_model_catalog
 from .instructions import load_voice_guidance, voice_system_prompt
-from .loop import (ConversationOutput, ConverseSession, drive_converse_turns,
+from .loop import (ConversationOutput, ConverseSession, TypedMessage, drive_converse_turns,
                    parse_start_config)
 from .settings import Settings, load_settings
 from .tracing import ConnectionTrace, emit_span, force_flush
@@ -443,6 +443,7 @@ def _resolve_session(settings: Settings, input_rate: int, output_rate: int, quie
 
 
 MAX_SAY_CHARS = 400
+MAX_TEXT_BYTES = 65536
 
 
 def _say_text(raw: Any) -> str:
@@ -589,6 +590,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
         wake_tasks.add(asyncio.create_task(wake_word.watch()))
     relay = relay or Relay(ws)
     explicit_stop = False
+    text_request_ids: set[str] = set()
     after_reply = None  # only the final reply returned by _run_turn, never an approval output
     async def _reply_wake(frame: dict) -> None:
         reply, sent = None, False
@@ -663,6 +665,30 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                         session.heard()
                         logger.info("converse heard: session=%s turn=%s wake_word=%r", session.session_id,
                                     getattr(session, "_active_turn_id", None), str(frame.get("wake_word"))[:80])
+                    if frame.get("type") == "text":
+                        request_id = frame.get("request_id")
+                        if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", request_id):
+                            await ws.send_json({"type": "text_ack", "request_id": "", "accepted": False,
+                                                "error": "bad_request_id"})
+                            continue
+                        if request_id in text_request_ids:
+                            await ws.send_json({"type": "text_ack", "request_id": request_id,
+                                                "accepted": False, "error": "duplicate_request_id"})
+                            continue
+                        raw_text = frame.get("text")
+                        text = raw_text.strip() if isinstance(raw_text, str) else ""
+                        try:
+                            text_bytes = len(text.encode("utf-8"))
+                        except UnicodeEncodeError:
+                            text_bytes = MAX_TEXT_BYTES + 1
+                        if not text or text_bytes > MAX_TEXT_BYTES:
+                            await ws.send_json({"type": "text_ack", "request_id": request_id,
+                                                "accepted": False, "error": "bad_text"})
+                            continue
+                        text_request_ids.add(request_id)
+                        session.transcripts.put(TypedMessage(text))
+                        await ws.send_json({"type": "text_ack", "request_id": request_id, "accepted": True})
+                        continue
                     if frame.get("type") == "say":
                         text = _say_text(frame.get("text"))
                         if text:
