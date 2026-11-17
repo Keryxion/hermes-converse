@@ -162,7 +162,7 @@ All are JSON text frames:
 | `{"commit": true}` | Ends the current utterance now, with the audio already sent (runs a turn on it). |
 | `{"type": "cancel", "turn_id": "..."}` | Cancels the **current** turn — stops TTS and the agent — but keeps the socket, session, and history alive. |
 | `{"type": "wake", "claim_id": "...", "wake_word": "Hey Arya"}` | request an advisory wake decision while buffering the new activation locally; see section 8. |
-| `{"type": "heard", "wake_word": "cancel"}` | The `cancel` wake word was heard during a turn; see "The `cancel` wake word heard during a turn" in section 4. |
+| `{"type": "heard", "wake_word": "Hey Arya"}` | A wake word was heard during a turn; see "A wake word heard during a turn" in section 4. |
 | `{"type": "endpointing", "on": false, "commit": true}` | Turns silence/Smart Turn endpointing off or on, and with `commit` ends the current utterance; both fields are optional. See "Push to talk" below. |
 | `{"type": "state", "turn_id": "...", "state": "listening"}` | The state the device now shows; see "The turn's state" in section 4. |
 | `{"type": "countdown", "countdown_id": "...", "ringing": true}` | A countdown is ringing, or with `ended` has ended; see section 10. |
@@ -174,9 +174,9 @@ All are JSON text frames:
 **`cancel` vs `stop`:** `stop` tears down the session; `cancel` only kills the
 current turn. Use `cancel` when the user hits the action button and you want
 to keep the conversation going. Nothing heard is a `cancel`: neither the
-assistant's wake word nor the `cancel` wake word cancels a turn. The `cancel`
-wake word heard during a turn is reported with `heard` (section 4, "The
-`cancel` wake word heard during a turn").
+assistant's wake word nor the `cancel` wake word cancels a turn. A wake word
+heard during a turn is reported with `heard` (section 4, "A wake word heard
+during a turn").
 
 ### Push to talk
 
@@ -445,17 +445,19 @@ turn ID. Report the state for the old turn's playback only; it must not
 discard the continuation. A bounded playback-tail timeout handles a missing
 report.
 
-### The `cancel` wake word heard during a turn
+### A wake word heard during a turn
 
-A device that detects the `cancel` wake word (section 10) keeps detecting it
-during a turn and while an activation is open. When it hears it then, it sends:
+A device that detects wake words keeps detecting them during a turn and while
+an activation is open. When it hears the assistant's wake word or the `cancel`
+wake word (section 10) then, it sends:
 
 ```json
-{"type":"heard","wake_word":"cancel"}
+{"type":"heard","wake_word":"Hey Arya"}
 ```
 
-Only the `cancel` wake word is reported this way; the assistant's wake word
-heard during a turn sends nothing. `heard` is neither `cancel` nor barge-in:
+`wake_word` is the exact phrase detected, as in `wake` (section 8); for the
+`cancel` wake word it is `"cancel"`. The device reports whatever it heard: it
+does not wake, claim or cancel for it. `heard` is neither `cancel` nor barge-in:
 the server records it, and the turn carries on unchanged. No frame answers it.
 It is mostly for half-duplex devices, where the server cannot hear the person
 while a reply plays.
