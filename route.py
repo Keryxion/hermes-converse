@@ -695,11 +695,14 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
         canonical = await asyncio.to_thread(client.canonical_command, name)
         if canonical is None:
             return "unknown_command"
+        if canonical in origin.denied_commands:
+            return "denied"
         description = phrase(await asyncio.to_thread(command_catalog.description, canonical))
         question = summary(attachment.assistant_name,
                            f"run a command for you: {description}" + (f", {', '.join(args)}" if args else ""))
         text = f"/{name} {' '.join(args)}".strip()
         if await gateway.approvals.ask(attachment.conversation_id, text, question, timeout) != "once":
+            origin.denied_commands.add(canonical)
             return "denied"
         if getattr(origin, "stopped", False) or getattr(origin, "outcome", None) is not None:
             return "denied"

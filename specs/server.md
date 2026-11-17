@@ -588,6 +588,9 @@ approval applies only to this call. Only `once` accepted before the
 `approvals.timeout` deadline permits submission to the gateway. Denial,
 cancellation, or expiry returns `denied` and runs nothing. Late answers do not
 revive the request. This question does not resolve a Hermes execution approval.
+After denial or expiry, another call of the same canonical command in that turn
+returns `denied` without asking again, including calls using an alias. A new
+user turn may request it again.
 When Hermes asks for confirmation of the same gateway command, satisfy that
 confirmation once with this call's approval; do not change any approval setting.
 

@@ -16,6 +16,7 @@ SCHEMAS = {
         "description": (
             "Voice devices only. Request a gateway command for this conversation. The person must "
             "approve every call. Returns the gateway reply for you to summarize, not spoken. "
+            "If denied, acknowledge the denial and stop; do not retry or ask again in this turn. "
             "Use any command in the gateway catalog, including its aliases and plugin commands. "
             "When asked to start a new session, new conversation, or start over, call with "
             "name new and args []; it takes effect after your final reply has played. "

@@ -1262,7 +1262,9 @@ VOICE_PROMPT = (
     "to start a new session, start a new conversation, or start over, call command with "
     "{\"name\":\"new\",\"args\":[]}. The server asks the person for approval on every call and "
     "enforces Hermes's access and busy-command policies. Report denial, failure, or busy refusal; "
-    "do not bypass it with shell commands or direct state edits. A new-session command takes effect "
+    "do not bypass it with shell commands or direct state edits. After a denial, do not retry the "
+    "command or ask for approval again in this turn; acknowledge that it was not run and finish. "
+    "A new-session command takes effect "
     "after your final reply has played: acknowledge its deferral briefly and finish your turn. "
     "If a tool or delivery integration is unavailable, say so instead of claiming success."
 )

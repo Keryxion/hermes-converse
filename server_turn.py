@@ -11,6 +11,7 @@ class ServerTurn:
         self.exclusive = False
         self.standby = False
         self.after_playback: Optional[Callable[[], Awaitable[None]]] = None
+        self.denied_commands: set[str] = set()
 
     def speak(self, text: str) -> None:
         self.exclusive = True

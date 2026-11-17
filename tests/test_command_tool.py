@@ -28,6 +28,8 @@ class ToolHermes(FakeHermes):
         self.results: list[str] = []
         self.hub = None
         self.reply_gate = None
+        self.repeat = 1
+        self.retry_name = None
         self.command_replies = {"compress": "Compressed.", "reset": "New session started."}
 
     def _call_tool(self) -> str:
@@ -40,7 +42,10 @@ class ToolHermes(FakeHermes):
 
     async def handle(self, event):
         if not event.get_command() and not self.results:
-            self.results.append(await asyncio.to_thread(self._call_tool))
+            for attempt in range(self.repeat):
+                if attempt and self.retry_name:
+                    self.tool_args["name"] = self.retry_name
+                self.results.append(await asyncio.to_thread(self._call_tool))
             if self.reply_gate is not None:
                 await self.reply_gate.wait()
         return await super().handle(event)
@@ -67,11 +72,12 @@ async def _frames_until(ws, kind, timeout=8.0):
 
 
 async def _turn_calling(monkeypatch, device_env, tool_name, choice, *, args=None, transcript="compress this",
-                        settings=None):
+                        settings=None, repeat=1, retry_name=None):
     """Connect, speak, and answer the tool's approval_request with *choice* (None: never). Returns the
     fake, the harness, the socket, the approval_request (None when there was none), the frames up to
     turn_done and the TTS stand-in."""
     fake = ToolHermes(tool_name, args)
+    fake.repeat, fake.retry_name = repeat, retry_name
     streamer = _FakeStreamer([b"\x01\x02"])
     _patch_speech(monkeypatch, streamer, transcript=transcript)
     harness = Harness(fake, settings)
@@ -139,6 +145,17 @@ async def test_cancelling_the_approval_runs_nothing(monkeypatch, device_env):
     try:
         assert fake.commands == []
         assert not harness.adapter.approvals._pending
+    finally:
+        await _close(harness, ws)
+
+
+@pytest.mark.parametrize("retry_name", ["new", "reset"])
+async def test_a_denial_cannot_be_reasked_in_the_same_turn(monkeypatch, device_env, retry_name):
+    fake, harness, ws, request, frames, _ = await _turn_calling(
+        monkeypatch, device_env, "new", "deny", repeat=2, retry_name=retry_name)
+    try:
+        assert fake.results == ["denied", "denied"] and fake.commands == []
+        assert sum(frame["type"] == "approval_request" for frame in frames) == 1
     finally:
         await _close(harness, ws)
 
