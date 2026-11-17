@@ -526,7 +526,7 @@ When the assistant needs permission before it acts, the turn waits. The server
 plays the `approval` tone, asks out loud with a short summary, and also sends:
 
 ```json
-{"type":"approval_request","turn_id":"turn-42","approval_id":"approval-7","summary":"Arya wants to open a network connection to the Kitchen speaker to read its logs. Okay?","command":"nc 10.0.4.17 6053","choices":["once","session","always","deny"]}
+{"type":"approval_request","turn_id":"turn-42","approval_id":"approval-7","summary":"Arya wants permission for: Network connection (to a device). Okay?","command":"nc 10.0.4.17 6053","choices":["once","session","always","deny"]}
 ```
 
 `thinking` frames continue while it waits. The person can answer by voice on any
@@ -563,8 +563,9 @@ server sends:
 ```
 
 `outcome` is `approved`, `denied`, `expired`, or `cancelled`. Close the box for
-that `approval_id`. An unanswered approval ends as `expired` after the server's
-approval timeout (default 300 seconds).
+that `approval_id`. The server also says "Approved.", "Denied.", "Expired.",
+or "Cancelled." to match the outcome. An unanswered approval ends as `expired`
+after the server's approval timeout (default 300 seconds).
 
 While an approval is pending, apply no turn limit of your own except
 inactivity, which `thinking` frames keep fresh: the server ends the wait. After
