@@ -145,7 +145,8 @@ plugin settings form):
 | `playback_tail_timeout_seconds` | `45` | how long to wait for the client's `drained` frame |
 | `max_tts_chars_per_turn` | `1500` | safety cap on how much of one reply is spoken |
 | `vad_model` | `silero` | speech detection with automatic energy fallback; set `energy` to use RMS detection only |
-| `endpoint_model`, `endpoint_threshold` | `smart-turn-v3`, `0.5` | Smart Turn v3 semantic endpointer (see below); `off` uses the fixed silence endpoint |
+| `smart_turn_enabled` | `true` | use Smart Turn v3 to keep listening through unfinished pauses; `false` uses the fixed silence endpoint |
+| `endpoint_threshold` | `0.5` | probability at which Smart Turn considers the utterance complete |
 | `endpoint_silence_ms` | `700` | silence that ends an utterance; with Smart Turn, the first completion check |
 | `endpoint_max_silence_ms` | `3000` | longest pause allowed after the wake word or, with Smart Turn, inside an unfinished request |
 | `approval_choice` | `deny` | what a voice turn answers when the agent asks for a command approval |
@@ -237,8 +238,10 @@ To use the fixed silence endpoint instead, set the following under
 `plugins.entries.hermes-converse.settings` in `config.yaml`:
 
 ```yaml
-endpoint_model: off
+smart_turn_enabled: false
 ```
+
+Use YAML booleans (`true` or `false`); other values are rejected.
 
 With Smart Turn on, doctor checks the dependencies **and loads the model**, returning a
 failure if either is unavailable. The first load downloads `smart-turn-v3.2-cpu.onnx` from

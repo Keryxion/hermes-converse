@@ -93,7 +93,7 @@ def doctor() -> int:
             _ok("VAD", "Silero (CPU); energy fallback on inference failure")
     else:
         _ok("VAD", "energy (configured)")
-    if settings.endpoint_model:
+    if settings.smart_turn_enabled:
         from .turn_detector import load_turn_detector, missing_modules
 
         missing = missing_modules()
@@ -111,7 +111,7 @@ def doctor() -> int:
         else:
             _ok("Smart Turn endpointer", f"enabled (threshold {settings.endpoint_threshold:g})")
     else:
-        _ok("endpointer", "fixed silence (endpoint_model is off)")
+        _ok("endpointer", "fixed silence (smart_turn_enabled: false)")
     print(f"\n  WebSocket URL: ws://{host}:{port}/v1/audio/converse")
     print("  First frame:   {\"type\":\"start\",\"key\":\"<API_SERVER_KEY>\",\"input_rate\":16000,\"output_rate\":24000}")
     return 1 if failures else 0
