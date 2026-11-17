@@ -883,9 +883,10 @@ The server sends one decision for each valid wake request.
 
 With cooperative selection enabled, the first claim for an exact wake phrase
 opens a collection window, configured by `arbitrate_wake_window_seconds`
-(default **0.75 seconds**). Claims for that phrase received within the window
-compete together. A claim after the window closes opens a new election;
-different phrases elect independently. This groups reports by server arrival
+(default **0.75 seconds**). Claims for that phrase received while the election
+is open compete together. The window is the longest the election stays open;
+the server decides sooner when it expects no further claim. A claim after the
+election closes opens a new election; different phrases elect independently. This groups reports by server arrival
 time, not by transcript or client timestamp.
 
 Choose one claimant by these tie-breaks in order:

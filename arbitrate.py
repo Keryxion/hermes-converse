@@ -23,6 +23,10 @@ POLICY_FIRST_TO_ENDPOINT = "first_to_endpoint"  # legacy compatibility: grant im
 POLICY_WAKE_SIGNAL = "wake_signal"
 DEFAULT_POLICY = POLICY_WAKE_SIGNAL
 DEFAULT_WAKE_WINDOW = 0.75
+# An election stops waiting for a device once its chance of claiming falls below this.
+LIKELY_TO_CLAIM = 0.1
+# Allowed beyond the largest gap seen between two devices' claims for one utterance.
+SKEW_MARGIN = 0.1
 
 
 @dataclass(frozen=True)
@@ -118,8 +122,10 @@ class _WakeElection:
         self.created_at = created_at
         self.claims: list[WakeClaim] = []
         self.done = asyncio.Event()
-        # Set once every registered device has claimed: no later claim can change the outcome.
-        self.complete = asyncio.Event()
+        # Collection ends at `deadline`, set by the first claim; `moved` wakes the finalizer
+        # when a later claim or a disconnect changes it.
+        self.deadline = created_at
+        self.moved = asyncio.Event()
         self.winner: Optional[WakeClaim] = None
         self.immediate = False
         self.records: list[_ClaimRecord] = []
@@ -146,6 +152,13 @@ class Arbitrator:
         self._wake_open: dict[str, _WakeElection] = {}
         self._labels: dict[str, tuple[Optional[str], Optional[str]]] = {}  # device_id -> trace names
         self._awaiting_sent: dict[tuple[str, str], tuple[_WakeElection, _ClaimRecord]] = {}
+        # Which devices hear the same utterance, learned from claims, by device name.
+        # ponytail: in memory, so a restart relearns; persist if the relearning is felt.
+        self._recent: list[tuple[str, str, float]] = []  # (wake word, device, claimed at)
+        self._claimed: dict[str, int] = {}
+        self._together: dict[tuple[str, str], int] = {}
+        # ponytail: largest gap ever seen, so one outlier lengthens that pair's wait for good.
+        self._skew: dict[frozenset[str], float] = {}
 
     async def register(self, device_id: str, *, device_name: Optional[str] = None,
                        session_id: Optional[str] = None) -> Device:
@@ -165,12 +178,45 @@ class Arbitrator:
                     if record.claim.device_id == device_id and record.outcome is None:
                         record.outcome = "withdrawn"
                         record.settled = True
-                self._close_if_complete(election)
+                self._reschedule(election)
 
-    def _close_if_complete(self, election: _WakeElection) -> None:
-        """Let the finalizer run now if every registered device has already claimed."""
-        if election.claims and {c.device_id for c in election.claims} >= set(self._devices):
-            election.complete.set()
+    def _learn(self, claim: WakeClaim) -> None:
+        """Count which devices claim a phrase within one window of this claim, and how far apart."""
+        me, now = claim.device_name or claim.device_id, claim.claimed_at
+        self._recent = [r for r in self._recent if now - r[2] < self.wake_window]
+        heard: dict[str, float] = {}
+        for word, other, at in self._recent:
+            if word == claim.wake_word and other != me:
+                heard.setdefault(other, at)
+        self._claimed[me] = self._claimed.get(me, 0) + 1
+        for other, at in heard.items():
+            for pair in ((me, other), (other, me)):
+                self._together[pair] = self._together.get(pair, 0) + 1
+            both = frozenset((me, other))
+            self._skew[both] = max(self._skew.get(both, 0.0), now - at)
+        self._recent.append((claim.wake_word, me, now))
+
+    def _likelihood(self, claimant: str, other: str) -> float:
+        """Chance *other* claims an utterance *claimant* claimed: its share of the claimant's
+        claims, starting from an even prior."""
+        return (self._together.get((claimant, other), 0) + 1) / (self._claimed.get(claimant, 0) + 2)
+
+    def _reschedule(self, election: _WakeElection) -> None:
+        """Collect only until no connected device that has yet to claim is still likely to."""
+        if not election.claims:
+            return
+        claimed = {c.device_name or c.device_id for c in election.claims}
+        waiting = {name or device_id for device_id, (name, _) in self._labels.items()} - claimed
+        until = election.created_at
+        for claim in election.claims:
+            me = claim.device_name or claim.device_id
+            for other in waiting:
+                if self._likelihood(me, other) >= LIKELY_TO_CLAIM:
+                    skew = self._skew.get(frozenset((me, other)))
+                    until = max(until, claim.claimed_at + (
+                        self.wake_window if skew is None else skew + SKEW_MARGIN))
+        election.deadline = min(election.created_at + self.wake_window, until)
+        election.moved.set()
 
     async def claim_wake(
         self, device_id: str, *, claim_id: str, wake_word: str,
@@ -208,7 +254,8 @@ class Arbitrator:
                 claim = replace(claim, arrival=len(election.records) + 1)
                 record = self._enter(election, claim)
                 election.claims.append(claim)
-                self._close_if_complete(election)
+                self._learn(claim)
+                self._reschedule(election)
                 # Correlate timing without recording wake phrases, audio, or transcripts.
                 logger.info(
                     "arbitrate: wake claim received election_id=%s device_id=%r claim_id=%r "
@@ -296,14 +343,14 @@ class Arbitrator:
 
     async def _finalize_wake(self, election: _WakeElection) -> None:
         try:
-            # Hold the full window unless every registered device has claimed; then nobody is
-            # left to outrank the best claim and waiting is pure added latency.
-            remaining = election.created_at + self.wake_window - time.monotonic()
-            if remaining > 0:
+            # Waiting past the deadline is pure added latency: nobody likely to outrank the
+            # best claim is left. Each claim and disconnect moves it.
+            while (remaining := election.deadline - time.monotonic()) > 0:
+                election.moved.clear()
                 try:
-                    await asyncio.wait_for(election.complete.wait(), timeout=remaining)
+                    await asyncio.wait_for(election.moved.wait(), timeout=remaining)
                 except asyncio.TimeoutError:
-                    pass
+                    break
             async with self._lock:
                 if election.claims:
                     election.winner = min(election.claims, key=self._rank_wake_signal)

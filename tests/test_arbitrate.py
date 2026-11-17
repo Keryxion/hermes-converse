@@ -228,3 +228,56 @@ async def test_election_closes_when_the_only_silent_device_unregisters():
     await asyncio.sleep(0)
     await arb.unregister('d2')
     assert (await asyncio.wait_for(claim, timeout=1))[0]
+
+
+async def _utterance(arb, *devices):
+    """One utterance heard by *devices*; returns how long the first claimant waited."""
+    started = asyncio.get_running_loop().time()
+    results = await asyncio.gather(*(arb.claim_wake(d, claim_id='c', wake_word='Arya') for d in devices))
+    assert sum(r[0] for r in results) == 1
+    await asyncio.sleep(arb.wake_window)  # the next utterance is a separate one
+    return asyncio.get_running_loop().time() - started - arb.wake_window
+
+
+@pytest.mark.asyncio
+async def test_election_stops_waiting_for_a_device_that_never_hears_the_claimant():
+    arb = Arbitrator(wake_window=0.05)
+    for name in ('kitchen', 'guest'):
+        await arb.register(name, device_name=name)
+    assert await _utterance(arb, 'kitchen') >= 0.04  # nothing learned: the full window
+    for _ in range(8):
+        await _utterance(arb, 'kitchen')
+    assert await _utterance(arb, 'kitchen') < 0.02
+
+
+@pytest.mark.asyncio
+async def test_election_waits_for_a_device_that_hears_the_claimant_only_as_long_as_it_takes():
+    arb = Arbitrator(wake_window=2)
+    for name in ('kitchen', 'family', 'guest'):
+        await arb.register(name, device_name=name)
+    arb._claimed.update(kitchen=20, family=20)
+    arb._together.update({('kitchen', 'family'): 10, ('family', 'kitchen'): 10})
+    arb._skew[frozenset(('kitchen', 'family'))] = 0.05
+    # Both claim: guest is unlikely, so nobody is left to wait for.
+    results = await asyncio.wait_for(asyncio.gather(
+        arb.claim_wake('kitchen', claim_id='1', wake_word='Arya', confidence=0.6),
+        arb.claim_wake('family', claim_id='2', wake_word='Arya', confidence=0.9)), timeout=1)
+    assert [r[:2] for r in results] == [(False, 'family'), (True, 'family')]
+    await asyncio.sleep(0)
+    arb._recent.clear()
+    # Kitchen alone: wait the learned gap plus the margin for family, not the window.
+    started = asyncio.get_running_loop().time()
+    assert (await arb.claim_wake('kitchen', claim_id='3', wake_word='Arya'))[0]
+    assert 0.13 <= asyncio.get_running_loop().time() - started < 1
+
+
+@pytest.mark.asyncio
+async def test_a_claim_that_misses_an_election_is_still_learned():
+    arb = Arbitrator(wake_window=0.5)
+    for name in ('kitchen', 'family'):
+        await arb.register(name, device_name=name)
+    arb._claimed['kitchen'] = 20  # kitchen no longer waits for family
+    assert (await arb.claim_wake('kitchen', claim_id='1', wake_word='Arya'))[0]
+    assert (await arb.claim_wake('family', claim_id='2', wake_word='Arya'))[0]  # its own election
+    assert arb._together[('kitchen', 'family')] == 1
+    assert frozenset(('kitchen', 'family')) in arb._skew

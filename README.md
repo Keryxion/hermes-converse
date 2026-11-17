@@ -167,7 +167,9 @@ within a 750 ms window compete: highest confidence, then highest volume, then
 earliest detection time, then arrival order. The server echoes the request ID
 in `wake_grant` or `wake_deny`. Different phrases and claims arriving after the
 window elect independently; the larger window mitigates detector skew without
-making selection exclusive.
+making selection exclusive. The window is a maximum: the server learns which
+devices hear the same utterance and decides as soon as none of them is still
+likely to claim.
 
 The **1000 ms** client timeout starts when each client sends its own claim. A
 750 ms collection leaves a nominal 250 ms for transit and scheduling for the

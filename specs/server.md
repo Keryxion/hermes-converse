@@ -314,6 +314,40 @@ and no overlapping runs or stale PCM after cancellation.
 Use deterministic PCM and a public speech fixture for automated regression tests.
 Private server recordings may inform local diagnostics but must not be committed.
 
+## Wake elections
+
+The collection window (`arbitrate_wake_window_seconds`) is the longest an
+election collects claims. The server ends it sooner, as soon as no connected
+device that has yet to claim is likely to.
+
+The server learns which devices hear the same utterance from the claims
+themselves, by device name. Two claims for one wake phrase that arrive within a
+window of each other were the same utterance, whether or not they shared an
+election. For each pair of devices it keeps how often that happened and the
+largest gap between their arrivals.
+
+The chance that device B claims an utterance device A claimed is
+
+```
+(claims by A that B also claimed + 1) / (claims by A + 2)
+```
+
+so a pair with no history starts at one half. An election waits for B while
+that chance is at least 0.1 for any device that has claimed:
+
+| What is known about A and B | The election waits for B |
+|---|---|
+| They have claimed together | Until A's claim plus their largest gap plus 100 ms |
+| They have not, and the chance is at least 0.1 | The whole window |
+| The chance is below 0.1 | Not at all |
+
+A device connected alone is granted at once. A claim that arrives after its
+election ended opens another, as after the window; both devices are granted,
+and the pair's history then includes it.
+
+What is learned is kept in memory. After a restart every pair starts again at
+one half.
+
 ## Named Aryas
 
 Identify a device by its `device_name` within the server/profile. Keep its
