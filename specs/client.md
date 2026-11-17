@@ -19,7 +19,7 @@ deleted history is not restored.
 Wake selection is cooperative: it recommends an answering device without
 restricting audio processing. Section 8 defines the cooperative wake contract.
 Sections 9–10 define conversation output and countdowns. Section 11 defines
-changing the chat model. Section 12 defines Do Not Disturb.
+changing the chat model. Section 12 defines Do Not Disturb and notifications.
 
 Server lifecycle and integration details are in [the server spec](server.md).
 What a client records for tracing is in [client tracing](client_tracing.md).
@@ -360,6 +360,7 @@ Countdowns are unaffected by a command.
 | `countdown`, `countdown_cancel` | Start, extend, or cancel a countdown that ends with a tone (section 10). |
 | `set_wake_word` | Switch to this wake phrase and its models, then answer with `wake_word_set` (section 8). |
 | `{"type":"do_not_disturb","on":true}` | Whether this device is in Do Not Disturb: after every `ready`, and when the assistant changes it (section 12). |
+| `notifications` | Every waiting notification, shared by all devices (section 12). |
 
 These are the only server frames, apart from `model_changed` and `model_error`
 (section 11). Turn liveness is the repeated `thinking` frame; there is no
@@ -1252,8 +1253,8 @@ binary PCM of two turns. Output waits behind an active turn and its playback
 drain; stale output is discarded instead of played late. Ordinary barge-in,
 `cancel`, and state reports apply equally to these turns. Output goes to the one
 device attached to that conversation. It is never broadcast and never runs a
-wake election. While the device is in Do Not Disturb, this output is not
-spoken (section 12).
+wake election. While the device is in Do Not Disturb, or when no device is
+attached, this output becomes a notification instead (section 12).
 
 
 ## 10. Countdowns
@@ -1452,7 +1453,9 @@ These errors do not end the voice connection. A picker keeps its previous
 confirmed choice on rejection or acknowledgement timeout and exposes a retry.
 
 
-## 12. Do Not Disturb
+## 12. Do Not Disturb and notifications
+
+### Do Not Disturb
 
 Do Not Disturb keeps the assistant from speaking unless the person asked. It has
 nothing to do with `quiet` (section 5), which reports silence while listening.
@@ -1483,9 +1486,9 @@ word or Talk, such as stopping a timer by voice) ended more than the server's
 grace ago, five minutes by default:
 
 - Output the server starts for this device (section 9: reminders, still-ringing
-  countdowns, other messages) is not sent: no frames and no audio. The replies
-  remain in the device's conversation history and are never spoken later, not
-  even when Do Not Disturb ends.
+  countdowns, other messages) is not sent: no frames and no audio. Its output
+  becomes a notification, and is never spoken later, not even when Do Not
+  Disturb ends.
 - Turns the person starts, by wake word or Talk, and `say`, run and are answered
   aloud, with their tones.
 - Nothing asks for an approval a turn the server started needs: the server
@@ -1503,3 +1506,24 @@ Within the grace, everything is sent as if Do Not Disturb were off. Turning Do
 Not Disturb on ends the grace.
 
 Do Not Disturb is not mute: the microphone and wake word work as usual.
+
+### Notifications
+
+A notification is output that was not spoken: output held back by Do Not
+Disturb, output for a device that was not attached, and anything Hermes sends to
+its home channel for this platform, such as a scheduled job's result. There is
+one list, shared by every device. The server sends it after `ready` and whenever
+it changes:
+
+```json
+{"type":"notifications","notifications":[{"notification_id":"notification-4","text":"Your tea is ready.","device_name":"Kitchen","created_unix_ms":1794143100000}]}
+```
+
+`device_name` is the device whose output it was; it is absent for the home
+channel. An empty list means none are waiting.
+
+While the list is not empty, the device shows that notifications are waiting
+(`animations.md`); a screen lists them. The person hears them by asking the
+assistant, for example "Hey Arya, what are my notifications?". Reading them
+clears them, and every device then receives an empty list. The client sends no
+frame to read or clear a notification.
