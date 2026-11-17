@@ -590,7 +590,8 @@ cancellation, interruption, error, and timeout paths too.
 The agent calls `mute` when the person asks the device to stop listening, for
 example "stop listening" or "mute yourself". It is the device's own mute,
 reached by voice: the microphone goes off when `turn_done` arrives and stays
-off until the person unmutes on the device, while the reply plays out. Nothing
+off until the person unmutes on the device, while the reply plays out. The
+exchange ends as it does for `standby`. Nothing
 can unmute by voice, because a muted device hears nothing. If the turn calls
 both `mute` and `standby`, the last call wins. Speech accepted before
 `turn_done` interrupts the turn, and its `turn_done` carries no `next_action`:
