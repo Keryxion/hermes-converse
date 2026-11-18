@@ -73,6 +73,17 @@ SCHEMAS = {
                         "done, call standby instead."),
         "parameters": {"type": "object", "properties": {}},
     },
+    "do_not_disturb": {
+        "name": "do_not_disturb",
+        "description": (
+            "Voice devices only. Turns Do Not Disturb on or off for this device. While it is on, "
+            "the device says nothing the person did not ask for: reminders, check-ins and other "
+            "turns you were not spoken to for run silently, and their replies stay in the "
+            "conversation. Requests by wake word are still answered aloud and countdowns still ring. "
+            "It stays on until it is turned off; nothing ends it by time. Call it when the person asks "
+            "(\"don't disturb me\", \"you can talk again\"), and in a scheduled turn whose note says to."),
+        "parameters": {"type": "object", "properties": {"on": {"type": "boolean"}}, "required": ["on"]},
+    },
 }
 
 
@@ -125,8 +136,24 @@ def make_handlers(hub: Any) -> dict[str, Callable[..., Any]]:
             return json.dumps({"error": "tone must be confirm or error"})
         if attachment.send is None:
             return _result("not_attached")
+        turn = turn_of(attachment)
+        person_turn = turn is not None and turn.started and turn.outcome is None
+        if not person_turn and hub.do_not_disturb(attachment.conversation_id):
+            return _result("do_not_disturb")
         attachment.send({"type": "tone", "tone": tone})
         return _result("ok")
+
+    def do_not_disturb(args: dict, **kw: Any) -> str:
+        from gateway.session_context import get_session_env
+
+        if get_session_env("HERMES_SESSION_PLATFORM", "") != "converse":
+            return _result("not_a_device")
+        on = args.get("on")
+        if not isinstance(on, bool):
+            return json.dumps({"error": "on must be true or false"})
+        # The device need not be attached: a scheduled turn ends Do Not Disturb either way.
+        known = hub.set_do_not_disturb(get_session_env("HERMES_SESSION_CHAT_ID", ""), on)
+        return _result("ok" if known else "not_a_device")
 
     def end_with(mute: bool) -> str:
         """standby or mute for the calling turn; the last call in a turn wins."""
@@ -169,7 +196,8 @@ def make_handlers(hub: Any) -> dict[str, Callable[..., Any]]:
         return json.dumps(result, ensure_ascii=False)
 
     return {"speak_this": speak_this, "play_tone": play_tone, "standby": standby, "mute": mute,
-            "command": command, "client_diagnostics": client_diagnostics}
+            "command": command, "client_diagnostics": client_diagnostics,
+            "do_not_disturb": do_not_disturb}
 
 
 def register_tools(ctx: Any, hub: Any) -> None:

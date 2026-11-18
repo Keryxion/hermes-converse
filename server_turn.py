@@ -11,6 +11,7 @@ class ServerTurn:
         self.exclusive = False
         self.standby = False
         self.mute = False
+        self.held = False  # its reply was ready under Do Not Disturb and was not spoken
         self.after_playback: Optional[Callable[[], Awaitable[None]]] = None
 
     def speak(self, text: str) -> None:
