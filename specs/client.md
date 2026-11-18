@@ -57,7 +57,7 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 | `audio_format` | `"pcm16"` (default) or `"opus"`, for both directions for this socket. |
 | `input_rate` | microphone sample rate (8000–48000 for PCM16, default 16000) |
 | `output_rate` | reply sample rate (default 24000) |
-| `quiet_interval` | session mode: seconds of silence between turns (0 = off) |
+| `quiet_interval` | session mode: seconds of silence between `quiet` frames (0 = none); send 1 |
 | `device_name` | The configured device label, such as `Den Echo` or `Kitchen`. Each device keeps its own conversation, titled `<assistant_name>: <device_name>`. |
 | `models` | Boolean; only `true` includes the model catalog in `ready`. Defaults to `false`. See section 11. |
 | `transcripts` | Boolean; request user and assistant transcript frames when `true`. Defaults to `false`. See section 4. |
@@ -301,7 +301,7 @@ Countdowns are unaffected by a command.
 | `speaking` + binary frames | mono reply audio in `ready.output.format` at `output_rate` |
 | `interrupted` | the turn was cancelled (you barged in or sent `cancel`); stop playing |
 | `turn_done` | the reply is fully sent; `next_action` is usually absent; `standby` ends the exchange and `listen` switches the client into listening, after drain; `mute` mutes it at once |
-| `quiet` | session mode: the stream has been silent for another `quiet_interval` seconds |
+| `quiet` | session mode: `quiet_seconds` of silence since listening began; sent every `quiet_interval` seconds |
 | `error` | the turn failed (spoken-safe text) |
 | `{"type":"tone","tone":"confirm"}` | Play the named tone (see `tones.md`): `confirm` or `error` when the assistant chooses to, `approval` just before the server asks for an approval. It is not a reply: no `turn_id`, and the device reports no state for it. |
 | `client_diagnostics` | Request a fresh version, build, and diagnostic snapshot; answer on this socket with the same `request_id`, as below. |
@@ -772,15 +772,25 @@ still end a turn.
 
 ## 5. Session mode (`quiet_interval > 0`)
 
-For wake-word devices. The server reports quiet in **received** audio (never
-wall-clock, so a held-open socket never accrues phantom quiet). Each listening
-phase counts from zero: speech, a turn, and resuming upstream audio after
-stopping it all restart the count. The first `quiet` after you start or resume
-listening comes after one full `quiet_interval` of received silence, for example:
+For wake-word devices. Send `"quiet_interval": 1` in `start`. While you are
+listening and nobody is speaking, the server sends `quiet` after each further
+second of silence, with the total so far:
 
 ```json
+{"type": "quiet", "quiet_seconds": 1.0}
+{"type": "quiet", "quiet_seconds": 2.0}
 {"type": "quiet", "quiet_seconds": 3.0}
 ```
+
+Return to standby when `quiet_seconds` reaches your own threshold. The threshold
+is the device's: it is not sent to the server, and the server never ends an
+exchange for silence. `quiet_interval` is only how often the frames come.
+
+The server counts silence in **received** audio (never wall-clock, so a
+held-open socket never accrues phantom quiet). Each listening phase counts from
+zero: speech, a turn, and resuming upstream audio after stopping it all restart
+the count. Audio sent while a request is captured, transcribed or answered is
+not counted.
 
 Silence sent before you stopped streaming does not carry over. After manual
 Talk, ignore `quiet` until the person's first request (a new turn starts); the
