@@ -162,6 +162,10 @@ def test_prompt_explains_names_proactivity_and_real_scheduling_receipts():
     assert '"conversation_name": "Arya: Den Echo"' in prompt          # the conversation's own title, always
     assert "add the assistant_name" not in prompt                      # no fallback name to drift to
     assert "request ask" in prompt and "only after it answers accepted" in prompt
+    # One instruction per ask state (Keryxion/cadence#12): the model never reports a refused ask as asked.
+    for state in ("awaiting_answer:", "not_delivered:", "unknown:"):
+        assert state in prompt
+    assert "reachable is false" in prompt
     assert "request tool" not in voice_system_prompt('Arya')   # no device, nothing to name it after
     long = voice_system_prompt('Arya', device_name='Upstairs Guest Bedroom Echo Show Fifteen')
     assert '"conversation_name": "Arya: Upstairs Guest Bedroom Echo Show F"' in long   # Cadence allows 40

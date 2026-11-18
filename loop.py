@@ -1324,8 +1324,12 @@ def voice_system_prompt(name: Optional[str] = None, *,
             "Renaming to the same name again is harmless. If the rename is refused, carry on "
             "with the user's request and do not try another name. To have "
             "another device do something, such as 'set a timer in the kitchen', call request "
-            "names to see who can be asked, then request ask with that name; confirm success "
-            "only after it answers accepted."
+            "names to see who can be asked, then request ask with that name, copied exactly; "
+            "skip an entry whose reachable is false. Act on the state ask returns. "
+            "awaiting_answer: it was delivered; confirm success only after it answers accepted. "
+            "not_delivered: it never arrived; say why from its reason, such as that someone must "
+            "speak to that device first, do not say it was asked, and asking again is safe. "
+            "unknown: it may have acted; say so, and check before asking again."
         )
     if commands is not None:
         import json
