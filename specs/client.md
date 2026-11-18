@@ -359,7 +359,7 @@ Countdowns are unaffected by a command.
 | `client_diagnostics` | Request a fresh version, build, and diagnostic snapshot; answer on this socket with the same `request_id`, as below. |
 | `countdown`, `countdown_cancel` | Start, extend, or cancel a countdown that ends with a tone (section 10). |
 | `set_wake_word` | Switch to this wake phrase and its models, then answer with `wake_word_set` (section 8). |
-| `do_not_disturb` | Whether this device is in Do Not Disturb (section 12). |
+| `{"type":"do_not_disturb","on":true}` | Whether this device is in Do Not Disturb: after every `ready`, and when the assistant changes it (section 12). |
 
 These are the only server frames, apart from `model_changed` and `model_error`
 (section 11). Turn liveness is the repeated `thinking` frame; there is no
@@ -1454,25 +1454,49 @@ confirmed choice on rejection or acknowledgement timeout and exposes a retry.
 
 ## 12. Do Not Disturb
 
-Do Not Disturb keeps the assistant from speaking unless the person asked. The
-same frame goes both ways:
+Do Not Disturb keeps the assistant from speaking unless the person asked. It has
+nothing to do with `quiet` (section 5), which reports silence while listening.
+The setting belongs to the device, by its `device_name`, whichever assistant it
+talks to, and the server keeps it. The same frame goes both ways:
 
 ```json
 {"type":"do_not_disturb","on":true}
 ```
 
-Send it when the person turns Do Not Disturb on or off on the device. The toggle
-is unavailable while the device is disconnected. The server keeps the setting
-for the device, sends it after each `ready`, and sends it again when the
-assistant changes it ("Hey Arya, don't disturb me"). Show the server's value.
+`on` is a Boolean. Either side ignores a frame without one.
+
+**From the server.** It is the first frame after every `ready`, on or off, and
+it comes again whenever the assistant changes the setting ("Hey Arya, don't
+disturb me"). Show its value. It is not a reply: it has no `turn_id`, makes no
+sound, is not answered, and changes nothing about a turn, playback, the
+microphone, or a ringing countdown. The same value twice changes nothing.
+
+**From the device.** Send it when the person turns Do Not Disturb on or off on
+the device, and show the value sent; the server does not echo it. The toggle is
+available from the server's first `do_not_disturb` frame of a connection until
+that connection ends. While disconnected, keep showing the last value. The
+device does not store the setting: after it starts, it shows off until the
+first frame. A device with no control for Do Not Disturb never sends the frame.
 
 While it is on:
 
 - Output the server starts for this device (section 9: reminders, still-ringing
-  countdowns, other messages) is not spoken. Their replies remain in the
-  device's conversation history.
-- Turns the person starts, by wake word or Talk, run and are answered aloud.
-- Countdowns ring.
+  countdowns, other messages) is not sent: no frames and no audio. The replies
+  remain in the device's conversation history and are never spoken later, not
+  even when Do Not Disturb ends.
+- Turns the person starts, by wake word or Talk, and `say`, run and are answered
+  aloud, with their tones.
+- An approval for a turn the server started arrives as `approval_request`
+  alone, with no `approval` tone and no spoken question. Show it and answer with
+  `approval_response` (section 4, "Approvals"). An approval in a turn the person
+  started is asked aloud as usual.
+- Countdowns ring as usual, with their sound, until ended (section 10).
 - The device shows Do Not Disturb (`animations.md`).
+
+The device plays whatever it receives in either state: Do Not Disturb changes
+what the server sends, never what the device plays. A reply already playing, or
+already waiting behind the current exchange, when Do Not Disturb turns on plays
+to its end. A reconnect changes nothing: the setting follows `ready`, and a turn
+in flight carries on as section 4 describes.
 
 Do Not Disturb is not mute: the microphone and wake word work as usual.

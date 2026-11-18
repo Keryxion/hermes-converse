@@ -17,6 +17,8 @@ How a turn maps onto the adapter contract:
 * Output nobody asked for by voice (a Cadence wake, a finished background process, a
   ``send_message``) arrives through ``send`` with no voice turn in flight and is spoken through the
   hub, exactly like any other proactive output.
+* Do Not Disturb: that output is not published while the device has it on. A voice turn's own
+  reply is never held.
 * Status chatter (busy acks, progress, error notices) is text for a screen; it is never spoken.
 """
 
@@ -329,7 +331,10 @@ class ConverseAdapter(BasePlatformAdapter):
             return
         turn = self._own(event)
         if turn is None:
-            self._server_turns.pop(chat_id, None)
+            server_turn = self._server_turns.pop(chat_id, None)
+            if server_turn is not None and server_turn.held and server_turn.after_playback is not None:
+                # No playback to wait for: what was to follow the reply follows the turn.
+                asyncio.ensure_future(server_turn.after_playback())
         else:
             self._complete_voice_turn(turn, outcome)
 
@@ -378,6 +383,11 @@ class ConverseAdapter(BasePlatformAdapter):
         server_turn = self._server_turns.get(chat_id)
         text = (server_turn.reply(content or "") if server_turn is not None else content or "").strip()
         if not text or text.upper() == SILENT:
+            return SendResult(success=True, message_id=uuid.uuid4().hex)
+        if self._hub.do_not_disturb(chat_id):
+            # Decided now that the reply is ready. It stays in the history; nothing is queued.
+            if server_turn is not None:
+                server_turn.held = True
             return SendResult(success=True, message_id=uuid.uuid4().hex)
         event_id = f"send:{uuid.uuid4().hex}"
         status = self._hub.publish(chat_id, text, event_id, expires_at=time.time() + OUTPUT_TTL,

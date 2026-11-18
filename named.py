@@ -56,6 +56,7 @@ class DeviceStore:
         self._path = path
         self._db = None
         self._lock = threading.RLock()
+        self._do_not_disturb: dict[str, bool] = {}  # recipient_id -> the stored setting, once read
 
     def _connection(self):
         if self._db is None:
@@ -72,21 +73,50 @@ class DeviceStore:
                     title TEXT NOT NULL UNIQUE,
                     PRIMARY KEY(recipient_id, assistant_name));
             ''')
+            if 'do_not_disturb' not in {row[1] for row in self._db.execute('PRAGMA table_info(devices)')}:
+                with self._db:
+                    self._db.execute('ALTER TABLE devices ADD COLUMN do_not_disturb INTEGER NOT NULL DEFAULT 0')
         return self._db
 
     def reserve(self, assistant_name: str, device_name: str) -> DeviceConversation:
         with self._lock:
             db = self._connection()
             with db:
-                db.execute('INSERT OR IGNORE INTO devices VALUES (?, ?)', (device_name, str(uuid.uuid4())))
-                recipient = db.execute('SELECT recipient_id FROM devices WHERE device_name=?', (device_name,)).fetchone()[0]
+                db.execute('INSERT OR IGNORE INTO devices (device_name, recipient_id) VALUES (?, ?)',
+                           (device_name, str(uuid.uuid4())))
+                recipient, on = db.execute('SELECT recipient_id, do_not_disturb FROM devices WHERE device_name=?',
+                                           (device_name,)).fetchone()
                 db.execute('INSERT OR IGNORE INTO conversations (recipient_id, assistant_name, title) '
                            'VALUES (?, ?, ?)', (recipient, assistant_name, f'{assistant_name}: {device_name}'))
                 # A title already taken by another name pair leaves no row: the pair is ambiguous.
                 if db.execute('SELECT 1 FROM conversations WHERE recipient_id=? AND assistant_name=?',
                               (recipient, assistant_name)).fetchone() is None:
                     raise NamedError()
+            self._do_not_disturb[recipient] = bool(on)
             return DeviceConversation(recipient, device_name, assistant_name)
+
+    def recipient_of(self, conversation_id: str) -> str:
+        """The device whose conversation has this gateway chat id; "" when there is none."""
+        with self._lock:
+            for recipient, assistant_name in self._connection().execute(
+                    'SELECT recipient_id, assistant_name FROM conversations'):
+                if uuid.uuid5(uuid.UUID(recipient), assistant_name).hex == conversation_id:
+                    return recipient
+        return ''
+
+    def do_not_disturb(self, recipient_id: str) -> bool:
+        """The device's setting as last read or written; no database call, so the event loop may ask."""
+        return self._do_not_disturb.get(recipient_id, False)
+
+    def set_do_not_disturb(self, recipient_id: str, on: bool) -> bool:
+        """Store the device's setting. True when it changed."""
+        with self._lock:
+            db = self._connection()
+            with db:
+                changed = db.execute('UPDATE devices SET do_not_disturb=? WHERE recipient_id=? AND do_not_disturb<>?',
+                                     (int(on), recipient_id, int(on))).rowcount > 0
+            self._do_not_disturb[recipient_id] = on
+            return changed
 
     def close(self):
         with self._lock:

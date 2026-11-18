@@ -945,26 +945,48 @@ ringing, and the ring timeout from the setting.
 
 ## Do Not Disturb
 
-Do Not Disturb is a per-device setting, kept in `devices.db` across reconnects.
+Do Not Disturb is a per-device setting: a column of the device's row in
+`devices.db`, off by default, shared by every assistant's conversation on that
+device and kept across reconnects and restarts. It is unrelated to `quiet`,
+the silence that ends listening.
+
 The device's `do_not_disturb` frame and the agent's `do_not_disturb` tool both
-set it. Send it to the device after `ready` and whenever the tool changes it;
-do not echo the device's own frame back. The server has no timer for it: to end
-it later, the agent schedules a turn with Cadence or cron that calls the tool.
+set it; a frame whose `on` is not a Boolean is ignored. Send the setting to the
+device as the first frame after every `ready`, and again when the tool changes
+its value; do not echo the device's own frame back. The tool works whether or
+not the device is attached, returns `ok`, and returns `not_a_device` outside a
+voice device conversation.
+
+The server has no timer for it. To end it at a time, the agent schedules a turn
+in the device's conversation that calls the tool: with Cadence's `pulse`, an
+`at` wake for one night or a `cron` role for each end of a nightly window. The
+voice prompt tells the agent how.
 
 While it is on, a turn the server starts for that device (client spec,
-section 9) sends no speech or tones to the device:
+section 9) sends nothing to the device:
 
 - Its reply or its `speak_this` text is not spoken. The reply stays in the
-  conversation's history as usual; nothing is queued to be spoken later.
+  conversation's history as usual, `send` reports success, and nothing is
+  queued to be spoken later.
 - `play_tone` returns `do_not_disturb` and sends nothing.
-- An approval with `ask` is sent as `approval_request` alone, with no tone and
-  nothing spoken. Hermes's `approvals.timeout` still applies.
+- An approval with `ask`, or the `command` tool's question, is sent as
+  `approval_request` alone, with no tone and nothing spoken. Speech is not taken
+  as its answer; `approval_response` answers it, and Hermes's
+  `approvals.timeout` still applies.
+- What an approved `command` leaves until the reply has played, a new
+  conversation, happens when the turn ends.
 
 Whether a reply is held is decided when it is ready, so a turn that turns Do
-Not Disturb off is spoken. A turn the person starts, by wake word or Talk, is
-never held. Countdowns ring as usual.
+Not Disturb off is spoken and one that turns it on is not. A reply already
+accepted for speaking, playing or waiting behind the current exchange, is
+spoken. A turn the person starts, by wake word or Talk, is never held, and
+neither is `say` or a tone or approval in that turn. Countdowns ring as usual.
 
-Verify: a reminder during Do Not Disturb produces no speech or tones; the
-person's own request is answered aloud; a countdown rings; the setting survives
-a reconnect; the tool and the device frame each change it;
-a turn that calls `do_not_disturb` with `on: false` is spoken.
+Verify: a reminder during Do Not Disturb produces no speech or tones and is not
+spoken when it ends; the person's own request is answered aloud; a countdown
+rings and its still-ringing turn is silent; the setting follows `ready` and
+survives a reconnect and a restart; the tool and the device frame each change
+it, the tool also with no device attached; a turn that calls `do_not_disturb`
+with `on: false` is spoken and one with `on: true` is not; an approval in a
+server-started turn is `approval_request` alone and one in the person's turn is
+asked aloud; a client that never sends the frame is served as before.
