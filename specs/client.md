@@ -247,8 +247,8 @@ as last set until the device changes it, and each connection starts with
 endpointing on. The utterance cap still applies as a memory backstop.
 
 Quick taps and wake-word turns use normal endpointing. Send no PCM while the
-control is released, including after the reply completes. What follows `turn_done` is in the table under "Handling
-`turn_done.next_action`" (section 4). Barge-in, `cancel`, `stop`, and
+control is released, including while the reply plays, unless the turn's ending
+opens an activation ("Handling `turn_done.next_action`", section 4). Barge-in, `cancel`, `stop`, and
 every other frame keep their usual meaning, and `commit` with no utterance in progress is ignored.
 
 ### Commands
@@ -745,36 +745,51 @@ the one to move to:
 | State | Microphone | Left by |
 |---|---|---|
 | Listening | An activation is open; PCM streams to the server. | `quiet` (section 5), `standby`, `mute`, or the device's own controls. |
-| Standby | No PCM. The wake word or Talk opens an activation. A held Talk button streams only while held. | The wake word, Talk, or `listen`. |
-| Muted | No PCM, and no wake word. | Only the person, on the device. Unmuting always lands in standby. |
+| Standby | No PCM, except to let the person interrupt a reply, as below. The wake word or Talk opens an activation. | The wake word, Talk, or `listen`. |
+| Muted | No PCM, and no wake word. Talk does nothing. | Only the person, with the device's mute control. Unmuting always lands in standby. |
 
-How each is shown is in `animations.md`. What the microphone does after a turn
-depends on how the turn ended and on the state the device was in when the turn
-started:
+A device in standby streams while a reply plays, for interruption only
+(section 9), and stops when the ending is applied. The exception is a turn made
+by holding Talk: after release it sends no PCM during the reply. While Talk is
+held, the button governs the microphone, over everything but `mute`; an ending
+that arrives then is applied on release.
 
-| The turn ended with | Was listening | Was in standby | Was muted |
+How each is shown is in `animations.md`. A muted device reports `standby` in
+`state`; mute is shown alongside it. What the microphone does after a turn
+depends on how the turn ended and on the state the device is in when the
+ending is applied:
+
+| The turn ended with | Listening | In standby | Muted |
 |---|---|---|---|
 | `turn_done`, no `next_action` | Stay listening for a follow-up. | Stay in standby. | Stay muted. |
 | `turn_done`, `listen` | Stay listening. | Listen: open an activation and stream, with no wake claim. | Stay muted. |
 | `turn_done`, `standby` | Standby. | Stay in standby. | Stay muted. |
 | `turn_done`, `mute` | Mute. | Mute. | Stay muted. |
 | `error`, then `turn_done` | Stay listening. | Stay in standby. | Stay muted. |
-| `interrupted`, then `turn_done`, after this device's `cancel` | Stay listening. | Stay in standby. | Stay muted. |
-| `interrupted`, then `turn_done`, with no `cancel` from this device: the person spoke | Stay listening; the continuation follows. | Listen; the continuation follows. | Stay muted. |
+| `interrupted`, then `turn_done`, after this device's `cancel` or `command` | Stay listening. | Stay in standby. | Stay muted. |
+| `interrupted`, then `turn_done`, with neither from this device: the person spoke | Stay listening; the continuation follows. | Listen; the continuation follows. | Stay muted. |
 
 Apply `mute` on receipt: the reply keeps playing with the microphone already
 off. Apply every other row once the turn's audio has drained or been discarded.
 Then report the state you are in.
 
 Muting is the same whoever asks: the device's own control, or `mute`. It ends
-the exchange, and nothing the server sends unmutes.
+the exchange, and nothing the server sends unmutes. `cancel` alone leaves the
+microphone as it is, including a `cancel` the device sends for a timeout of its
+own. A Stop control the person presses is `cancel` and then standby; only a
+control the person uses may add that.
+
+An activation that `listen` opens ends as any other does, `quiet` included; it
+has no time limit of its own.
 
 The `turn_done` of a failed or interrupted turn never carries `next_action`.
-When `interrupted` and a second `turn_done` arrive for a turn whose `turn_done`
-already came, the reply was interrupted while it was still playing: the second
-one replaces the first, so a pending `standby` or `listen` is dropped and the
-last row applies. A `mute` already applied stays. Do not apply a completion
-from an abandoned turn to a newer activation.
+When `interrupted` or `error`, and a second `turn_done`, arrive for a turn
+whose `turn_done` already came and whose ending has not been applied, the
+second one replaces the first: a pending `standby` or `listen` is dropped, and
+the `interrupted` or `error` row applies. A `mute` already applied stays. Once
+an ending has been applied, ignore later frames for that turn. Ignore
+`next_action` on a `turn_done` for a turn the device never saw start, and do
+not apply a completion from an abandoned turn to a newer activation.
 
 The server sends `standby` when the person has said they are done, `mute` when
 they have asked the device to stop listening, and `listen` only when it wants
