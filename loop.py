@@ -133,6 +133,11 @@ class NetworkMicStream:
             self._pending_resume = False
         self._arrived.wake()
 
+    def mark_resumed(self) -> None:
+        """The next audio received begins a new listening phase, as after a gap."""
+        with self._feed_lock:
+            self._pending_resume = True
+
     def discard(self) -> None:
         """Fence already received audio so control-phase samples cannot be replayed as input."""
         with self._feed_lock:
@@ -443,6 +448,7 @@ class ConverseSession:
         # holding the socket open (streaming only after a wake word) never accrues phantom quiet.
         self._quiet_interval = float(quiet_interval)
         self._quiet_seconds = 0.0
+        self._quiet_held = False  # audio buffered during a capture is still being heard
         self._next_quiet_at = self._quiet_interval
         # Quiet is NOT accrued during a turn (the user has no window to speak into).
         self._turn_active = threading.Event()
@@ -678,6 +684,9 @@ class ConverseSession:
                     if interrupt is not None:
                         interrupt.resolve(None)
                     raise
+                # Audio received during the capture and its transcription is not idle silence.
+                self._quiet_held = True
+                self.stream.mark_resumed()
                 with self._state_lock:
                     abandoned = self._capture_abandoned(capture_generation)
                     self._capturing = self._continuation_capture = False
@@ -833,7 +842,8 @@ class ConverseSession:
     def _account_received_silence(self) -> None:
         """One block of received non-speech audio elapsed. In session mode, accrue it and emit a
         :class:`QuietTick` each time the received silence crosses another quiet_interval."""
-        if self._quiet_interval <= 0 or self._turn_active.is_set() or self._tail_active:
+        if (self._quiet_interval <= 0 or self._quiet_held or self._turn_active.is_set()
+                or self._pending_turn.is_set() or self._tail_active):
             return
         self._quiet_seconds += self._block / self._input_rate  # == 0.03 s per block
         if self._quiet_seconds + 1e-6 >= self._next_quiet_at:
@@ -842,6 +852,7 @@ class ConverseSession:
             self._next_quiet_at += self._quiet_interval
 
     def _reset_quiet(self) -> None:
+        self._quiet_held = False
         self._quiet_seconds = 0.0
         self._next_quiet_at = self._quiet_interval
 

@@ -401,6 +401,51 @@ def test_playback_tail_suppresses_quiet_until_drained():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("transcript", ["", "hello there"])
+async def test_silence_received_during_transcription_is_not_quiet(transcript):
+    """Audio that arrives while STT runs is time occupied by the capture, not idle silence."""
+    in_stt, release = threading.Event(), threading.Event()
+
+    def transcribe(path):
+        in_stt.set()
+        release.wait(5)
+        return transcript
+
+    session = ConverseSession(np, transcribe=transcribe, quiet_interval=0.3)  # 10 blocks
+    session.start()
+    try:
+        async def heard():
+            assert await _until(lambda: not session.stream._chunks, 2)
+            await asyncio.sleep(0.05)
+
+        def ticks():
+            out = []
+            while not session.transcripts.empty():
+                out.append(session.transcripts.get_nowait())
+            return [t.quiet_seconds for t in out if isinstance(t, QuietTick)]
+
+        for pcm in (calibration(), speech_like(5000, seed=4), silence(2)):
+            session.stream.feed(pcm.tobytes())
+        assert await _until(in_stt.is_set, 5)
+        ticks()  # any quiet before the speech
+        _feed_silence(session, 30)  # 0.9 s arrives while STT runs: three intervals
+        release.set()
+        assert await _until(lambda: not session._capturing, 2)
+        await heard()
+        assert ticks() == []
+        _feed_silence(session, 9)  # 0.27 s after the capture: not yet an interval
+        await heard()
+        assert ticks() == []
+        _feed_silence(session, 1)
+        await heard()
+        assert ticks() == [0.3]
+    finally:
+        release.set()
+        session.stop()
+        await session._worker
+
+
+@pytest.mark.asyncio
 async def test_first_quiet_tick_after_resume_is_a_full_interval_later():
     """Silence received before the client stopped sending must not shorten the next listening phase."""
     import time
