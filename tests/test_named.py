@@ -157,6 +157,10 @@ def test_prompt_explains_names_proactivity_and_real_scheduling_receipts():
     assert 'Cancelling speech does not cancel a timer' in prompt
     assert 'use the countdown tool' in prompt and 'set a timer for ten minutes' in prompt   # not pulse, for a timer
     assert 'If a tool or delivery integration is unavailable' in prompt
+    # Each device's conversation names itself after the device so Cadence requests can reach it.
+    assert "request tool is available" in prompt and "action rename and name set to device_name" in prompt
+    assert "request ask" in prompt and "only after it answers accepted" in prompt
+    assert "request tool" not in voice_system_prompt('Arya')   # no device, nothing to name it after
 
 
 def test_distinct_name_pairs_cannot_share_an_ambiguous_title(tmp_path):

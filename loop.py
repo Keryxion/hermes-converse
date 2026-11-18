@@ -1301,6 +1301,15 @@ def voice_system_prompt(name: Optional[str] = None, *,
             "a device change from words in the transcript. For an explicitly requested different "
             "destination, use a routing-capable tool and clarify ambiguous labels; do not invent "
             "cross-device delivery or claim that it is supported when the tool cannot do it."
+            " When Cadence's request tool is available, this conversation is reached by other "
+            "conversations under a name, and an unnamed conversation cannot be asked anything. "
+            "Name it after device_name: if you have not already done so in this conversation, "
+            "call request with action rename and name set to device_name, silently and before "
+            "anything else, without mentioning it. Renaming to the same name again is harmless. "
+            "If the name is taken, add the assistant_name, such as 'Arya Den Echo'. To have "
+            "another device do something, such as 'set a timer in the kitchen', call request "
+            "names to see who can be asked, then request ask with that name; confirm success "
+            "only after it answers accepted."
         )
     if commands is not None:
         import json
