@@ -71,8 +71,12 @@ class Harness:
     """One app serving the fake API server and the plugin route, with the converse platform
     connected to the fake gateway runner; the route's loopback URL is this server's own URL."""
 
-    def __init__(self, fake: FakeHermes, settings: dict | None = None, *, device_store=None, wake_words=None):
+    def __init__(self, fake: FakeHermes, settings: dict | None = None, *, device_store=None, wake_words=None,
+                 do_not_disturb_frames: bool = False):
         self.fake = fake
+        # Most tests read frames by position, as a client that does not know ``do_not_disturb``
+        # ignores it: they do not see the frame unless they ask for it.
+        self.do_not_disturb_frames = do_not_disturb_frames
         self.settings = settings if settings is not None else {}
         self.base = {"url": ""}
         app = web.Application()
@@ -103,6 +107,23 @@ class Harness:
         await self.adapter.connect()
         self.client = await TestClient(TestServer(self.app)).__aenter__()
         self.base["url"] = str(self.client.make_url(""))
+        if not self.do_not_disturb_frames:
+            connect = self.client.ws_connect
+
+            async def ws_connect(*args, **kwargs):
+                ws = await connect(*args, **kwargs)
+                receive = ws.receive
+
+                async def without_do_not_disturb(*a, **kw):
+                    while True:
+                        msg = await receive(*a, **kw)
+                        if msg.type != web.WSMsgType.TEXT or '"do_not_disturb"' not in msg.data:
+                            return msg
+
+                ws.receive = without_do_not_disturb
+                return ws
+
+            self.client.ws_connect = ws_connect
         return self.client
 
     async def __aexit__(self, *exc):

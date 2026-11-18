@@ -77,7 +77,7 @@ class Rig:
         """A fresh route and device store, as after a gateway restart. Returns the socket and the
         first frame after ``ready``."""
         _patch_speech(self.monkeypatch, self.streamer, transcript="what time is it")
-        self.harness = Harness(self.fake, device_store=DeviceStore(self.db))
+        self.harness = Harness(self.fake, device_store=DeviceStore(self.db), do_not_disturb_frames=True)
         self.hub = self.fake.hub = self.harness.route.hub
         self.client = await self.harness.__aenter__()
         self.ws = await self.client.ws_connect("/v1/audio/converse")
