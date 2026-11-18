@@ -11,6 +11,7 @@ class ServerTurn:
         self.exclusive = False
         self.standby = False
         self.mute = False
+        self.no_barge_in = False
         self.after_playback: Optional[Callable[[], Awaitable[None]]] = None
 
     def speak(self, text: str) -> None:
