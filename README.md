@@ -159,7 +159,7 @@ plugin settings form):
 | `arbitrate_wake_window_seconds` | `0.75` | how long the arbitrator collects concurrent wake claims for the same wake word before electing the primary device |
 | `wake_word` | `Hey Sakura` | wake phrase for every named device |
 | `device_wake_words` | `{}` | wake phrase for particular devices by `device_name`; the `set_wake_word` voice tool writes it |
-| `wake_word_repositories` | `[{repository: Keryxion/wakewords, ref: main}]` | ordered GitHub wake-word dictionaries; the first one listing a phrase supplies it, and `[]` uses only cached models |
+| `wake_word_repositories` | `[{repository: Keryxion/wakewords, ref: main}]` | ordered GitHub wake-word dictionaries; the last one listing a phrase supplies it, and `[]` uses only cached models |
 
 STT and TTS come from your normal Hermes `stt.*` and `tts.*` configuration.
 

@@ -27,7 +27,7 @@ def github():
     fake = FakeGitHub()
     fake.publish(SHARED, {"Hey Sakura": {"onnx": b"sakura-onnx", "tflite": b"sakura-tflite"},
                           "Hey Arya": {"onnx": b"arya-onnx", "tflite": b"arya-tflite"}}, commit="a")
-    fake.publish(HOUSE, {"Hey Arya": {"onnx": b"house-arya-onnx"}, "Computer": {"tflite": b"computer-tflite"}},
+    fake.publish(HOUSE, {"Computer": {"tflite": b"computer-tflite"}},
                  ref="v1", commit="b", version="2.0.0-beta.1")
     return fake
 
@@ -60,19 +60,30 @@ def test_a_device_phrase_overrides_the_default_and_each_source_has_its_own_ref()
 
 # ── dictionaries ──
 
-async def test_sources_combine_and_the_first_one_supplies_a_duplicate_phrase_whole(words):
+async def test_sources_combine_and_the_last_one_supplies_a_duplicate_phrase_whole(words, github):
+    github.publish(HOUSE, {"Hey Arya": {"onnx": b"house-arya-onnx"},
+                           "Computer": {"tflite": b"computer-tflite"}}, ref="v1", commit="b", version="0.9.0")
     phrases, failed = await words.listing(SOURCES)
     assert failed == []
     assert phrases == [
         {"phrase": "Hey Sakura", "formats": ["micro_wake_word", "open_wake_word"],
          "description": f"Hey Sakura from {SHARED}"},
-        {"phrase": "Hey Arya", "formats": ["micro_wake_word", "open_wake_word"],
-         "description": f"Hey Arya from {SHARED}"},
+        {"phrase": "Hey Arya", "formats": ["open_wake_word"],
+         "description": f"Hey Arya from {HOUSE}"},
         {"phrase": "Computer", "formats": ["micro_wake_word"], "description": f"Computer from {HOUSE}"}]
-    # Reordered, the household entry wins and brings only its own format.
+    models = await words.select("Hey Arya", SOURCES)
+    assert set(models) == {"open_wake_word"}
+    assert models["open_wake_word"]["sha256"] == sha256(b"house-arya-onnx")
+    assert _source(words, "Hey Arya")["repository"] == HOUSE
+    assert _source(words, "Hey Arya")["version"] == "0.9.0"  # order wins even over a newer version
+    # Reordered, the shared entry is last and supplies both of its own formats.
     phrases, _ = await words.listing(SOURCES[::-1])
-    assert {"phrase": "Hey Arya", "formats": ["open_wake_word"],
-            "description": f"Hey Arya from {HOUSE}"} in phrases
+    assert {"phrase": "Hey Arya", "formats": ["micro_wake_word", "open_wake_word"],
+            "description": f"Hey Arya from {SHARED}"} in phrases
+    models = await words.select("Hey Arya", SOURCES[::-1])
+    assert set(models) == {"micro_wake_word", "open_wake_word"}
+    assert models["open_wake_word"]["sha256"] == sha256(b"arya-onnx")
+    assert _source(words, "Hey Arya")["repository"] == SHARED
 
 
 async def test_phrases_differing_by_case_or_spacing_are_separate_and_keep_their_own_models(github, tmp_path):
@@ -174,19 +185,24 @@ async def test_a_ref_is_a_branch_a_tag_or_a_commit(words, github):
 
 
 async def test_a_failed_source_keeps_its_last_good_entries_and_the_others_still_load(words, github):
+    github.publish(HOUSE, {"Hey Arya": {"onnx": b"house-arya-onnx"},
+                           "Computer": {"tflite": b"computer-tflite"}}, ref="v1", commit="b")
     await words.listing(SOURCES)
     github.down.add(HOUSE)
-    github.publish(SHARED, {"Hey Penny": {"onnx": b"penny-onnx"}}, commit="c")
+    github.publish(SHARED, {"Hey Penny": {"onnx": b"penny-onnx"},
+                            "Hey Arya": {"onnx": b"arya-onnx-v2"}}, commit="c")
     phrases, failed = await words.listing(SOURCES)
     assert failed == [HOUSE]
     assert [item["phrase"] for item in phrases] == ["Hey Penny", "Hey Arya", "Computer"]
+    models = await words.select("Hey Arya", SOURCES)
+    assert models["open_wake_word"]["sha256"] == sha256(b"house-arya-onnx")
 
 
 async def test_a_source_never_reached_is_reported_and_does_not_block_the_rest(words, github):
     github.down.add(SHARED)
     phrases, failed = await words.listing(SOURCES)
     assert failed == [SHARED]
-    assert [item["phrase"] for item in phrases] == ["Hey Arya", "Computer"]
+    assert [item["phrase"] for item in phrases] == ["Computer"]
 
 
 async def test_an_unsupported_index_version_is_rejected_and_the_last_good_one_kept(words, github):
@@ -235,11 +251,12 @@ async def test_a_changed_model_changes_the_advertised_manifest_hash(words, githu
 async def test_refreshing_or_reordering_dictionaries_does_not_replace_a_cached_model(words, github):
     installed = await words.select("Hey Arya", SOURCES)
     github.publish(SHARED, {"Hey Arya": {"onnx": b"arya-onnx-v2"}}, commit="c")
+    github.publish(HOUSE, {"Hey Arya": {"onnx": b"house-arya-onnx"}}, ref="v1", commit="d")
     await words.listing(SOURCES)
     await words.listing(SOURCES[::-1])
     assert words.models("Hey Arya") == installed and _source(words, "Hey Arya")["commit"] == "a" * 40
-    # The next selection takes the entry then on offer, from the source now first.
-    models = await words.select("Hey Arya", SOURCES[::-1])
+    # The next selection takes the entry then on offer, from the last source.
+    models = await words.select("Hey Arya", SOURCES)
     assert models == {"open_wake_word": {"url": "/v1/audio/wake/hey_arya/hey_arya.onnx",
                                          "sha256": sha256(b"house-arya-onnx")}}
     assert _source(words, "Hey Arya")["repository"] == HOUSE

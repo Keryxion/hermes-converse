@@ -396,7 +396,7 @@ For example, load the shared dictionary and a household dictionary:
 ```
 
 Combine entries from all configured dictionaries. For an identical exact
-`phrase`, the first repository in the list wins. Phrases are compared exactly:
+`phrase`, the last repository in the list wins. Phrases are compared exactly:
 `Hey Arya` and `hey arya` are two phrases, listed and selected separately.
 Select that entry as a whole;
 do not mix its model formats or evaluations with another dictionary's entry.
@@ -515,7 +515,7 @@ changes its advertised hash; a device with no compatible model keeps its active
 phrase; unauthorized and out-of-folder requests are refused; a fresh device
 hears `Hey Sakura` without downloading; a live switch needs no reconnect; and
 confirmation waits for a successful device result. Multiple dictionaries supply
-one combined listing; duplicate phrases use the first source's complete entry;
+one combined listing; duplicate phrases use the last source's complete entry;
 each source reads from its own pinned commit; a failed source refresh preserves
 its cache and does not block other sources; a bad model hash prevents a switch;
 and cached models remain usable when GitHub is unreachable. Phrases differing

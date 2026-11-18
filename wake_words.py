@@ -327,12 +327,12 @@ class WakeWords:
 
     @staticmethod
     def _combine(snapshots: list[dict]) -> list[dict]:
-        """One entry per exact phrase: the first source listing it supplies the whole entry."""
+        """One entry per exact phrase: the last source listing it supplies the whole entry."""
         combined: dict[str, dict] = {}
         for snapshot in snapshots:
             for entry in snapshot["entries"]:
-                combined.setdefault(entry["phrase"], {
-                    **entry, "repository": snapshot["repository"], "commit": snapshot["commit"]})
+                combined[entry["phrase"]] = {
+                    **entry, "repository": snapshot["repository"], "commit": snapshot["commit"]}
         return list(combined.values())
 
     async def listing(self, repositories: Any) -> tuple[list[dict], list[str]]:
