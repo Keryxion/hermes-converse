@@ -76,12 +76,24 @@ SCHEMAS = {
     },
     "mute": {
         "name": "mute",
-        "description": ("Voice devices only. Mutes the device's microphone once this turn's reply "
-                        "has been sent: it hears nothing, its wake word included, until the person "
+        "description": ("Voice devices only. Mutes the device's microphone: from this call nothing "
+                        "it picks up is heard, and when this turn's reply has been sent the device "
+                        "mutes itself, its wake word included, until the person "
                         "unmutes it on the device. Call it only when the person asks the device to "
                         "stop listening (\"stop listening\", \"mute yourself\"). Nothing can unmute "
                         "by voice, so say that they unmute on the device. When they are simply "
                         "done, call standby instead."),
+        "parameters": {"type": "object", "properties": {}},
+    },
+    "no_barge_in": {
+        "name": "no_barge_in",
+        "description": ("Voice devices only. For the rest of this turn, until its reply has played, "
+                        "sound at the microphone does not interrupt you: the person stops you with "
+                        "the wake word or a control on the device. It ends with the turn, so call "
+                        "it again in a later turn if it is still needed. Call it when the person "
+                        "says you keep interrupting yourself or cutting out, or when your replies "
+                        "keep being cut and what arrives next is a piece of your own reply or "
+                        "nothing meant for you. Otherwise leave it: people expect to talk over you."),
         "parameters": {"type": "object", "properties": {}},
     },
 }
@@ -144,9 +156,15 @@ def make_handlers(hub: Any) -> dict[str, Callable[..., Any]]:
         error, attachment = device()
         if attachment is None:
             return _result(error)
-        turn = server_turn_of(attachment) or turn_of(attachment)
+        server_turn = server_turn_of(attachment)
+        turn = server_turn or turn_of(attachment)
         if turn is not None:
             turn.standby, turn.mute = not mute, mute
+        if server_turn is None:  # a turn the server started holds from its reply's start (loop.py)
+            if mute:
+                attachment.session.ignore_microphone(muted=True)
+            else:
+                attachment.session.unmute()
         return _result("ok")
 
     def standby(args: dict, **kw: Any) -> str:
@@ -154,6 +172,17 @@ def make_handlers(hub: Any) -> dict[str, Callable[..., Any]]:
 
     def mute(args: dict, **kw: Any) -> str:
         return end_with(mute=True)
+
+    def no_barge_in(args: dict, **kw: Any) -> str:
+        error, attachment = device()
+        if attachment is None:
+            return _result(error)
+        server_turn = server_turn_of(attachment)
+        if server_turn is not None:
+            server_turn.no_barge_in = True
+        else:
+            attachment.session.ignore_microphone(muted=False)
+        return _result("ok")
 
     async def command(args: dict, **kw: Any) -> str:
         error, attachment = device()
@@ -191,8 +220,9 @@ def make_handlers(hub: Any) -> dict[str, Callable[..., Any]]:
         result = await asyncio.wrap_future(attachment.wake_word(phrase.strip() if phrase else None))
         return json.dumps(result, ensure_ascii=False)
 
-    return {"speak_this": speak_this, "play_tone": play_tone, "standby": standby, "mute": mute, "command": command,
-            "client_diagnostics": client_diagnostics, "set_wake_word": set_wake_word}
+    return {"speak_this": speak_this, "play_tone": play_tone, "standby": standby, "mute": mute,
+            "no_barge_in": no_barge_in, "command": command, "client_diagnostics": client_diagnostics,
+            "set_wake_word": set_wake_word}
 
 
 def register_tools(ctx: Any, hub: Any) -> None:

@@ -125,7 +125,8 @@ socket. The client spec no longer has it; a client closes the socket instead.
 
 `heard` says the device detected a wake word during a turn. It is neither
 cancellation nor barge-in: log it with the session, the turn, and the wake
-word, and change nothing else.
+word, and change nothing else, except in a turn that called `no_barge_in`
+(Voice tools), where it interrupts the reply.
 
 ### Approvals
 
@@ -710,7 +711,8 @@ being connected with no turn for a tool to act on.
 | `speak_this` | `text` | The device says exactly `text`, and nothing else the turn produces is spoken. |
 | `play_tone` | `tone`: `confirm` or `error` | The device plays that tone (`tones.md`). |
 | `standby` | None | The device goes to standby when this turn's playback has drained: `turn_done` carries `next_action: "standby"`. It stops sending audio and waits for the wake word or Talk. |
-| `mute` | None | The device mutes when this turn's reply has been sent: `turn_done` carries `next_action: "mute"`. Its microphone stays off until the person unmutes it on the device. |
+| `mute` | None | From the call, nothing the device's microphone sends is heard. The device mutes when this turn's reply has been sent: `turn_done` carries `next_action: "mute"`. Its microphone stays off until the person unmutes it on the device. |
+| `no_barge_in` | None | From the call until this turn's playback has ended, microphone audio does not interrupt the turn. |
 | `command` | `name`: a gateway command without a leading slash; `args`: an array of strings, default `[]` | Runs the command in this conversation and returns its reply to the agent. |
 | `client_diagnostics` | None | Returns a fresh diagnostic snapshot from the attached client, as described above. |
 
@@ -773,10 +775,44 @@ reached by voice: the microphone goes off when `turn_done` arrives and stays
 off until the person unmutes on the device, while the reply plays out. The
 exchange ends as it does for `standby`. Nothing
 can unmute by voice, because a muted device hears nothing. If the turn calls
-both `mute` and `standby`, the last call wins. Speech accepted before
-`turn_done` interrupts the turn, and its `turn_done` carries no `next_action`:
-the device is not muted. Results are the same as for `standby`; `ok` means the
-request will be sent, not that the device muted.
+both `mute` and `standby`, the last call wins. Results are the same as for
+`standby`; `ok` means the request will be sent, not that the device muted.
+
+The device mutes at `turn_done`, but the person asked at the call. So from the
+call the server holds the microphone for the rest of the turn, as described
+under `no_barge_in`, and more strictly: the audio is not heard at all, and
+`heard` does not interrupt. `cancel` still stops the turn; its `turn_done`
+carries no `next_action`, the device is not muted, and the hold ends.
+
+### `no_barge_in`
+
+The agent calls `no_barge_in` for a reply that should not be cut off by sound
+at the microphone: the person said the assistant keeps interrupting itself, or
+its replies keep being cut with nothing meant for it heard. The device does
+nothing different: it keeps streaming and reporting `heard`.
+
+The hold belongs to the turn that called the tool. It starts at the call,
+whether or not audio has been sent, and ends when that turn's playback has
+ended: the device reports leaving `speaking`, or the playback tail times out.
+The next turn is an ordinary one. Nothing is stored.
+
+| During the hold | Effect |
+|---|---|
+| Microphone audio | Not an onset: no interruption, no capture, no request. |
+| `heard`, any wake word | Interrupts the reply as accepted speech does, and what the person says next is captured as the continuation. The hold ends. |
+| `cancel` | Stops the turn, as always. The hold ends. |
+| `wake` granted (Talk, a new activation) | The hold ends; the activation is heard normally. |
+| `stop`, disconnect | Close the attachment, as always. |
+
+- Speech accepted before the call already interrupted the turn: its capture
+  goes on and becomes the next request.
+- The continuation after an interruption is a new turn, without the hold.
+- A turn that also calls `standby` or `mute` ends as those say; `mute` is the
+  stricter hold and wins while both apply. `standby` called after `mute`
+  releases the `mute` hold.
+- In a turn the server started, `mute` and `no_barge_in` hold from the start of
+  its reply: until then nothing of the turn is playing.
+- An approval's answer is still heard once its question has played.
 
 ### `command`
 

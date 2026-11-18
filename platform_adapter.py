@@ -383,6 +383,7 @@ class ConverseAdapter(BasePlatformAdapter):
         status = self._hub.publish(chat_id, text, event_id, expires_at=time.time() + OUTPUT_TTL,
                                    next_action=None if server_turn is None else "mute" if server_turn.mute
                                    else "standby" if server_turn.standby else None,
+                                   no_barge_in=server_turn is not None and server_turn.no_barge_in,
                                    after_playback=server_turn.after_playback if server_turn is not None else None)
         if status == "accepted":
             return SendResult(success=True, message_id=event_id)

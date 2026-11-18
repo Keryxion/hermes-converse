@@ -658,7 +658,9 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                         if adopted is not None:  # a turn carried over from the previous connection
                             adopted.session.cancel(frame.get("turn_id"))
                     if frame.get("type") == "heard":
-                        # Neither cancel nor barge-in: the turn carries on unchanged.
+                        # Neither cancel nor barge-in: the turn carries on unchanged, unless it
+                        # called `no_barge_in`, where the wake word is how the person interrupts.
+                        session.heard()
                         logger.info("converse heard: session=%s turn=%s wake_word=%r", session.session_id,
                                     getattr(session, "_active_turn_id", None), str(frame.get("wake_word"))[:80])
                     if frame.get("type") == "say":
