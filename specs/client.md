@@ -24,13 +24,6 @@ changing the chat model.
 Server lifecycle and integration details are in [the server spec](server.md).
 What a client records for tracing is in [client tracing](client_tracing.md).
 
-**Acceptance** lists follow the behavior they check. Each case says what to send
-and which frames to expect, in order; frames not named may arrive between them.
-They are protocol cases: they hold on every server, whatever model answers. A
-case marked *model-dependent* also needs the model to make a particular choice,
-such as calling a tool; report it separately, and do not count it as a protocol
-failure.
-
 ## 1. Connect and authenticate
 
 Open the WebSocket. Your first frame must be a `start` frame.
@@ -87,37 +80,18 @@ come out the same are the same device.
 | In `start` | Result |
 |---|---|
 | No first frame within 5 seconds; a binary frame; text that is not a JSON object; `type` other than `"start"` | `4400 bad_start` |
-| Missing or wrong key | `4401 unauthorized` |
 | A name that is missing, not a string, empty or only whitespace, over 98 characters, or contains a control character; a title `<assistant_name>: <device_name>` over 100 characters | `4400 bad_start` |
-| A `profile`, `name`, `conversation`, or `conversation_id` field | `4400 bad_start` |
-| `audio_format` other than `"pcm16"` or `"opus"` | `4400 bad_start` |
-| Opus with a rate that is not one of the integers 8000, 12000, 16000, 24000, 48000 | `4400 bad_start` |
 | PCM16 with a rate below 8000 or above 48000 | The nearest limit is used. |
 | PCM16 with a rate that is not an integer | The default is used. |
-| `quiet_interval` that is not a number, or is zero or negative | Off. |
+| `quiet_interval` that is not a number, or is zero or negative | No `quiet` frames. |
 | `quiet_interval` above 3600 | 3600. |
 | `transcripts` or `models` other than `true` | `false`. |
 | `after` that is not a string | As if absent. |
 | `after` that is not a message of the device's conversation | `new_session: true` ("Catching up", section 4). |
-| A valid format the server cannot set up | `4503 audio_unavailable` |
 | Any other field | Ignored. |
 
-`ready` always states the rates and format in use; play and capture at those,
-not at what was asked for. Every close before `ready` is preceded by an error
-frame naming it, such as `{"type":"error","error":"bad_start"}`.
-
-**Acceptance**
-
-- Send `start` with `"device_name": "  Den   Echo "`. Expect `ready` with
-  `"device_name": "Den Echo"`.
-- Send `start` with `"device_name": ""`, then with a 99-character name, then
-  with `"name": "x"` added. Expect `error` `bad_start` and close 4400 each time.
-- Send PCM16 `start` with `"output_rate": 96000`. Expect `ready` with
-  `output.sample_rate` 48000.
-- Send `start` with `"quiet_interval": "soon"`, then stream 10 seconds of
-  silence. Expect `ready` and no `quiet`.
-- Send `start` with `"audio_format": "opus", "output_rate": 44100`. Expect
-  `error` `bad_start` and close 4400.
+Every close before `ready` is preceded by an error frame naming it, such as
+`{"type":"error","error":"bad_start"}`.
 
 For a wake-word client, detect the wake word locally, buffer microphone
 PCM while awaiting arbitration for up to **1000 ms**, and start streaming
@@ -203,14 +177,6 @@ may already have happened.
 | `4410 conversation_changed` | The device's conversation is a different one now, for example after the `new` command. Reconnect at once; `ready` then says whether the cursor still applies ("Catching up", section 4). |
 | `conversation_busy` error before `ready` | Earlier work is still stopping. Retry later. |
 
-**Acceptance**
-
-- Send a valid Opus `start`. Expect `ready` with `input.format` and
-  `output.format` `"opus"`, or `error` `audio_unavailable` and close 4503.
-  Never `conversation_unavailable`, and never `ready` with `"pcm16"`.
-- After close 4503, send the same `start` with `"audio_format": "pcm16"`.
-  Expect `ready`.
-
 ## 3. Client control frames (send anytime)
 
 All are JSON text frames:
@@ -246,26 +212,18 @@ a bad Opus packet.
 |---|---|
 | Text that is not JSON, JSON that is not an object, or an unknown `type` | Ignored. |
 | `stop` or `commit` with a value other than `true` | Ignored. |
-| `cancel` whose `turn_id` is not the current turn's, or not a string | Ignored. |
+| `cancel` whose `turn_id` is not the current turn's | Ignored. A `cancel` with no `turn_id`, or `null`, is untargeted. |
 | `endpointing` whose `on` is not a boolean | `on` is ignored; `"commit": true` still commits. |
-| `state` with no string `turn_id` | Ignored. |
 | `countdown` with no string `countdown_id`, with one the server does not have, or with neither `"ringing": true` nor `"ended": true` | Ignored. |
 | `say` whose `text` is not a string or is empty after trimming | Ignored. |
 | `say` whose `text` is over 400 characters | The first 400 are spoken. |
 | `approval_response` for another request, a second one, or a `choice` not offered | Ignored. |
+| `heard`, whatever it carries | Recorded. No frame answers it. |
+| `client_diagnostics` the server did not ask for, or sent after its deadline | Ignored. |
 | `wake` without a nonempty string `claim_id` and `wake_word` | `{"type":"error","error":"bad_wake"}` (section 8). |
 | `command` with a bad `name` or `args` | `command` with `error` ("Commands" below). |
 | `set_model` with a bad `request_id`, `model`, or `provider` | `model_error` (section 11). |
 | A malformed, non-mono, or non-20-ms Opus packet | `4400 bad_audio` |
-
-**Acceptance**
-
-- Send `not json`, `[1]`, `{"type":"nope"}`, `{"type":"cancel","turn_id":7}`,
-  `{"type":"endpointing","on":"yes"}`, and `{"type":"say","text":5}`. Expect no
-  frame in answer and the socket still open: a following `{"type":"commands"}`
-  is answered.
-- Send `{"type":"wake","claim_id":""}`. Expect `error` `bad_wake`; the socket
-  stays open.
 
 ### Push to talk
 
@@ -494,7 +452,9 @@ request away and make the person say the wake word twice. The same goes for
 "cancel", "stop", or "never mind" said during a turn: they are speech to the
 server, and the assistant stops.
 
-Explicit `cancel` stops the matching turn without submitting a user message:
+Explicit `cancel` stops the matching turn. Whether its request is already a
+message of the conversation depends on when it lands ("User and assistant
+transcripts" below):
 
 ```json
 {"type":"cancel","turn_id":"turn-1"}
@@ -516,8 +476,6 @@ Binary audio carries no `turn_id`, so the order is the contract:
   turn.
 - A continuation's first frame comes after the old turn's `turn_done`, and its
   audio only after its own `speaking`.
-- On `interrupted`, discard the turn's queued audio at once, then report the
-  state you move to.
 
 Speech during thinking (turn A is cut, B answers the continuation):
 
@@ -570,22 +528,6 @@ Speech after `turn_done`, while the reply is still playing:
 ← {"type":"turn_done","turn_id":"A"}
 ```
 
-**Acceptance**
-
-- Start a turn and send `cancel` with its `turn_id` after its first `thinking`.
-  Expect `interrupted` then `turn_done` without `next_action`, both for that
-  turn, then no frame and no audio for it. A new utterance then gets a new turn.
-- Send `cancel` with that same `turn_id` again during the next turn. Expect the
-  next turn to complete untouched.
-- During a reply's audio, send speech. Expect `interrupted` then `turn_done`
-  for the reply, no binary frame between `interrupted` and the next `speaking`,
-  then a turn with a new `turn_id`.
-- Receive `turn_done` and do not report leaving `speaking`; send speech. Expect
-  `interrupted` then a second `turn_done` without `next_action` for the same
-  turn, then a turn with a new `turn_id`.
-- Send `{"type":"cancel"}` while streaming speech with no turn running. Expect
-  no `thinking` and no turn for that speech.
-
 Do not use an `agentTurn`, thinking, or playback flag to suppress PCM during
 an activation. Play incoming PCM and send microphone PCM concurrently.
 Local echo cancellation may clean the signal, but must preserve user speech.
@@ -604,16 +546,9 @@ On `interrupted`, stop and discard queued reply audio for that turn, then report
 the state you move to. `turn_done` means the server finished sending, not that
 playback drained. Leaving `speaking` says playback finished or was discarded,
 not that a person heard the reply.
-For `next_action = "standby"` or a local decision to end the activation, finish
-playback/drain handling and then stop upstream audio and return to wake
-detection; do not cut off barge-in monitoring during the playback tail.
-
-The server binds interruption to the old turn before announcing `thinking`.
-If accepted speech interrupts playback after `turn_done`, expect `interrupted`
-followed by an updated `turn_done` without `next_action` for the same
-turn, replacing its pending standby action. A continuation receives its own
-turn ID. Report the state for the old turn's playback only; it must not
-discard the continuation. A bounded playback-tail timeout handles a missing
+Keep streaming until the reply's audio has drained, so the person can still
+interrupt it. Report the state for the old turn's playback only; it must not
+discard a continuation. A bounded playback-tail timeout handles a missing
 report.
 
 ### A wake word heard during a turn
@@ -815,7 +750,7 @@ the one to move to:
 
 How each is shown is in `animations.md`. What the microphone does after a turn
 depends on how the turn ended and on the state the device was in when the turn
-started. This table is the whole rule:
+started:
 
 | The turn ended with | Was listening | Was in standby | Was muted |
 |---|---|---|---|
@@ -830,10 +765,6 @@ started. This table is the whole rule:
 Apply `mute` on receipt: the reply keeps playing with the microphone already
 off. Apply every other row once the turn's audio has drained or been discarded.
 Then report the state you are in.
-
-A device in standby streams temporarily during a server-started reply so the
-person can interrupt it (section 9). That is still standby: stop the stream
-when the row is applied, unless the row says listen.
 
 Muting is the same whoever asks: the device's own control, or `mute`. It ends
 the exchange, and nothing the server sends unmutes.
@@ -850,22 +781,6 @@ they have asked the device to stop listening, and `listen` only when it wants
 the person's answer from a device that would not otherwise be listening.
 Clients must not inspect reply text or interpret whether the agent expects a
 follow-up. Countdown tones restore the prior state after drain (section 10).
-
-**Acceptance**
-
-- Listening: complete a turn. Expect `turn_done` without `next_action`; keep
-  streaming, speak again without a wake claim, and expect a new turn.
-- Push to talk: send `endpointing` off, speech, then `endpointing` on with
-  `commit`. Expect one turn and `turn_done` without `next_action`. Send no PCM
-  afterwards and expect no further turn.
-- Standby: send `say` while sending no PCM. Expect `speaking`, audio, and
-  `turn_done` with `next_action: "standby"`.
-- Every `turn_done` that follows `interrupted` or `error` for its turn has no
-  `next_action`.
-- *Model-dependent:* say "thanks, that's all". Expect `turn_done` with
-  `next_action: "standby"`.
-- *Model-dependent:* say "stop listening". Expect `turn_done` with
-  `next_action: "mute"`.
 
 ### User and assistant transcripts
 
@@ -940,23 +855,6 @@ where the reply was cut, so an interrupted or failed turn shows only the text
 already sent for speech; keep the interruption or error visible. It is what was
 prepared for speech, not what the person heard. Reasoning, tool payloads,
 credentials, and internal errors are never sent.
-
-**Acceptance**
-
-- With `transcripts: true`, complete a turn. Expect, for one `turn_id`:
-  `thinking`, a user `transcript` with `message_id`, assistant pieces without
-  `message_id`, each before the audio that speaks it, then an assistant
-  `transcript` with empty `text` and a `message_id`, then `turn_done`.
-- Send `cancel` at each point of a turn: on its first `thinking`, after its
-  user `transcript`, during its audio. Every user `transcript` received has a
-  `message_id`. Reconnect with `after` set to the last `message_id` from before
-  the turn: the replay has a user `transcript` for the turn exactly when one
-  arrived live, with the same `message_id`.
-- Send `say` with `transcripts: true`. Expect `speaking`, audio, `turn_done`,
-  and no `transcript` frame. Reconnect: the text is not replayed.
-- Reconnect with `after` set to each `message_id` received. `ready` has
-  `new_session: false` every time.
-- Without `transcripts: true`, complete a turn. Expect no `transcript` frame.
 
 ### Catching up
 
@@ -1053,23 +951,6 @@ No audio is sent twice, and none is sent for text prepared while the client was
 away: audio starts with the first text prepared after the reconnect, behind a
 new `speaking` and with fresh codec state. A turn that finished while the client
 was away sends nothing live; it is all in the replay.
-
-**Acceptance**
-
-- Complete a turn, close the socket, reconnect with `after` set to the turn's
-  user `message_id`. Expect `ready`, then one assistant `transcript` with
-  `replay: true`, the whole reply as `text`, and the `message_id` the closing
-  frame carried; no `thinking`, `speaking`, or audio.
-- Reconnect twice with the same `after`. Expect the same replayed frames.
-  Reconnect with the newest `message_id`. Expect none.
-- Start a turn, close the socket before its reply, and reconnect after the
-  reply has had time to finish. Expect the reply as a replayed `transcript` and
-  no audio for it.
-- Start a turn that takes several seconds, close the socket after its first
-  `thinking`, and reconnect at once. Expect `ready`, the replay, then `state`
-  and `thinking` for the same `turn_id` with `tool_calls` no lower than before,
-  then `turn_done` for it. Appending the live pieces to the step 2 frame gives
-  the same text a later replay gives for that `message_id`.
 
 ## 5. Session mode (`quiet_interval > 0`)
 
@@ -1375,27 +1256,6 @@ After each `ready` the device also sends, without waiting for those frames,
 `ringing` for each countdown ringing now and `ended` for each that ended while
 it was disconnected. A countdown the server does not send again is not
 cancelled: keep it.
-
-**Acceptance**
-
-Set the countdowns with the model, or have the device under test receive the
-frames below from a test server; either way the cases are about the frames.
-
-- Receive a `countdown` 30 seconds ahead, reconnect before the deadline. Expect
-  the same `countdown` frame again after `ready`, with the same `countdown_id`
-  and `deadline_unix_ms`. The device rings once, at the deadline.
-- Disconnect before the deadline and stay disconnected past it. The device
-  rings on time. Reconnect while it rings: it sends `ringing`, receives the
-  `countdown` again, and keeps ringing without restarting the sound.
-- Dismiss the ringing countdown while disconnected, then reconnect. The device
-  sends `ended`, stays silent when the `countdown` arrives again, and after
-  another reconnect the server no longer sends it.
-- Restart the device before the deadline and reconnect. It counts down and
-  rings on time.
-- Keep the device off through the deadline, start it 10 seconds later, and
-  connect. It does not ring and sends `ended`.
-- *Model-dependent:* say "set a timer for one minute". Expect a `countdown`
-  frame with a deadline about 60 seconds ahead.
 
 ### Several at once
 

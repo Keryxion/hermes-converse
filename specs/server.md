@@ -459,11 +459,20 @@ text instead of travelling with it: the user frame is sent after the agent turn
 starts, and the assistant's ID comes in a closing frame with empty text.
 
 Never send a user `transcript` without its `message_id`. Send it when Hermes
-has stored the message, with the stored message's text, which includes any
-earlier request carried into it. When a turn is cancelled or interrupted around
-the handover, settle the turn first, then look: send the frame before
-`interrupted` if the message is there, and no frame if it is not. If Hermes's
-messages cannot be read, send no user `transcript`.
+has stored the message, with the stored message's words, which include any
+earlier request carried into it. Look the message up by the turn's own
+`turn_id`, which is its platform message id, never by whichever turn is
+running. When a turn is cancelled or interrupted around the handover, settle
+the turn first, then look: send the frame before `interrupted` if the message
+is there, and no frame if it is not. If Hermes's messages cannot be read, send
+no user `transcript`.
+
+Words that arrive while a run is going are stored differently: Hermes puts the
+message's origin, a line of JSON that carries its id, ahead of the words, gives
+the row no platform message id, and wraps a redirected run's copy in its steer
+marker. Read the id from the origin, and send and replay the words alone. With
+Hermes's `privacy.redact_pii` the origin's id is hashed, so such a message is
+not found and has no transcript.
 
 Text that is not a Hermes message gets no `transcript` frame of either kind:
 `say`, and the spoken approval summary. A server-started reply is a Hermes
