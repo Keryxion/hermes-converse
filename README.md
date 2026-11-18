@@ -77,6 +77,7 @@ A non-wake client may stream after `ready`. The server answers:
 | `error` | the turn failed (the message is spoken-safe text) |
 | `turn_done` | the reply is fully sent; optional `next_action: "standby"` ends the exchange after drain, `"mute"` mutes the device at once |
 | `quiet` | session mode: the stream has been silent for another `quiet_interval` seconds |
+| `do_not_disturb` | whether this device is in Do Not Disturb, after every `ready` and when the assistant changes it ([client spec section 12](specs/client.md#12-do-not-disturb)) |
 | `client_diagnostics` | requests a fresh snapshot of the client's installed version, build, and diagnostic state; reply with the same `request_id` ([contract](specs/client.md#client-diagnostics)) |
 | `set_wake_word` | switch to this wake phrase and its models, then answer `wake_word_set` ([contract](specs/client.md#the-wake-word)) |
 
@@ -134,6 +135,11 @@ See [client spec section 9](specs/client.md#9-conversation-output-without-user-i
 A countdown is a timer that ends with a tone on a device; see
 [client spec section 10](specs/client.md#10-countdowns). Spoken reminders come from a scheduler
 plugin such as Cadence and play as ordinary server-started turns.
+
+Do Not Disturb is a per-device setting, turned on and off by the device's `do_not_disturb` frame or
+by asking the assistant. While it is on, server-started turns run but nothing they produce is
+spoken; a request by wake word is still answered and countdowns still ring. See
+[client spec section 12](specs/client.md#12-do-not-disturb).
 
 ## Editing voice instructions
 
@@ -327,7 +333,7 @@ API-server client.
 | `synth.py` | one `text → int16 PCM` seam over streaming or one-shot TTS, plus resampling |
 | `speech.py` | the only module that imports Hermes core speech helpers |
 | `settings.py` | the settings schema |
-| `voice_tools.py` | the `speak_this`, `play_tone`, `standby`, `mute`, approved `command`, `client_diagnostics`, and `set_wake_word` agent tools |
+| `voice_tools.py` | the `speak_this`, `play_tone`, `standby`, `mute`, approved `command`, `client_diagnostics`, `set_wake_word`, and `do_not_disturb` agent tools |
 | `wake_words.py` | wake-word dictionaries, the verified model cache behind `GET /v1/audio/wake/<slug>/<file>`, and live switches |
 | `client_diagnostics.py` | fresh diagnostic requests and responses on one client socket |
 | `named.py` | named-device routing records and public Hermes conversation lookup/continuation |
