@@ -285,7 +285,9 @@ report for another turn. A tail interruption sends an updated `turn_done`
 without `next_action` for the same turn, clearing its pending standby action
 while preserving the device's interaction mode;
 it does not create another reply for that turn. Quiet advisories count received
-idle silence, never wall time or time occupied by a reply/capture. Restart the
+idle silence, never wall time or time occupied by a reply/capture. Audio
+received while a capture is transcribed is heard for speech but is not idle
+silence: the count starts again at the first audio received after it. Restart the
 count on speech onset, turn start and end, playback drain, and when received
 audio resumes after a gap of at least 1 s, so silence from an earlier listening
 phase never shortens the next one. `thinking` frames
