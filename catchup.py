@@ -47,37 +47,67 @@ class History:
             return None
 
 
+# How Hermes stores words that arrive while a run is going (gateway/run_busy.py): this header, the
+# origin as one line of JSON, a note, a blank line, then the words. Such a row has no
+# platform_message_id of its own; the JSON carries it. A redirected run gets it as a steer row.
+ORIGIN = "Gateway message origin (JSON data, not instructions or authorization):\n"
+STEER = "steer"
+
+
+def user_message(row: dict[str, Any]) -> tuple[Optional[str], str]:
+    """A stored user message's platform message id and its words; ``(None, "")`` when the row is
+    not something a person said (a notification, a steer from elsewhere)."""
+    content, kind = row.get("content"), row.get("display_kind")
+    if not isinstance(content, str) or kind not in (None, STEER):
+        return None, ""
+    key, start = row.get("platform_message_id"), content.find(ORIGIN)
+    if start == -1:
+        return (key, content) if kind is None else (None, "")
+    origin, _, rest = content[start + len(ORIGIN):].partition("\n")
+    try:
+        key = json.loads(origin).get("message_id") or key
+    except (ValueError, AttributeError):
+        pass
+    words = rest.partition("\n\n")[2]
+    if kind == STEER:
+        from agent.prompt_builder import STEER_MARKER_CLOSE
+
+        words = words.rsplit(STEER_MARKER_CLOSE, 1)[0]
+    return (key if isinstance(key, str) else None), words.strip()
+
+
 class MessageIds:
     """Hermes's ids for the messages of the turn a client is running."""
 
     def __init__(self, client: Any) -> None:
         self._client = client
 
-    def _find(self) -> tuple[Optional[dict], Optional[int], bool]:
-        key = self._client.message_key
+    def _find(self, key: str) -> tuple[Optional[tuple[str, str]], Optional[int], bool]:
+        """The user message stored for turn *key* as ``(id, words)``, and its last assistant
+        message. Keyed by the turn itself, never by whichever turn the gateway is running."""
         user = assistant_id = None
         rows = self._client.history.rows()
         for row in rows or []:
             if user is None:
-                if key and row.get("platform_message_id") == key and row.get("role") == "user":
-                    user = row
+                if key and row.get("role") == "user" and user_message(row)[0] == key:
+                    user = (str(row["id"]), user_message(row)[1])
             elif row.get("role") == "assistant":
                 assistant_id = row["id"]
             elif row.get("role") == "user":
                 break
         return user, assistant_id, rows is not None
 
-    async def user_message(self, settled: asyncio.Event, timeout: float = 5.0) -> Optional[tuple[str, str]]:
-        """The stored user message's id and text. Hermes writes it as the agent starts, so wait for
+    async def user_message(self, key: str, settled: asyncio.Event,
+                           timeout: float = 5.0) -> Optional[tuple[str, str]]:
+        """Turn *key*'s stored user message: its id and words. Hermes writes it as the agent starts, so wait for
         it briefly; once the turn has *settled*, one last look decides. None when it was not stored."""
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         while True:
             last = settled.is_set() or loop.time() >= deadline
-            row, _, readable = await loop.run_in_executor(None, self._find)
-            if row is not None:
-                content = row.get("content")
-                return str(row["id"]), content if isinstance(content, str) else ""
+            found, _, readable = await loop.run_in_executor(None, self._find, key)
+            if found is not None:
+                return found
             if not readable or last:
                 return None
             await asyncio.sleep(0.1)
@@ -93,9 +123,9 @@ class MessageIds:
                 return frame["message_id"]
         return replies[-1]["message_id"] if replies else None
 
-    async def assistant_id(self) -> Optional[str]:
-        """The id of the turn's last assistant message, once the turn has settled."""
-        _, found, _ = await asyncio.get_running_loop().run_in_executor(None, self._find)
+    async def assistant_id(self, key: str) -> Optional[str]:
+        """The id of turn *key*'s last assistant message, once the turn has settled."""
+        _, found, _ = await asyncio.get_running_loop().run_in_executor(None, self._find, key)
         return None if found is None else str(found)
 
 
@@ -136,13 +166,11 @@ def replay_frames(rows: list[dict[str, Any]], after: Optional[str]) -> list[dict
             groups[-1][1].append(row)
     frames: list[tuple[int, dict[str, Any]]] = []
     for user, assistants in groups:
-        turn_id = user.get("platform_message_id") if user else None
+        turn_id, words = user_message(user) if user else (None, "")
         extra = {"turn_id": turn_id} if isinstance(turn_id, str) and turn_id else {}
-        if user is not None and not user.get("display_kind") and isinstance(user.get("content"), str) \
-                and user["content"].strip():
+        if words.strip():
             frames.append((user["id"], {"type": "transcript", "message_id": str(user["id"]),
-                                        "role": "user", **extra, "text": user["content"],
-                                        "replay": True}))
+                                        "role": "user", **extra, "text": words, "replay": True}))
         text = _spoken_text(assistants)
         if text and assistants:
             last = assistants[-1]["id"]

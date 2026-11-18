@@ -717,10 +717,10 @@ class _Ids:
     def __init__(self, stored=True):
         self.stored = stored
 
-    async def user_message(self, settled, timeout=5.0):
+    async def user_message(self, key, settled, timeout=5.0):
         return ("m-1", "") if self.stored else None
 
-    async def assistant_id(self):
+    async def assistant_id(self, key):
         return "m-2"
 
     async def output_id(self, text):

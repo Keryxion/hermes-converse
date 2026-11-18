@@ -1497,8 +1497,19 @@ async def drive_converse_turns(
                 await notify_tail_barge(turn_id)
             except Exception:
                 logger.debug("tail interrupt delivery failed", exc_info=True)
-        loop.call_soon_threadsafe(lambda: asyncio.create_task(notify()))
+        def start():
+            task = asyncio.create_task(notify())
+            tail_notices.add(task)
+            task.add_done_callback(tail_notices.discard)
+        loop.call_soon_threadsafe(start)
     session.on_tail_barge = tail_barge
+    tail_notices: set[asyncio.Task] = set()
+
+    async def old_turn_closed() -> None:
+        """A reply cut while it played gets its `interrupted` and `turn_done` before the next
+        turn's first frame."""
+        if tail_notices:
+            await asyncio.gather(*tail_notices)
     deferred_outputs = deque()
     unheard: list[ConversationOutput] = []  # spoken before the next request (or once capture settles)
     unsubmitted = []
@@ -1559,11 +1570,13 @@ async def drive_converse_turns(
             if session.capture_pending():
                 (unheard if item.unheard else deferred_outputs).append(item)
                 continue
+            await old_turn_closed()
             await speak_output(item)
             continue
         transcript = item
         if not transcript:
             continue
+        await old_turn_closed()
         await speak_unheard()
         turn_id = getattr(item, "turn_id", None) or uuid.uuid4().hex
         tt = start_turn(recorder=getattr(item, "recorder", None), turn_id=turn_id,
@@ -1614,7 +1627,7 @@ async def _send_user_transcript(d: _Driver, turn: _Turn) -> None:
         await asyncio.sleep(0.02)
     if not turn.agent_started:
         return
-    found = await d.message_ids.user_message(turn.settled)
+    found = await d.message_ids.user_message(turn.turn_id, turn.settled)
     if found is not None:
         turn.user_id, text = found
         await d.send_json({"type": "transcript", "message_id": turn.user_id, "role": "user",
@@ -1734,7 +1747,7 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
                        else turn.output.next_action or "standby")
     if d.message_ids is not None and turn.shown and completed:
         # A server-started reply is a message too: find it by what it said.
-        turn.assistant_id = await (d.message_ids.assistant_id() if turn.agent_started
+        turn.assistant_id = await (d.message_ids.assistant_id(turn.turn_id) if turn.agent_started
                                    else d.message_ids.output_id(" ".join(turn.spoken_parts)))
     if d.transcripts and turn.shown and turn.assistant_id is not None:
         # The reply went out a piece at a time before its audio; this completes it.

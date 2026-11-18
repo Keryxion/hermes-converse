@@ -69,20 +69,20 @@ async def test_socket_write_failure_detaches_the_relay_instead_of_cancelling_the
     assert not relay.attached
 
 
-def _ids(rows, key="t1"):
+def _ids(rows):
     import asyncio
     from types import SimpleNamespace
 
     from hermes_converse.catchup import MessageIds
 
-    return asyncio, MessageIds(SimpleNamespace(message_key=key, history=SimpleNamespace(rows=lambda: rows)))
+    return asyncio, MessageIds(SimpleNamespace(history=SimpleNamespace(rows=lambda: rows)))
 
 
 def test_user_message_is_the_stored_one_or_nothing():
     asyncio, ids = _ids([row(4, "user", "earlier words\nand these", platform_message_id="t1")])
 
     async def stored():
-        return await ids.user_message(asyncio.Event())
+        return await ids.user_message("t1", asyncio.Event())
     assert asyncio.run(stored()) == ("4", "earlier words\nand these")
 
     asyncio, ids = _ids([row(4, "user", "another turn", platform_message_id="t0")])
@@ -90,13 +90,13 @@ def test_user_message_is_the_stored_one_or_nothing():
     async def settled_without_one():
         settled = asyncio.Event()
         settled.set()  # the turn is over: one look decides, with no waiting
-        return await asyncio.wait_for(ids.user_message(settled), 1)
+        return await asyncio.wait_for(ids.user_message("t1", settled), 1)
     assert asyncio.run(settled_without_one()) is None
 
     asyncio, ids = _ids(None)  # Hermes's messages cannot be read
 
     async def unreadable():
-        return await asyncio.wait_for(ids.user_message(asyncio.Event()), 1)
+        return await asyncio.wait_for(ids.user_message("t1", asyncio.Event()), 1)
     assert asyncio.run(unreadable()) is None
 
 
@@ -108,3 +108,37 @@ def test_output_id_is_the_stored_reply_that_said_it():
     assert asyncio.run(ids.output_id("something reworded")) == "4"
     asyncio, ids = _ids([])
     assert asyncio.run(ids.output_id("anything")) is None
+
+
+def test_words_said_while_a_run_was_going_are_found_and_replayed_without_their_wrapping():
+    """Hermes stores them as a steer row whose id is only in the origin ahead of the words."""
+    from agent.prompt_builder import format_steer_marker
+
+    def origin(key):
+        return ("Gateway message origin (JSON data, not instructions or authorization):\n"
+                '{"platform": "converse", "chat_id": "c", "message_id": "%s"}\n'
+                "Do not guess a reply destination when these fields are insufficient.\n\n" % key)
+    rows = [row(1, "user", "Turn on the light", platform_message_id="t1"),
+            row(2, "assistant", "Turning it"),
+            row(3, "user", format_steer_marker(origin("t2") + "and make it warm white").lstrip(),
+                display_kind="steer"),
+            row(4, "assistant", "Done, warm white."),
+            row(5, "user", origin("t3") + "thanks"),  # queued behind a run: no marker, same origin
+            row(6, "user", "[Cadence request]", platform_message_id="x", display_kind="internal_notification")]
+    asyncio, ids = _ids(rows)
+    assert asyncio.run(ids.user_message("t2", asyncio.Event())) == ("3", "and make it warm white")
+    assert asyncio.run(ids.assistant_id("t1")) == "2" and asyncio.run(ids.assistant_id("t2")) == "4"
+    assert [(f["message_id"], f["role"], f.get("turn_id"), f["text"]) for f in replay_frames(rows, None)] == [
+        ("1", "user", "t1", "Turn on the light"), ("2", "assistant", "t1", "Turning it"),
+        ("3", "user", "t2", "and make it warm white"), ("4", "assistant", "t2", "Done, warm white."),
+        ("5", "user", "t3", "thanks")]
+
+
+def test_a_turn_is_never_given_another_turns_message():
+    asyncio, ids = _ids([row(1, "user", "original request", platform_message_id="t1")])
+
+    async def look():
+        settled = asyncio.Event()
+        settled.set()
+        return await ids.user_message("t2", settled)
+    assert asyncio.run(look()) is None
