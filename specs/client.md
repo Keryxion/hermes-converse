@@ -459,6 +459,8 @@ wake word (section 10) then, it sends:
 `cancel` wake word it is `"cancel"`. The device reports whatever it heard: it
 does not wake, claim or cancel for it. `heard` is neither `cancel` nor barge-in:
 the server records it, and the turn carries on unchanged. No frame answers it.
+The server may hold a turn against interruption by microphone audio; in such a
+turn `heard` is how the person's voice interrupts, and `interrupted` follows it.
 It is mostly for half-duplex devices, where the server cannot hear the person
 while a reply plays.
 
