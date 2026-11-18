@@ -571,9 +571,10 @@ class GatewayTurns:
 
     async def run_turn(self, *, text: str, on_delta: Callable[[str], None],
                        instructions: Optional[str] = None, model: Optional[str] = None,
-                       provider: Optional[str] = None) -> TurnResult:
+                       provider: Optional[str] = None, turn_id: Optional[str] = None) -> TurnResult:
         adapter = self._adapter
-        turn_id = uuid.uuid4().hex
+        # The client's turn id is the message's platform id, so replay names the turn as live did.
+        turn_id = turn_id or uuid.uuid4().hex
         event = MessageEvent(
             text=text, message_type=MessageType.TEXT, source=self._source, message_id=turn_id,
             channel_prompt=instructions,

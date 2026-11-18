@@ -81,10 +81,10 @@ stateDiagram-v2
     speaking --> standby: drained + next_action standby
     speaking --> standby: drained, PTT released, no next_action
     speaking --> listening: drained, state listening
-    thinking --> listening: interrupted, hands-free, audio discarded
-    speaking --> listening: interrupted, hands-free, audio discarded
-    thinking --> standby: interrupted, PTT released
-    speaking --> standby: interrupted, PTT released
+    thinking --> listening: interrupted by speech, audio discarded
+    speaking --> listening: interrupted by speech, audio discarded
+    thinking --> standby: cancelled, in standby
+    speaking --> standby: cancelled, in standby
     standby --> speaking: outbound reply
     connecting --> error: terminal failure
     listening --> reconnecting: transport lost
@@ -110,8 +110,9 @@ The frames named here are defined in [client.md](client.md).
 - Stay in listening after the user stops speaking, until a `state` of
   `thinking` arrives. No frame marks the end of speech.
 - A `thinking` frame keeps thinking alive. It never changes the state.
-- `interrupted` discards queued audio and preserves the interaction mode:
-  hands-free returns to listening; released PTT stays in standby. It is not an error.
+- `interrupted` discards queued audio. The state that follows is in the client
+  spec ("Handling `turn_done.next_action`"): speech that interrupted leads to
+  listening; the device's own `cancel` leaves it as it was. It is not an error.
 - A new state replaces the old one immediately and cancels its timers,
   including the 1.5 s denial timer.
 - Animation only reflects state. It never delays audio, grants a wake, or

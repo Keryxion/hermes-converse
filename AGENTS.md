@@ -31,5 +31,9 @@
   request until it is decided; do not write "proposed" sections into a spec.
 - A spec-only request authorizes documentation changes, not implementation or deployment.
 - Keep related PRs consistent, but do not add unrelated features while editing them.
+- The Arya conformance suite pinned in `.crow/arya-test.yaml` checks
+  `specs/client.md` byte for byte. After changing the client spec, update the
+  suite's assertions and snapshot and move the pin, so a deployment never runs
+  a suite written for the old contract.
 - Do not add new metaphors or names for an existing thing. Keep the spec's word:
   an alarm or a timer is a countdown, in prose and in frame names.

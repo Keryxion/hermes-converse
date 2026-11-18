@@ -515,9 +515,14 @@ def test_split_sample_resume_requires_a_full_new_quiet_interval(monkeypatch):
 
 def test_parse_start_config_defaults_and_clamps():
     assert parse_start_config({}) == (16000, 24000, 0.0)
-    assert parse_start_config({"input_rate": 100, "output_rate": "99000",
-                               "quiet_interval": "15"}) == (8000, 48000, 15.0)
-    assert parse_start_config({"quiet_interval": -3})[2] == 0.0
+    assert parse_start_config({"input_rate": 100, "output_rate": 99000,
+                               "quiet_interval": 15}) == (8000, 48000, 15.0)
+    assert parse_start_config({"quiet_interval": 99999})[2] == 3600.0
+    # Anything that is not an integer rate, or not a positive number of seconds, is the default.
+    for bad in ("16000", 16000.0, True, None, [16000]):
+        assert parse_start_config({"input_rate": bad, "output_rate": bad}) == (16000, 24000, 0.0)
+    for bad in (-3, 0, "15", True, None, float("nan")):
+        assert parse_start_config({"quiet_interval": bad})[2] == 0.0
 
 
 def test_voice_system_prompt_names_the_assistant():
@@ -706,6 +711,22 @@ def _run_driver(session, history, replies, quiet_interval=0.0, interrupt_turn=No
     return sent
 
 
+class _Ids:
+    """Hermes's ids for a turn's messages, as the store would give them."""
+
+    def __init__(self, stored=True):
+        self.stored = stored
+
+    async def user_message(self, key, settled, timeout=5.0):
+        return ("m-1", "") if self.stored else None
+
+    async def assistant_id(self, key):
+        return "m-2"
+
+    async def output_id(self, text):
+        return "m-3"
+
+
 def _types(sent):
     return [f.get("type") if isinstance(f, dict) else "bytes" for f in sent]
 
@@ -767,13 +788,15 @@ def test_driver_no_interrupt_on_normal_completion():
 def test_drive_converse_turns_control_frame_ordering():
     session = _FakeConverseSession(["hello there."])
     history: list = []
-    sent = _run_driver(session, history, ["Hi back."], transcripts=True)
-    # The assistant's text goes out ahead of the audio that speaks it.
-    assert _types(sent) == ["transcript", "state", "thinking", "transcript", "state", "speaking", "bytes",
-                           "turn_done"]
-    assert sent[0]["role"] == "user" and sent[0]["text"] == "hello there."
+    sent = _run_driver(session, history, ["Hi back."], transcripts=True, message_ids=_Ids())
+    # The user's text follows `thinking`, with its id; the assistant's goes out ahead of the audio
+    # that speaks it, and a closing frame carries the reply's id.
+    assert _types(sent) == ["state", "thinking", "transcript", "transcript", "state", "speaking", "bytes",
+                           "transcript", "turn_done"]
+    assert (sent[2]["role"], sent[2]["text"], sent[2]["message_id"]) == ("user", "hello there.", "m-1")
     assert sent[6] == ("bytes", b"Hi back.")
-    assert sent[3]["role"] == "assistant" and sent[3]["text"] == "Hi back."
+    assert sent[3]["role"] == "assistant" and sent[3]["text"] == "Hi back." and "message_id" not in sent[3]
+    assert (sent[7]["text"], sent[7]["message_id"]) == ("", "m-2")
     assert [f["state"] for f in sent if isinstance(f, dict) and f["type"] == "state"] == ["thinking", "speaking"]
     turn_ids = {f["turn_id"] for f in sent if isinstance(f, dict) and "turn_id" in f}
     assert len(turn_ids) == 1 and sent[0]["turn_id"] == sent[-1]["turn_id"]
@@ -900,10 +923,10 @@ def test_stt_and_tts_threads_run_in_the_spawners_context(monkeypatch):
 def test_drive_converse_turns_flushes_queue_on_signoff():
     session = _FakeConverseSession(["are we done?", "a queued leftover"])
     sent = _run_driver(session, [], ["All set."], quiet_interval=1.0, standby=lambda: True,
-                       transcripts=True)
+                       transcripts=True, message_ids=_Ids())
     transcripts = [(f["role"], f["text"]) for f in sent
                    if isinstance(f, dict) and f.get("type") == "transcript"]
-    assert transcripts == [("user", "are we done?"), ("assistant", "All set.")]
+    assert transcripts == [("user", "are we done?"), ("assistant", "All set."), ("assistant", "")]
     turn_dones = [f for f in sent if isinstance(f, dict) and f.get("type") == "turn_done"]
     assert len(turn_dones) == 1 and turn_dones[0]["next_action"] == "standby"
 
@@ -1068,15 +1091,12 @@ def test_session_idle_cancel_does_not_poison_next_capture():
     assert session.transcripts.get_nowait() == "a fresh transcript"
 
 
-def test_driver_cancel_turn_emits_frames():
+def test_capture_cancelled_with_no_turn_sends_nothing():
     session = _FakeConverseSession([])
     session.transcripts = AsyncQueue()
-    session.transcripts.put(cl.CancelTurn("turn-9"))
+    session.transcripts.put(cl.CancelTurn(None))
     session.transcripts.put(None)
-    sent = _run_driver(session, [], [], quiet_interval=1.0)
-    assert _types(sent) == ["interrupted", "turn_done"]
-    assert sent[0]["turn_id"] == "turn-9" and sent[1]["turn_id"] == "turn-9"
-    assert "next_action" not in _turn_done_frame(sent)
+    assert _run_driver(session, [], [], quiet_interval=1.0) == []
     assert session.turns_begun == 0 and session.turns_ended == 0
 
 
@@ -1239,16 +1259,20 @@ async def test_continuation_and_later_fresh_input_are_both_preserved(monkeypatch
 
 
 
-def test_cancel_at_transcript_boundary_never_starts_the_agent():
+def test_cancel_before_the_agent_starts_sends_no_user_transcript():
     session = ConverseSession(np)
     session.transcripts.put('request')
     session.transcripts.put(None)
     calls, sent = [], []
+    reserve = session.reserve_turn
+
+    def reserve_then_cancel(turn_id, *args, **kwargs):
+        reserve(turn_id, *args, **kwargs)
+        assert session.cancel(turn_id)
+    session.reserve_turn = reserve_then_cancel
 
     async def send(frame):
         sent.append(frame)
-        if isinstance(frame, dict) and frame.get('type') == 'transcript':
-            assert session.cancel(frame['turn_id'])
 
     async def run(*args, **kwargs):
         calls.append(True)
@@ -1257,11 +1281,12 @@ def test_cancel_at_transcript_boundary_never_starts_the_agent():
     async def scenario():
         await drive_converse_turns(session=session, synth=_EchoSynth(), cap=4000,
             loop=asyncio.get_running_loop(), send_json=send, send_bytes=send, run_turn=run, history=[],
-            transcripts=True)
+            transcripts=True, message_ids=_Ids())
 
     asyncio.run(scenario())
     assert calls == []
-    assert _types(sent) == ['transcript', 'interrupted', 'turn_done']
+    # The request never became a message, so nothing names it.
+    assert _types(sent) == ['interrupted', 'turn_done']
     assert "next_action" not in _turn_done_frame(sent)
 
 
@@ -1311,19 +1336,35 @@ def test_voice_transcripts_are_opt_in(monkeypatch, enabled):
             return []
     monkeypatch.setattr(speech, "sentence_chunker", Chunker)
     monkeypatch.setattr("hermes_converse.loop.split_text_for_tts_stream", lambda text, cap: [text])
-    sent = _run_driver(_FakeConverseSession(["Hello"]), [], ["Hello there."], transcripts=enabled)
+    sent = _run_driver(_FakeConverseSession(["Hello"]), [], ["Hello there."], transcripts=enabled,
+                       message_ids=_Ids())
     records = [frame for frame in sent if isinstance(frame, dict) and frame.get("type") == "transcript"]
     if enabled:
-        assert [(record["role"], record["text"]) for record in records] == [("user", "Hello"), ("assistant", "Hello there.")]
+        assert [(record["role"], record["text"], record.get("message_id")) for record in records] == [
+            ("user", "Hello", "m-1"), ("assistant", "Hello there.", None), ("assistant", "", "m-2")]
         assert records[0]["turn_id"] == records[1]["turn_id"]
         assert sent.index(records[1]) < next(i for i, frame in enumerate(sent) if isinstance(frame, dict) and frame.get("type") == "turn_done")
     else:
         assert records == []
     assert "bytes" in _types(sent)
     from hermes_converse.loop import ConversationOutput
-    outbound = _run_driver(_FakeConverseSession([ConversationOutput("Reminder.", "event-1")]), [], [], transcripts=enabled)
-    outbound_text = [f for f in outbound if isinstance(f, dict) and f.get("type") == "transcript"]
-    assert [(f["role"], f["text"]) for f in outbound_text] == ([("assistant", "Reminder.")] if enabled else [])
+    def texts(output):
+        frames = _run_driver(_FakeConverseSession([output]), [], [], transcripts=enabled, message_ids=_Ids())
+        return [(f["text"], f.get("message_id")) for f in frames
+                if isinstance(f, dict) and f.get("type") == "transcript"]
+    # A server-started reply is a message: its pieces, then its id. `say` is not, and sends neither.
+    assert texts(ConversationOutput("Reminder.", "event-1")) == (
+        [("Reminder.", None), ("", "m-3")] if enabled else [])
+    assert texts(ConversationOutput("Help text.", "say-1", transient=True)) == []
+
+
+def test_user_transcript_is_never_sent_without_a_stored_message():
+    sent = _run_driver(_FakeConverseSession(["Hello"]), [], ["Hi."], transcripts=True,
+                       message_ids=_Ids(stored=False))
+    assert [f["role"] for f in sent if isinstance(f, dict) and f.get("type") == "transcript"] == [
+        "assistant", "assistant"]
+    sent = _run_driver(_FakeConverseSession(["Hello"]), [], ["Hi."], transcripts=True)  # no store at all
+    assert all(f.get("role") != "user" for f in sent if isinstance(f, dict))
 
 
 def _timing_lines(caplog):

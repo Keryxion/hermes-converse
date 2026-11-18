@@ -252,7 +252,12 @@ class ConverseRoute:
                                             recipient_id=device.recipient_id, device_name=device.device_name)
                 turns = GatewayTurns(gateway, source, await gateway.bind(source))
                 input_rate, output_rate, quiet_interval = parse_start_config(frame)
-                audio = AudioTransport(audio_format(frame), input_rate, output_rate)
+                try:
+                    audio = AudioTransport(audio_format(frame), input_rate, output_rate)
+                except OSError:
+                    # A valid format this server cannot set up (Opus without libopus).
+                    logger.exception('converse: cannot set up %s audio', audio_format(frame))
+                    raise NamedError('audio_unavailable', 4503) from None
                 synth, cap, session = await asyncio.to_thread(
                     _resolve_session, settings, input_rate, output_rate, quiet_interval)
                 connection.session = session
@@ -321,14 +326,20 @@ class ConverseRoute:
         ready["server_send_unix_ms"] = int(time.time() * 1000)
         await ws.send_json(ready)
         # Catch the client up before anything live, then hand it any turn still running.
-        relay, adopted = Relay(ws, audio=audio, source_rate=output_rate), None
+        relay = Relay(ws, audio=audio, source_rate=output_rate)
+        adopted = self.hub.detached.pop(attachment.conversation_id, None)
+        running = adopted.client.message_key if adopted is not None and not adopted.client.settled else None
         if rows is not None:
             for replay in replay_frames(rows or [], after if isinstance(after, str) else None):
-                await ws.send_json(replay)
-        adopted = self.hub.detached.pop(attachment.conversation_id, None)
+                # The running turn's reply so far comes from the turn itself, below.
+                if not (running and replay["role"] == "assistant" and replay.get("turn_id") == running):
+                    await ws.send_json(replay)
         if adopted is not None:
             client = adopted.client
             adopted.relay.attach(ws, audio=audio)
+            resume = (adopted.control or {}).get("resume")
+            if resume is not None:
+                await resume(transcripts)
         device_name = device.device_name
         session.device_name = device_name
         if hasattr(session, "attach_device"):
@@ -570,11 +581,11 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                     if frame.get("type") == "client_diagnostics":
                         diagnostics.respond(frame, msg.data)
                         continue
-                    if frame.get("stop"):
+                    if frame.get("stop") is True:
                         explicit_stop = True
                         _mark_closed(ws, "client")
                         break
-                    if frame.get("commit"):
+                    if frame.get("commit") is True:
                         session.commit()
                     if frame.get("type") == "endpointing":
                         on = frame.get("on")
@@ -605,7 +616,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                             # Fixed text from the device itself (a spoken help reminder): no agent
                             # turn and no history. The client returns to its wake word afterwards.
                             session.transcripts.put(ConversationOutput(
-                                text, f"say-{uuid.uuid4().hex}", next_action="standby"))
+                                text, f"say-{uuid.uuid4().hex}", next_action="standby", transient=True))
                     if frame.get("type") == "commands":
                         listing = getattr(client, "commands", None)  # reads config.yaml: off the loop
                         await ws.send_json({"type": "commands", "commands": await asyncio.to_thread(listing)}
@@ -754,7 +765,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
         model, provider = selected_model  # Snapshot once; do not alter a turn already in flight.
         commands = await asyncio.to_thread(client.commands) if hasattr(client, "commands") else None
         result = await client.run_turn(
-            text=transcript, on_delta=on_delta,
+            text=transcript, on_delta=on_delta, turn_id=getattr(session, "_active_turn_id", None),
             instructions=voice_system_prompt(
                 name,
                 device_name=named_device.device_name, recipient_id=named_device.recipient_id, commands=commands),
@@ -783,9 +794,11 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
             turn_timeout=settings.turn_timeout, tail_fallback=settings.tail_fallback,
             max_tts_chars=settings.max_tts_chars,
             standby=lambda: client.standby, mute=lambda: client.mute, after_turn=_after_turn,
+            control=control,
         )
 
     detached = False
+    control: dict[str, Any] = {}
     pump = asyncio.ensure_future(_pump_client())
     driver = asyncio.ensure_future(_drive_turns())
     fence = asyncio.create_task(named_connection.replaced.wait())
@@ -828,7 +841,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                 await arbitrator.unregister(device_id)
         if detached and hub is not None and attachment is not None:
             relay.ws = None
-            entry = Detached(relay, client, session, driver)
+            entry = Detached(relay, client, session, driver, control)
             hub.detached[attachment.conversation_id] = entry
 
             def forget(finished: asyncio.Future) -> None:

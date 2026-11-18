@@ -11,6 +11,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from .loop import Aside
+
 logger = logging.getLogger(__name__)
 
 AUX_TIMEOUT = 20.0
@@ -217,9 +219,10 @@ class Approvals:
     def _speak(self, p: _Pending, text: str) -> None:
         turn = self._adapter._turns.get(p.chat_id)
         if turn is not None and turn.started and turn.outcome is None and not turn.stopped and not turn.detached:
-            turn.on_delta(text + "\n")  # the waiting turn says it, like speak_this
+            turn.on_delta(Aside(text + "\n"))  # the waiting turn says it; it is not part of the reply
         else:
-            self._hub.publish(p.chat_id, text, f"approval:{uuid.uuid4().hex}", expires_at=time.time() + SPEECH_TTL)
+            self._hub.publish(p.chat_id, text, f"approval:{uuid.uuid4().hex}", expires_at=time.time() + SPEECH_TTL,
+                              transient=True)  # a question, not a message of the conversation
 
     @staticmethod
     def _send(attachment: Any, frame: dict) -> None:
