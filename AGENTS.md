@@ -42,9 +42,14 @@
   request until it is decided; do not write "proposed" sections into a spec.
 - A spec-only request authorizes documentation changes, not implementation or deployment.
 - Keep related PRs consistent, but do not add unrelated features while editing them.
-- The Arya conformance suite pinned in `.crow/arya-test.yaml` checks
-  `specs/client.md` byte for byte. After changing the client spec, update the
-  suite's assertions and snapshot and move the pin, so a deployment never runs
-  a suite written for the old contract.
 - Do not add new metaphors or names for an existing thing. Keep the spec's word:
   an alarm or a timer is a countdown, in prose and in frame names.
+
+## Shared with other repos
+
+These files have copies or dependents in other Keryxion repositories; a change here also belongs there.
+
+- `specs/client.md`: arya-test keeps a byte-for-byte snapshot, pinned in `.crow/arya-test.yaml`, and arya-echo, arya-esp32, arya-ios and arya-macos implement it; a contract change that stops here fails the live suite and leaves the clients on the old protocol.
+- `specs/tones.md`, `specs/animations.md` and `specs/client_tracing.md` are implemented by the Arya clients: a change here is client work too.
+- `.github/workflows/alpha.yml` and `.crow/alpha.yaml` are the same deploy pipeline as Keryxion/cadence's: a deploy fix here is needed there.
+- `.github/CODEOWNERS` and `.github/workflows/{auto-assign,code-owner-approval,code-owner-review}.yml` are copied in arya-echo, arya-esp32, arya-ios, arya-macos, hermes-converse, keryxion.dev and wakeword-training: every repo runs the same review gate, so a fix left in one repo leaves the others on the old gate.
