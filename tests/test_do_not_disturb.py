@@ -78,12 +78,14 @@ class Rig:
         self.fake = ScriptedHermes()
         self.streamer = _FakeStreamer([b"\x01\x02"])
         self.wakes = 0
+        self.settings: dict = {}
 
     async def connect(self):
         """A fresh route and device store, as after a gateway restart. Returns the socket and the
         first frame after ``ready``."""
         _patch_speech(self.monkeypatch, self.streamer, transcript="what time is it")
-        self.harness = Harness(self.fake, device_store=DeviceStore(self.db), do_not_disturb_frames=True)
+        self.harness = Harness(self.fake, dict(self.settings), device_store=DeviceStore(self.db),
+                               do_not_disturb_frames=True)
         self.hub = self.fake.hub = self.harness.route.hub
         self.client = await self.harness.__aenter__()
         self.ws = await self.client.ws_connect("/v1/audio/converse")
@@ -352,6 +354,7 @@ async def test_a_countdown_rings_and_its_still_ringing_turn_is_silent(rig):
 async def test_a_server_started_turn_is_told_so_it_can_notify_another_way(rig):
     from hermes_converse.platform_adapter import DO_NOT_DISTURB_CONTEXT
 
+    rig.settings["do_not_disturb_grace_seconds"] = 0
     await rig.connect()
     await rig.device_sets(True)
     for frame in _speech_then_silence_pcm():  # the person's own turn is not told
@@ -363,6 +366,73 @@ async def test_a_server_started_turn_is_told_so_it_can_notify_another_way(rig):
     assert rig.fake.contexts == [None, {"context": DO_NOT_DISTURB_CONTEXT}, None]
     assert "another way" in DO_NOT_DISTURB_CONTEXT
     assert rig.harness.adapter.do_not_disturb_context(session_id="s", platform="telegram") is None
+
+
+async def _persons_turn(rig):
+    for frame in _speech_then_silence_pcm():
+        await rig.ws.send_bytes(frame)
+    await rig.spoken_turn()
+
+
+async def test_within_the_grace_after_the_persons_request_nothing_is_held(rig):
+    await rig.connect()
+    await rig.device_sets(True)
+    await _persons_turn(rig)
+    results = await rig.server_turn(("play_tone", {"tone": "confirm"}), reply="Your report is ready.")
+    assert results == [{"result": "ok"}] and rig.fake.contexts[-1] is None
+    frames, _ = await rig.frames_until_said(replies=1)
+    assert [f["type"] for f in frames] == ["tone", "speaking", "turn_done", "speaking", "turn_done"]
+    assert rig.streamer.requests[-2:] == ["Your report is ready.", "Marker."]
+
+
+async def test_the_grace_ends_after_its_seconds(rig, monkeypatch):
+    rig.settings["do_not_disturb_grace_seconds"] = 60
+    await rig.connect()
+    await rig.device_sets(True)
+    await _persons_turn(rig)
+    assert not rig.hub.do_not_disturb(rig.chat_id)
+    import time as clock
+    later = clock.monotonic() + 61
+    monkeypatch.setattr("hermes_converse.conversation.time.monotonic", lambda: later)
+    assert rig.hub.do_not_disturb(rig.chat_id)
+
+
+async def test_turning_it_on_ends_the_grace(rig):
+    await rig.connect()
+    await _persons_turn(rig)  # Do Not Disturb off: nothing to hold either way
+    await rig.device_sets(True)
+    assert rig.hub.do_not_disturb(rig.chat_id)
+    await rig.server_turn()
+    frames, _ = await rig.frames_until_said()
+    assert [f["type"] for f in frames] == ["speaking", "turn_done"] and rig.streamer.requests[-1] == "Marker."
+
+
+def test_a_request_that_turns_it_on_opens_no_grace(tmp_path):
+    """"Hey Arya, don't disturb me": the turn ends after the tool turned it on, and starts no grace."""
+    import time
+
+    hub = ConversationHub()
+    hub.devices = DeviceStore(tmp_path / "devices.db")
+    device = hub.devices.reserve("Arya", "Den Echo")
+    hub.attach("den", _Session(), "Arya", device.recipient_id)
+    started = time.monotonic()
+    hub.store_do_not_disturb(device.recipient_id, True)  # the tool, during the turn
+    hub.request_ended(device.recipient_id, started)
+    assert hub.do_not_disturb("den")
+    hub.request_ended(device.recipient_id, time.monotonic())  # the next request opens it
+    assert not hub.do_not_disturb("den")
+    hub.do_not_disturb_grace = 0
+    assert hub.do_not_disturb("den")
+    hub.devices.close()
+
+
+def test_the_grace_setting(tmp_path):
+    from hermes_converse.settings import load_settings
+
+    assert load_settings(lambda key, default=None: default).do_not_disturb_grace_seconds == 300
+    for raw, expected in ((90, 90), ("0", 0), (-5, 0), ("x", 300)):
+        assert load_settings(lambda key, default=None, raw=raw: raw if key == "do_not_disturb_grace_seconds"
+                             else default).do_not_disturb_grace_seconds == expected
 
 
 # ── tones and approvals, by who started the turn ──

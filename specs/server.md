@@ -998,8 +998,14 @@ in the device's conversation that calls the tool: with Cadence's `pulse`, an
 `at` wake for one night or a `cron` role for each end of a nightly window. The
 voice prompt tells the agent how.
 
-While it is on, a turn the server starts for that device (client spec,
-section 9) sends nothing to the device:
+It holds only what the server starts after a grace: `do_not_disturb_grace_seconds`
+(default 300; 0 for none) since the end of the person's last turn on that
+device, by wake word or Talk. Within the grace, nothing is held. Turning Do Not
+Disturb on, by frame or tool, ends the grace, including in the turn that turned
+it on. The grace is per device, in memory: it survives reconnects, not restarts.
+
+While it is on and the grace has passed, a turn the server starts for that
+device (client spec, section 9) sends nothing to the device:
 
 - Its reply or its `speak_this` text is not spoken. The reply stays in the
   conversation's history as usual, `send` reports success, and nothing is
@@ -1028,4 +1034,6 @@ it, the tool also with no device attached; a turn that calls `do_not_disturb`
 with `on: false` is spoken and one with `on: true` is not; an approval in a
 server-started turn is denied with nothing sent, and one in the person's turn is
 asked aloud; the agent is told in a server-started turn and not in the person's
-own; a client that never sends the frame is served as before.
+own; within the grace after the person's request nothing is held, the grace
+ends after its seconds, and turning Do Not Disturb on, also in a request, ends
+it; a client that never sends the frame is served as before.

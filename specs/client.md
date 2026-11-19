@@ -1480,7 +1480,9 @@ that connection ends. While disconnected, keep showing the last value. The
 device does not store the setting: after it starts, it shows off until the
 first frame. A device with no control for Do Not Disturb never sends the frame.
 
-While it is on:
+While it is on, and the person's last request on the device (a turn by wake
+word or Talk, such as stopping a timer by voice) ended more than the server's
+grace ago, five minutes by default:
 
 - Output the server starts for this device (section 9: reminders, still-ringing
   countdowns, other messages) is not sent: no frames and no audio. The replies
@@ -1498,5 +1500,8 @@ what the server sends, never what the device plays. A reply already playing, or
 already waiting behind the current exchange, when Do Not Disturb turns on plays
 to its end. A reconnect changes nothing: the setting follows `ready`, and a turn
 in flight carries on as section 4 describes.
+
+Within the grace, everything is sent as if Do Not Disturb were off. Turning Do
+Not Disturb on ends the grace.
 
 Do Not Disturb is not mute: the microphone and wake word work as usual.

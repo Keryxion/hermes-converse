@@ -112,3 +112,7 @@ config_schema:
     type: list
     default: [{repository: Keryxion/wakewords, ref: main}]
     description: "Ordered GitHub wake-word dictionaries, each {repository, ref}; ref defaults to main. The last one listing a phrase supplies it. [] uses only cached models."
+  do_not_disturb_grace_seconds:
+    type: number
+    default: 300
+    description: "Under Do Not Disturb, what the server starts (reminders, follow-ups, approvals) is still delivered for this long after the person's last request on the device. 0 holds it at once. Turning Do Not Disturb on ends the grace."
