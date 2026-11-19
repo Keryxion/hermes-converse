@@ -138,7 +138,8 @@ plugin such as Cadence and play as ordinary server-started turns.
 
 Do Not Disturb is a per-device setting, turned on and off by the device's `do_not_disturb` frame or
 by asking the assistant. While it is on, server-started turns run but nothing they produce is
-spoken; a request by wake word is still answered and countdowns still ring. See
+spoken, except within `do_not_disturb_grace_seconds` (five minutes) of the person's last request
+on the device; a request by wake word is still answered and countdowns still ring. See
 [client spec section 12](specs/client.md#12-do-not-disturb).
 
 ## Editing voice instructions
@@ -183,6 +184,7 @@ plugin settings form):
 | `wake_word` | `Hey Arya` | wake phrase for every named device |
 | `device_wake_words` | `{}` | wake phrase for particular devices by `device_name`; the `set_wake_word` voice tool writes it |
 | `wake_word_repositories` | `[{repository: Keryxion/wakewords, ref: main}]` | ordered GitHub wake-word dictionaries; the last one listing a phrase supplies it, and `[]` uses only cached models |
+| `do_not_disturb_grace_seconds` | `300` | under Do Not Disturb, what the server starts is still delivered for this long after the person's last request on the device; `0` holds it at once |
 
 STT and TTS come from your normal Hermes `stt.*` and `tts.*` configuration.
 

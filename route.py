@@ -589,6 +589,8 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                                     settings.countdown_ring_timeout_seconds, loop)
     if attachment is not None and getattr(hub, "gateway", None) is not None:
         hub.gateway.approvals.attached(attachment)  # a request still pending asks again
+    if hub is not None:
+        hub.do_not_disturb_grace = settings.do_not_disturb_grace_seconds
     default_model = (settings.model, settings.provider)
     selected_model = default_model
     wake_tasks: set[asyncio.Task] = set()
@@ -659,7 +661,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                     if (frame.get("type") == "do_not_disturb" and attachment is not None
                             and isinstance(frame.get("on"), bool)):
                         # The person's own toggle: kept for the device, never echoed back.
-                        await asyncio.to_thread(hub.devices.set_do_not_disturb,
+                        await asyncio.to_thread(hub.store_do_not_disturb,
                                                 attachment.recipient_id, frame["on"])
                     if frame.get("type") == "approval_response" and attachment is not None:
                         gateway = getattr(hub, "gateway", None)
@@ -829,12 +831,17 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
         after_reply = None
         model, provider = selected_model  # Snapshot once; do not alter a turn already in flight.
         commands = await asyncio.to_thread(client.commands) if hasattr(client, "commands") else None
-        result = await client.run_turn(
-            text=transcript, on_delta=on_delta, turn_id=getattr(session, "_active_turn_id", None),
-            instructions=voice_system_prompt(
-                guidance, name,
-                device_name=named_device.device_name, recipient_id=named_device.recipient_id, commands=commands),
-            model=model, provider=provider)
+        started = time.monotonic()
+        try:
+            result = await client.run_turn(
+                text=transcript, on_delta=on_delta, turn_id=getattr(session, "_active_turn_id", None),
+                instructions=voice_system_prompt(
+                    guidance, name,
+                    device_name=named_device.device_name, recipient_id=named_device.recipient_id, commands=commands),
+                model=model, provider=provider)
+        finally:
+            if hub is not None and attachment is not None:
+                hub.request_ended(attachment.recipient_id, started)  # Do Not Disturb's grace starts now
         after_reply = getattr(result, "after_playback", None)
         return result.reply, result.error
 
