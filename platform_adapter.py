@@ -52,6 +52,11 @@ PLATFORM = "converse"
 OUTPUT_TTL = 60.0
 SILENT = "[SILENT]"
 COMMAND_TIMEOUT = 15.0
+DO_NOT_DISTURB_CONTEXT = (
+    "[This voice device is in Do Not Disturb, and nobody spoke to you for this turn. Nothing you "
+    "say, speak_this or play_tone in it reaches the device, and approvals are declined. Your reply "
+    "stays in the conversation. If the person should still hear about this now, notify them another "
+    "way that your tools provide; otherwise finish quietly.]")
 
 
 @dataclass
@@ -308,7 +313,7 @@ class ConverseAdapter(BasePlatformAdapter):
             return
         turn = self._own(event)
         if turn is None:
-            self._server_turns[chat_id] = ServerTurn()
+            self._server_turns[chat_id] = ServerTurn(self._event_session_key(event))
             return
         turn.started = True
         if turn.stopped:  # cancelled while it waited behind another turn
@@ -499,6 +504,20 @@ class ConverseAdapter(BasePlatformAdapter):
         turn = self._turn_for_session(session_id)
         if turn is not None:
             turn.progress_at = time.monotonic()
+
+    def do_not_disturb_context(self, *, session_id=None, platform="", **_: Any) -> Optional[dict]:
+        """``pre_llm_call``: a turn the server started for a device in Do Not Disturb is told that
+        nothing it says reaches the device, so it can notify the person another way."""
+        if platform != PLATFORM or not isinstance(session_id, str) or not session_id:
+            return None
+        store = getattr(self, "_session_store", None)
+        for chat_id, server_turn in list(self._server_turns.items()):
+            if (store is not None and server_turn.session_key
+                    and store.peek_session_id(server_turn.session_key) == session_id):
+                if self._hub.do_not_disturb(chat_id):
+                    return {"context": DO_NOT_DISTURB_CONTEXT}
+                return None
+        return None
 
     def on_api_request(self, *, session_id=None, usage=None, **_: Any) -> None:
         turn = self._turn_for_session(session_id)
@@ -749,4 +768,10 @@ def register_platform(ctx: Any, hub: Any) -> bool:
     ctx.register_hook("pre_tool_call", forward("on_tool_call"))
     ctx.register_hook("post_tool_call", forward("on_tool_done"))
     ctx.register_hook("post_api_request", forward("on_api_request"))
+
+    def do_not_disturb_context(**kwargs: Any) -> Optional[dict]:
+        adapter = getattr(hub, "gateway", None)
+        return adapter.do_not_disturb_context(**kwargs) if adapter is not None else None
+
+    ctx.register_hook("pre_llm_call", do_not_disturb_context)
     return True
