@@ -27,8 +27,6 @@ in [animations.md](animations.md).
   frames that arrive while the reply is playing make no sound.
 - While muted, the listening and listening-ended tones do not play. Confirm,
   error, and approval still play.
-- Do Not Disturb does not stop the approval tone. Confirm and error do not play
-  for a turn the server started (`server.md`, Do Not Disturb).
 - A tone never delays audio processing, triggers a wake, or causes an
   interruption. If a tone cannot play, the device carries on silently.
 

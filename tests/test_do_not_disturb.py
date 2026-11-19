@@ -398,17 +398,30 @@ async def _asked(den):
     raise AssertionError("no approval_request")
 
 
-async def test_an_approval_in_a_server_started_turn_has_its_tone_but_is_not_spoken(asking):
-    await _asked(asking)
+async def test_an_approval_in_a_server_started_turn_is_denied_with_nothing_sent(asking):
+    await asking.approvals.begin(PROMPT)
     await asyncio.sleep(0.05)
-    request, tone = asking.frames
-    assert tone == {"type": "tone", "tone": "approval"}
-    assert request["type"] == "approval_request" and request["approval_id"] == "r1"
-    assert request["summary"] == "Arya wants to open a network connection. Okay?"
-    assert asking.session.outputs == [] and asking.session.answer_hook is None  # nothing spoken or listened for
-    asking.approvals.respond(asking.attachment, {"type": "approval_response", "approval_id": "r1", "choice": "once"})
-    assert asking.resolved == ["once"]
-    assert asking.frames[-1] == {"type": "approval_resolved", "approval_id": "r1", "outcome": "approved"}
+    assert asking.resolved == ["deny"] and "den" not in asking.approvals._pending
+    assert asking.frames == [] and asking.session.outputs == [] and asking.session.answer_hook is None
+
+
+async def test_the_command_tools_question_in_a_server_started_turn_is_denied(asking):
+    assert await asking.approvals.ask("den", "/new", "Arya wants to start over. Okay?", 5) == "deny"
+    assert asking.frames == [] and asking.session.outputs == []
+
+
+async def test_a_pending_approval_is_denied_when_a_device_in_do_not_disturb_attaches(asking):
+    asking.hub.detach("den", asking.attachment)
+    await asking.approvals.begin(PROMPT)  # no device: held
+    for _ in range(200):
+        if asking.approvals._pending.get("den") and asking.approvals._pending["den"].summary:
+            break
+        await asyncio.sleep(0.01)
+    assert asking.resolved == []
+    attachment = asking.hub.attach("den", asking.session, "Arya", asking.attachment.recipient_id)
+    attachment.send = asking.frames.append
+    asking.approvals.attached(attachment)
+    assert asking.resolved == ["deny"] and asking.frames == []
 
 
 async def test_an_approval_in_the_persons_turn_is_asked_aloud(asking):
