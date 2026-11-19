@@ -60,6 +60,7 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 | `quiet_interval` | session mode: seconds of silence between `quiet` frames, a number up to 3600 (0 = none, the default); send 1 |
 | `device_name` | The configured device label, such as `Den Echo` or `Kitchen`. Each device keeps its own conversation, titled `<assistant_name>: <device_name>`. |
 | `models` | Boolean; only `true` includes the model catalog in `ready`. Defaults to `false`. See section 11. |
+| `wake_word_format` | The wake-word model format this device runs: `micro_wake_word` or `open_wake_word`. Only a device that sends it is given a wake word; see section 8. |
 | `transcripts` | Boolean; request user and assistant transcript frames when `true`. Defaults to `false`. See section 4. |
 | `after` | The `message_id` of the last transcript this client has shown, to catch up on what it missed. Only with `transcripts: true`. See "Catching up" in section 4. |
 | `assistant_name` | What you call the assistant, normally `Arya`, without “Hey”. Used in the voice system prompt; separate from the device label, such as `Den Echo`. |
@@ -1029,19 +1030,24 @@ optional `turn_id` to target a specific turn.
 ### The wake word
 
 Every wake-word device ships with a working `Hey Sakura` model and starts
-with that phrase on first setup. The server sends the configured phrase and
-its models in `ready`:
+with that phrase on first setup. Name the model format the device runs in
+`start`:
 
-```json
-{"type":"ready","wake_word":{"phrase":"Hey Sakura","models":{
-  "micro_wake_word":{"url":"/v1/audio/wake/hey_sakura/manifest.json","sha256":"9f2c…"},
-  "open_wake_word":{"url":"/v1/audio/wake/hey_sakura/hey_sakura.onnx","sha256":"41d0…"}}}}
-```
-
-| `models` key | File | Used by |
+| `wake_word_format` | File | Used by |
 |---|---|---|
 | `micro_wake_word` | An ESPHome microWakeWord manifest. Its `model` names the `.tflite` file beside it. | ESP32, and Echo running microWakeWord |
 | `open_wake_word` | An openWakeWord head `.onnx`. The melspectrogram and embedding models stay bundled with the client. | macOS, iOS |
+
+The server sends the configured phrase in `ready`, with a model only in that
+format:
+
+```json
+{"type":"ready","wake_word":{"phrase":"Hey Arya","models":{
+  "micro_wake_word":{"url":"/v1/audio/wake/hey_arya/manifest.json","sha256":"9f2c…"}}}}
+```
+
+Without `wake_word_format`, `ready` has no `wake_word` and the server never
+sends `set_wake_word`.
 
 Fetch a model with `GET` on the server's host and port, with
 `Authorization: Bearer <API_SERVER_KEY>`. `sha256` is the hash of the file at
@@ -1055,7 +1061,7 @@ It carries the same `phrase` and `models` as `ready.wake_word`:
 
 ```json
 {"type":"set_wake_word","phrase":"Hey Arya","models":{
-  "open_wake_word":{"url":"/v1/audio/wake/hey_arya/hey_arya.onnx","sha256":"41d0…"}}}
+  "micro_wake_word":{"url":"/v1/audio/wake/hey_arya/manifest.json","sha256":"9f2c…"}}}
 ```
 
 For either message, keep detecting with the current model while downloading,

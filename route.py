@@ -69,7 +69,9 @@ from .loop import (ConversationOutput, ConverseSession, drive_converse_turns,
                    parse_start_config, voice_system_prompt)
 from .settings import Settings, load_settings
 from .tracing import ConnectionTrace, emit_span, force_flush
-from .wake_words import ROUTE_PREFIX as WAKE_ROUTE_PREFIX, WakeWordLink, WakeWords, device_wake_words
+from .wake_words import ENGINES as WAKE_WORD_FORMATS
+from .wake_words import ROUTE_PREFIX as WAKE_ROUTE_PREFIX
+from .wake_words import WakeWordLink, WakeWords, device_wake_words
 
 logger = logging.getLogger(__name__)
 
@@ -296,6 +298,7 @@ class ConverseRoute:
                                   quiet_interval, settings, attachment, recv_ms, input_rate, output_rate,
                                   named=(device, connection), transcripts=frame.get("transcripts") is True,
                                   models=frame.get("models") is True, turns=turns,
+                                  wake_word_format=frame.get("wake_word_format"),
                                   after=frame.get("after"), audio=audio)
         except NamedError as exc:
             await _fail(ws, exc.error, exc.code)
@@ -321,11 +324,15 @@ class ConverseRoute:
 
     async def _connected(self, ws, session, api_key, http, base_url, synth, cap, name,
                          quiet_interval, settings, attachment, server_recv_unix_ms, input_rate, output_rate,
-                         *, named, transcripts=False, models=False, turns=None, after=None, audio=None):
+                         *, named, transcripts=False, models=False, turns=None, after=None, audio=None,
+                         wake_word_format=None):
         client = turns
         device, connection = named
-        wake_word = WakeWordLink(ws, self._wake_words, device.device_name, get=self._settings_getter,
-                                 persist=self._set_device_wake_word)
+        # Only a device that names the model format it runs has a server-managed wake word.
+        wake_word = WakeWordLink(ws, self._wake_words, device.device_name, wake_word_format,
+                                 get=self._settings_getter, persist=self._set_device_wake_word
+                                 ) if wake_word_format in WAKE_WORD_FORMATS else None
+        offered = await wake_word.ready() if wake_word is not None else None
         ready = {
             "type": "ready",
             "transcripts": transcripts,
@@ -335,10 +342,11 @@ class ConverseRoute:
             "recipient_id": device.recipient_id,
             "assistant_name": device.assistant_name,
             "device_name": device.device_name,
-            "wake_word": await wake_word.ready(),
             "server_recv_unix_ms": server_recv_unix_ms,
             "server_send_unix_ms": int(time.time() * 1000),
         }
+        if offered is not None:
+            ready["wake_word"] = offered
         if audio is not None and audio.encoder is not None:
             ready["input"].update(format="opus", block_ms=20)
             ready["output"].update(format="opus", block_ms=20)

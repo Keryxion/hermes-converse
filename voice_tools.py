@@ -181,8 +181,10 @@ def make_handlers(hub: Any) -> dict[str, Callable[..., Any]]:
 
     async def set_wake_word(args: dict, **kw: Any) -> str:
         error, attachment = device()
-        if attachment is None or attachment.wake_word is None:
+        if attachment is None:
             return _result(error or "not_attached")
+        if attachment.wake_word is None:  # the device sent no wake_word_format
+            return json.dumps({"result": "failed", "error": "model_unavailable"})
         phrase = args.get("phrase")
         if phrase is not None and (not isinstance(phrase, str) or not phrase.strip()):
             return json.dumps({"error": "phrase must be a listed wake phrase"})

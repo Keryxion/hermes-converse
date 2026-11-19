@@ -271,9 +271,12 @@ def device_env(monkeypatch):
     return env
 
 
-async def _connect(client, device_name=DEVICE_NAME):
+async def _connect(client, device_name=DEVICE_NAME, wake_word_format="micro_wake_word"):
     ws = await client.ws_connect("/v1/audio/converse", protocols=(VOICE_PROTOCOL, _key_protocol()))
-    await ws.send_str(_start_msg(device_name=device_name))
+    start = {"device_name": device_name}
+    if wake_word_format is not None:
+        start["wake_word_format"] = wake_word_format
+    await ws.send_str(_start_msg(**start))
     ready = await ws.receive_json()
     assert ready["type"] == "ready"
     return ws, ready
@@ -315,17 +318,39 @@ async def test_a_fresh_device_is_told_hey_sakura_with_nothing_to_download(connec
 async def test_ready_offers_cached_models_and_the_route_serves_them_for_the_api_key(connected):
     await connected.words.select("Hey Arya", SOURCES)
     connected.settings["device_wake_words"] = {"Den Echo": "Hey Arya"}
+    connected.settings["wake_word"] = "Hey Arya"
     ws, ready = await _connect(connected.client, "Den Echo")
     assert ready["wake_word"]["phrase"] == "Hey Arya"
     models = ready["wake_word"]["models"]
-    assert set(models) == {"micro_wake_word", "open_wake_word"}
-    for model in models.values():
-        response = await connected.client.get(model["url"], headers=AUTH)
-        assert response.status == 200 and sha256(await response.read()) == model["sha256"]
+    assert set(models) == {"micro_wake_word"}  # only the format the device runs
+    response = await connected.client.get(models["micro_wake_word"]["url"], headers=AUTH)
+    assert response.status == 200 and sha256(await response.read()) == models["micro_wake_word"]["sha256"]
     # The manifest's model file sits beside it and is fetched the same way.
     manifest = await (await connected.client.get(models["micro_wake_word"]["url"], headers=AUTH)).json(content_type=None)
     response = await connected.client.get("/v1/audio/wake/hey_arya/" + manifest["model"], headers=AUTH)
     assert await response.read() == b"arya-tflite"
+    mac, ready = await _connect(connected.client, "Office Mac", "open_wake_word")
+    model = ready["wake_word"]["models"]
+    assert set(model) == {"open_wake_word"}
+    response = await connected.client.get(model["open_wake_word"]["url"], headers=AUTH)
+    assert await response.read() == b"arya-onnx" and sha256(b"arya-onnx") == model["open_wake_word"]["sha256"]
+    await _end(ws)
+    await _end(mac)
+
+
+async def test_a_device_without_a_wake_word_format_has_no_server_wake_word(connected):
+    ws, ready = await _connect(connected.client, "Car", None)
+    assert "wake_word" not in ready
+    await _end(ws)
+
+
+async def test_a_phrase_without_the_device_format_is_refused_before_sending(connected):
+    await _end(connected.ws)
+    ws, _ = await _connect(connected.client, DEVICE_NAME, "open_wake_word")
+    assert await _result(asyncio.create_task(connected.call({"phrase": "Computer"}))) == {
+        "result": "failed", "error": "model_unavailable"}  # Computer has only a microWakeWord model
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(ws.receive_json(), .2)
     await _end(ws)
 
 
@@ -369,8 +394,8 @@ async def test_hermes_dispatches_the_tool_to_the_calling_device(connected):
 
 async def test_a_switch_is_confirmed_only_after_the_device_reports_ok(connected):
     task, command = await _switch(connected, "Hey Arya")
-    assert command == {"type": "set_wake_word", "phrase": "Hey Arya", "models": connected.words.models("Hey Arya")}
-    assert set(command["models"]) == {"micro_wake_word", "open_wake_word"}
+    micro = connected.words.models("Hey Arya")["micro_wake_word"]
+    assert command == {"type": "set_wake_word", "phrase": "Hey Arya", "models": {"micro_wake_word": micro}}
     await asyncio.sleep(.05)
     assert not task.done()  # sent is only requested
     await connected.ws.send_json({"type": "wake_word_set", "phrase": "Hey Arya", "status": "ok"})
@@ -479,8 +504,8 @@ async def test_a_changed_setting_reaches_a_connected_device_without_a_reconnect(
     assert ready["wake_word"]["phrase"] == "Hey Sakura"
     connected.settings["device_wake_words"] = {"Den Echo": "Hey Arya"}
     command = await asyncio.wait_for(den.receive_json(), 2)
-    assert command == {"type": "set_wake_word", "phrase": "Hey Arya", "models": connected.words.models("Hey Arya")}
-    assert command["models"]
+    micro = connected.words.models("Hey Arya")["micro_wake_word"]
+    assert command == {"type": "set_wake_word", "phrase": "Hey Arya", "models": {"micro_wake_word": micro}}
     await den.send_json({"type": "wake_word_set", "phrase": "Hey Arya", "status": "ok"})
     with pytest.raises(asyncio.TimeoutError):
         await asyncio.wait_for(den.receive_json(), .3)  # sent once

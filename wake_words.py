@@ -354,11 +354,12 @@ class WakeWordLink:
     """One connected device's wake word: what ``ready`` tells it, the ``set_wake_word`` commands
     sent to it one at a time, and the ``wake_word_set`` results that confirm them."""
 
-    def __init__(self, ws: Any, words: WakeWords, device_name: str, *, get: Callable[..., Any],
-                 persist: Callable[[str, str], Awaitable[None]]) -> None:
+    def __init__(self, ws: Any, words: WakeWords, device_name: str, wake_word_format: str, *,
+                 get: Callable[..., Any], persist: Callable[[str, str], Awaitable[None]]) -> None:
         self.ws = ws
         self._words = words
         self._device_name = device_name
+        self._format = wake_word_format  # the one model format this device runs, from ``start``
         self._get = get  # the plugin settings getter
         self._persist = persist
         self._lock = asyncio.Lock()  # one switch at a time
@@ -373,11 +374,15 @@ class WakeWordLink:
     async def _repositories(self) -> tuple:
         return await asyncio.to_thread(wake_word_repositories, self._get)
 
+    def _offer(self, models: dict[str, dict]) -> dict[str, dict]:
+        """Only the device's own format."""
+        return {engine: model for engine, model in models.items() if engine == self._format}
+
     async def ready(self) -> dict:
-        """``ready.wake_word``: the configured phrase with the models already cached. A phrase
+        """``ready.wake_word``: the configured phrase with its model, if already cached. A phrase
         configured before its models were ever fetched is left for :meth:`watch` to deliver."""
         phrase = await self._phrase()
-        models = await asyncio.to_thread(self._words.models, phrase)
+        models = self._offer(await asyncio.to_thread(self._words.models, phrase))
         if models or phrase == DEFAULT_PHRASE:
             self._handled = phrase
         return {"phrase": phrase, "models": models}
@@ -399,7 +404,7 @@ class WakeWordLink:
             return
         self._handled = phrase  # asked once; a failure is not retried until the setting changes
         try:
-            models = await self._words.select(phrase, await self._repositories())
+            models = self._usable(phrase, await self._words.select(phrase, await self._repositories()))
             result = await self._command(phrase, models)
         except WakeWordError as exc:
             result = str(exc)
@@ -417,7 +422,7 @@ class WakeWordLink:
         setting and report ``ok`` only when the device says it changed."""
         async with self._lock:
             try:
-                models = await self._words.select(phrase, await self._repositories())
+                models = self._usable(phrase, await self._words.select(phrase, await self._repositories()))
             except WakeWordError as exc:
                 return {"result": "failed", "error": str(exc)}
             result = await self._command(phrase, models)
@@ -430,6 +435,14 @@ class WakeWordLink:
                 logger.warning("converse wake word: could not save the setting", exc_info=True)
                 return {"result": "failed", "error": "setting_not_saved"}
             return {"result": "ok", "phrase": phrase}
+
+    def _usable(self, phrase: str, models: dict[str, dict]) -> dict[str, dict]:
+        """What to send for *phrase*; ``model_unavailable`` when it has nothing in the device's
+        format (``Hey Sakura`` needs nothing: it is bundled)."""
+        offered = self._offer(models)
+        if not offered and phrase != DEFAULT_PHRASE:
+            raise WakeWordError("model_unavailable")
+        return offered
 
     async def _command(self, phrase: str, models: dict) -> str:
         """Send ``set_wake_word`` and wait for this phrase's ``wake_word_set``."""
