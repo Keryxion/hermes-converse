@@ -19,6 +19,17 @@
   The default pool is small (a 2-CPU host has 6 threads) and shared by every
   connection. `to_thread` is only for short blocking calls such as a database read.
 
+## Database storage
+
+- Keep new columns to a minimum. Prefer JSON stored in a settings or attributes
+  column for optional, evolving data, so adding a setting does not require a
+  schema migration on every release. Reuse an existing JSON column when available.
+- Add dedicated columns when needed for queries, indexes, relationships, or
+  database constraints. Keep JSON readers tolerant of missing and unknown keys,
+  and preserve unknown keys when updating settings so older releases can coexist.
+- Name columns explicitly in SQL inserts; do not depend on the table's column
+  count or order.
+
 ## Specifications
 
 - The client spec is written from the client's point of view: what JSON to send,
