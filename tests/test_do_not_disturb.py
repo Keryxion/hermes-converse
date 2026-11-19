@@ -42,10 +42,16 @@ class ScriptedHermes(FakeHermes):
         self.hub = None
         self.calls: list[tuple[str, dict]] = []
         self.results: list[dict] = []
+        self.contexts: list = []
         self.reply = "Time to stretch."
         self.finished = asyncio.Event()
 
     async def handle(self, event):
+        # What Hermes's pre_llm_call hook adds to this turn, as the agent sees it.
+        if not event.get_command():
+            self.contexts.append(self.adapter.do_not_disturb_context(
+                session_id=self.store.peek_session_id(self.adapter._source_session_key(event.source)),
+                platform="converse"))
         if not str(event.message_id or "").startswith(("wake-", "countdown-ring-")):
             return await super().handle(event)
         handlers = make_handlers(self.hub)
@@ -336,6 +342,22 @@ async def test_a_countdown_rings_and_its_still_ringing_turn_is_silent(rig):
     assert [c["state"] for c in listed] == ["ringing"]
     for timer in device.ring_timers + [t for c in device.countdowns.values() for t in c.timers]:
         timer.cancel()
+
+
+async def test_a_server_started_turn_is_told_so_it_can_notify_another_way(rig):
+    from hermes_converse.platform_adapter import DO_NOT_DISTURB_CONTEXT
+
+    await rig.connect()
+    await rig.device_sets(True)
+    for frame in _speech_then_silence_pcm():  # the person's own turn is not told
+        await rig.ws.send_bytes(frame)
+    await rig.spoken_turn()
+    await rig.server_turn()
+    await rig.device_sets(False)
+    await rig.server_turn()
+    assert rig.fake.contexts == [None, {"context": DO_NOT_DISTURB_CONTEXT}, None]
+    assert "another way" in DO_NOT_DISTURB_CONTEXT
+    assert rig.harness.adapter.do_not_disturb_context(session_id="s", platform="telegram") is None
 
 
 # ── tones and approvals, by who started the turn ──

@@ -6,7 +6,8 @@ from typing import Awaitable, Callable, Optional
 
 
 class ServerTurn:
-    def __init__(self) -> None:
+    def __init__(self, session_key: str = "") -> None:
+        self.session_key = session_key  # the gateway session it runs in
         self.spoken: list[str] = []
         self.exclusive = False
         self.standby = False

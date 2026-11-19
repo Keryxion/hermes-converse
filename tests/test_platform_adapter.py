@@ -792,7 +792,7 @@ def test_register_platform_declares_a_trusted_text_quiet_platform():
     assert registered["display_overrides"]["streaming"] is False
     assert registered["is_connected"](None) and registered["check_fn"]()
     assert set(hooks) == {"on_stream_start", "on_stream_delta", "pre_tool_call", "post_tool_call",
-                          "post_api_request"}
+                          "post_api_request", "pre_llm_call"}
     hooks["on_stream_delta"](delta="x", session_id="s")  # no adapter connected: ignored
     adapter = registered["adapter_factory"](PlatformConfig(enabled=True))
     assert isinstance(adapter, ConverseAdapter) and adapter._approval_choice() == "deny"
