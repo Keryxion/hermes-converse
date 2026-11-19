@@ -100,3 +100,7 @@ config_schema:
     type: int
     default: 900
     description: "How long a countdown alarm rings if nobody ends it. Sent to the device as ring_seconds; the server also keeps the countdown this long past its deadline."
+  voice_token:
+    type: str
+    default: ""
+    description: "Scoped, voice-only credential clients may present instead of API_SERVER_KEY. When set, a client can open /v1/audio/converse with start.voice_token (or the hermes-voice-token.<token> subprotocol) and the plugin accepts it by local compare; a sniffed token only opens voice turns, never the full API."

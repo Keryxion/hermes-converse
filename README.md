@@ -37,6 +37,13 @@ Dial `ws://<host>:<port>/v1/audio/converse` and send one `start` frame first:
  "quiet_interval": 0, "assistant_name": "Arya", "device_name": "Den Echo"}
 ```
 
+Instead of the full `API_SERVER_KEY` you may send `{"type": "start", "voice_token": "<VOICE_TOKEN>", ...}`
+(the scoped, voice-only credential), or offer the `hermes-voice-token.<VOICE_TOKEN>` subprotocol
+(browser clients). A voice token authorizes only `/v1/audio/converse`, so a sniffed token on plain
+`ws://` gives away voice turns only, never the full API. Configure it with the
+`plugins.entries.hermes-converse.settings.voice_token` setting (or have the API server accept the
+voice token as Bearer for `/v1/capabilities`).
+
 A browser client can put the key in the WebSocket subprotocols instead (`hermes-voice-v1` plus
 `hermes-key.<API_SERVER_KEY>`); the server accepts only `hermes-voice-v1` and never echoes the key.
 Either way the key is verified against the API server itself, so your existing key is the only
@@ -156,6 +163,7 @@ plugin settings form):
 | `arbitrate_policy` | `wake_signal` | rank wake claims with `wake_signal` |
 | `arbitrate_device_id` | `""` | optional label prefix for server-generated unique socket identifiers |
 | `arbitrate_wake_window_seconds` | `0.75` | how long the arbitrator collects concurrent wake claims for the same wake word before electing the primary device |
+| `voice_token` | `""` | scoped, voice-only credential clients may present instead of `API_SERVER_KEY` (see above) |
 
 STT and TTS come from your normal Hermes `stt.*` and `tts.*` configuration.
 

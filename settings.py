@@ -44,6 +44,7 @@ DEFAULT_ENDPOINT_MAX_SILENCE_MS = 3000
 # Capture-only wall-clock timeout; idle quiet still counts received audio.
 DEFAULT_CAPTURE_NO_DATA_SECONDS = 5.0
 APPROVAL_CHOICES = ("deny", "once", "ask")
+DEFAULT_VOICE_TOKEN = ""
 
 Getter = Callable[..., Any]
 
@@ -69,6 +70,7 @@ class Settings:
     arbitrate_device_id: Optional[str] = DEFAULT_ARBITRATE_DEVICE_ID
     arbitrate_wake_window_seconds: float = DEFAULT_ARBITRATE_WAKE_WINDOW_SECONDS
     countdown_ring_timeout_seconds: int = DEFAULT_COUNTDOWN_RING_TIMEOUT_SECONDS
+    voice_token: str = DEFAULT_VOICE_TOKEN
 
 
 def _number(raw: Any, default: float) -> float:
@@ -142,4 +144,5 @@ def load_settings(get: Getter) -> Settings:
         countdown_ring_timeout_seconds=_milliseconds(
             get("countdown_ring_timeout_seconds", DEFAULT_COUNTDOWN_RING_TIMEOUT_SECONDS),
             DEFAULT_COUNTDOWN_RING_TIMEOUT_SECONDS),
+        voice_token=str(get("voice_token", "") or "").strip(),
     )
