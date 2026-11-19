@@ -100,3 +100,7 @@ config_schema:
     type: int
     default: 900
     description: "How long a countdown alarm rings if nobody ends it. Sent to the device as ring_seconds; the server also keeps the countdown this long past its deadline."
+  do_not_disturb_grace_seconds:
+    type: number
+    default: 300
+    description: "Under Do Not Disturb, what the server starts (reminders, follow-ups, approvals) is still delivered for this long after the person's last request on the device. 0 holds it at once. Turning Do Not Disturb on ends the grace."

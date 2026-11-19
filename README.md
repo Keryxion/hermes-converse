@@ -137,7 +137,8 @@ plugin such as Cadence and play as ordinary server-started turns.
 
 Do Not Disturb is a per-device setting, turned on and off by the device's `do_not_disturb` frame or
 by asking the assistant. While it is on, server-started turns run but nothing they produce is
-spoken; a request by wake word is still answered and countdowns still ring. See
+spoken, except within `do_not_disturb_grace_seconds` (five minutes) of the person's last request
+on the device; a request by wake word is still answered and countdowns still ring. See
 [client spec section 12](specs/client.md#12-do-not-disturb).
 
 ## Settings
@@ -162,6 +163,7 @@ plugin settings form):
 | `arbitrate_policy` | `wake_signal` | rank wake claims with `wake_signal` |
 | `arbitrate_device_id` | `""` | optional label prefix for server-generated unique socket identifiers |
 | `arbitrate_wake_window_seconds` | `0.75` | how long the arbitrator collects concurrent wake claims for the same wake word before electing the primary device |
+| `do_not_disturb_grace_seconds` | `300` | under Do Not Disturb, what the server starts is still delivered for this long after the person's last request on the device; `0` holds it at once |
 
 STT and TTS come from your normal Hermes `stt.*` and `tts.*` configuration.
 
