@@ -1010,6 +1010,9 @@ section 9) sends nothing to the device:
   Disturb attaches.
 - What an approved `command` leaves until the reply has played, a new
   conversation, happens when the turn ends.
+- The turn is told so, through Hermes's `pre_llm_call` context, so the agent
+  can notify the person another way its tools provide. A still-ringing
+  countdown turn still runs.
 
 Whether a reply is held is decided when it is ready, so a turn that turns Do
 Not Disturb off is spoken and one that turns it on is not. A reply already
@@ -1024,4 +1027,5 @@ survives a reconnect and a restart; the tool and the device frame each change
 it, the tool also with no device attached; a turn that calls `do_not_disturb`
 with `on: false` is spoken and one with `on: true` is not; an approval in a
 server-started turn is denied with nothing sent, and one in the person's turn is
-asked aloud; a client that never sends the frame is served as before.
+asked aloud; the agent is told in a server-started turn and not in the person's
+own; a client that never sends the frame is served as before.
