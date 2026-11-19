@@ -111,4 +111,4 @@ config_schema:
   wake_word_repositories:
     type: list
     default: [{repository: Keryxion/wakewords, ref: main}]
-    description: "Ordered GitHub wake-word dictionaries, each {repository, ref}; ref defaults to main. The first one listing a phrase supplies it. [] uses only cached models."
+    description: "Ordered GitHub wake-word dictionaries, each {repository, ref}; ref defaults to main. The last one listing a phrase supplies it. [] uses only cached models."

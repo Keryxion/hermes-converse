@@ -9,7 +9,6 @@ verifies every hash and caches them in ``plugin-data/hermes-converse/wake/<slug>
 from __future__ import annotations
 
 import asyncio
-import base64
 import contextlib
 import hashlib
 import json
@@ -19,7 +18,7 @@ import re
 import shutil
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional
-from urllib.parse import quote, unquote, urljoin, urlsplit
+from urllib.parse import quote, urlsplit
 
 from aiohttp import ClientError, ClientSession, ClientTimeout
 
@@ -36,9 +35,6 @@ POLL_SECONDS = 5.0  # how often a connection re-reads its device's configured ph
 HTTP_TIMEOUT = ClientTimeout(total=30, connect=5)
 MAX_JSON = 1 << 20
 MAX_MODEL = 32 << 20
-REDIRECTS = (301, 302, 303, 307, 308)
-# https://github.com/<owner>/<name>/releases/download/<tag>/<file>
-RELEASE_ASSET = re.compile(r"/(?P<repository>[\w.-]+/[\w.-]+)/releases/download/(?P<tag>[^/]+)/(?P<name>[^/]+)")
 
 Fetch = Callable[..., Awaitable[bytes]]
 
@@ -146,62 +142,19 @@ async def _body(response: Any, limit: int) -> bytes:
 
 @contextlib.asynccontextmanager
 async def github_fetch() -> AsyncIterator[Fetch]:
-    """``fetch(url, limit=...)`` over one HTTP session. Every URL is asked for anonymously first.
-    A GitHub URL that refuses is asked again with the profile's GitHub token, when it has one: a
-    private repository's refs and files directly, its release assets through the releases API.
-    The token goes to GitHub's own hosts over HTTPS only, and a request carrying it is never
-    redirected with it."""
-    token = None
-    try:
-        from agent.secret_scope import get_secret
-
-        token = get_secret("GH_TOKEN") or get_secret("GITHUB_TOKEN")
-    except Exception:
-        pass  # no profile scope here: read public dictionaries
-
+    """``fetch(url, limit=...)`` over one anonymous HTTP session: the body of a 200 answer."""
     async with ClientSession(timeout=HTTP_TIMEOUT) as http:
-        async def get(url: str, limit: int, headers: Optional[dict] = None) -> Optional[bytes]:
-            """The body of a 200 answer, else None. With *headers* (credentials) a redirect is
-            not followed as sent: its target is fetched anonymously."""
-            async with http.get(url, headers=headers or {}, allow_redirects=headers is None) as response:
-                if response.status == 200:
-                    return await _body(response, limit)
-                target = response.headers.get("Location") if headers and response.status in REDIRECTS else None
-            return await get(urljoin(url, target), limit) if target else None
-
-        async def release_asset(repository: str, tag: str, name: str, limit: int) -> Optional[bytes]:
-            """A private release's asset: find it in the release, then download it by its id."""
-            api = f"https://api.github.com/repos/{repository}/releases"
-            bearer = {"Authorization": f"Bearer {token}"}
-            release = await get(f"{api}/tags/{tag}", MAX_JSON, {**bearer, "Accept": "application/vnd.github+json"})
-            try:
-                asset = next(item["id"] for item in json.loads(release or b"null")["assets"]
-                             if item.get("name") == unquote(name))
-            except (ValueError, KeyError, TypeError, AttributeError, StopIteration):
-                return None
-            if isinstance(asset, bool) or not isinstance(asset, int):
-                return None
-            return await get(f"{api}/assets/{asset}", limit, {**bearer, "Accept": "application/octet-stream"})
-
         async def fetch(url: str, *, limit: int = MAX_MODEL) -> bytes:
-            data = await get(url, limit)
-            parts = urlsplit(url)
-            if data is None and token and parts.scheme == "https" and parts.port is None:
-                release = RELEASE_ASSET.fullmatch(parts.path) if parts.hostname == "github.com" else None
-                if release is not None:
-                    data = await release_asset(release["repository"], release["tag"], release["name"], limit)
-                elif parts.hostname in ("github.com", "raw.githubusercontent.com"):
-                    data = await get(url, limit, {"Authorization": "Basic " + base64.b64encode(
-                        f"x-access-token:{token}".encode()).decode()})
-            if data is None:
-                raise WakeWordError("download_failed")
-            return data
+            async with http.get(url) as response:
+                if response.status != 200:
+                    raise WakeWordError("download_failed")
+                return await _body(response, limit)
 
         yield fetch
 
 
 class WakeWords:
-    """Dictionary snapshots and cached models under one folder. Network and selection run on the
+    """Dictionary snapshots in memory and cached models on disk. Network and selection run on the
     event loop, one at a time; file work runs on worker threads."""
 
     def __init__(self, root: Optional[Path] = None,
@@ -209,6 +162,7 @@ class WakeWords:
         self._root = root
         self._open_fetch = open_fetch
         self._lock = asyncio.Lock()
+        self._snapshots: dict[tuple[str, str], dict] = {}  # (repository, ref) -> last good dictionary
 
     def _dir(self, name: str) -> Path:
         if self._root is None:
@@ -219,18 +173,8 @@ class WakeWords:
 
     # ── cached models ──
     def _folder(self, phrase: str) -> Optional[Path]:
-        """The cache folder of exactly *phrase*: the one named by its slug, unless that folder
-        holds another phrase's models (one differing only by case or spacing). Then the phrase
-        has a folder of its own, ``<slug>.<hash of the phrase>``, which no slug can name."""
         name = slug(phrase)
-        if not name:
-            return None
-        folder = self._dir("wake") / name
-        try:
-            owner = json.loads((folder / "source.json").read_text()).get("phrase")
-        except (OSError, ValueError, AttributeError):
-            owner = None  # empty, or files put there by hand
-        return folder if owner in (None, phrase) else folder.with_name(f"{name}.{_sha256(phrase.encode())[:12]}")
+        return self._dir("wake") / name if name else None
 
     def models(self, phrase: str) -> dict[str, dict]:
         """What ``ready`` and ``set_wake_word`` offer for *phrase*: each format present in its
@@ -249,7 +193,7 @@ class WakeWords:
     def file(self, name: str, filename: str) -> Optional[Path]:
         """The cached file a device asked for, or None for anything that is not a file directly
         inside a phrase's folder."""
-        if (not re.fullmatch(r"[\w-]+(\.[0-9a-f]{12})?", name) or not filename or filename.startswith(".")
+        if (not re.fullmatch(r"[\w-]+", name) or not filename or filename.startswith(".")
                 or Path(filename).name != filename):
             return None
         folder = (self._dir("wake") / name).resolve()
@@ -257,26 +201,6 @@ class WakeWords:
         return path if path.parent == folder and path.is_file() else None
 
     # ── dictionaries ──
-    def _snapshot_path(self, repository: str, ref: str) -> Path:
-        return self._dir("wake-dictionaries") / (re.sub(r"[^\w.-]", "_", f"{repository}@{ref}") + ".json")
-
-    def _load_snapshot(self, repository: str, ref: str) -> Optional[dict]:
-        try:
-            snapshot = json.loads(self._snapshot_path(repository, ref).read_text())
-        except (OSError, ValueError):
-            return None
-        if (isinstance(snapshot, dict) and snapshot.get("repository") == repository
-                and snapshot.get("ref") == ref and isinstance(snapshot.get("entries"), list)):
-            return snapshot
-        return None
-
-    def _save_snapshot(self, snapshot: dict) -> None:
-        path = self._snapshot_path(snapshot["repository"], snapshot["ref"])
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(snapshot))
-        os.replace(temporary, path)
-
     async def _read_source(self, fetch: Fetch, repository: str, ref: str, cached: Optional[dict]) -> dict:
         """The dictionary at the commit *ref* names now; the cached snapshot when that is unchanged."""
         commit = ref if re.fullmatch(r"[0-9a-f]{40}", ref) else _commit(await fetch(
@@ -311,12 +235,10 @@ class WakeWords:
         source that fails keeps its last good snapshot and does not hold up the others."""
         snapshots, failed = [], []
         for repository, ref in repositories:
-            snapshot = await asyncio.to_thread(self._load_snapshot, repository, ref)
+            snapshot = self._snapshots.get((repository, ref))
             try:
-                fresh = await self._read_source(fetch, repository, ref, snapshot)
-                if fresh is not snapshot:
-                    await asyncio.to_thread(self._save_snapshot, fresh)
-                snapshot = fresh
+                snapshot = self._snapshots[repository, ref] = await self._read_source(
+                    fetch, repository, ref, snapshot)
             except (WakeWordError, ClientError, TimeoutError, OSError, ValueError) as exc:
                 logger.warning("converse wake words: could not refresh %s@%s (%s)", repository, ref,
                                str(exc) if isinstance(exc, WakeWordError) else type(exc).__name__)
@@ -327,11 +249,12 @@ class WakeWords:
 
     @staticmethod
     def _combine(snapshots: list[dict]) -> list[dict]:
-        """One entry per exact phrase: the last source listing it supplies the whole entry."""
+        """One entry per phrase, phrases differing only by case or spacing being one: the last
+        source listing it supplies the whole entry."""
         combined: dict[str, dict] = {}
         for snapshot in snapshots:
             for entry in snapshot["entries"]:
-                combined[entry["phrase"]] = {
+                combined[slug(entry["phrase"])] = {
                     **entry, "repository": snapshot["repository"], "commit": snapshot["commit"]}
         return list(combined.values())
 
@@ -346,20 +269,20 @@ class WakeWords:
     async def select(self, phrase: str, repositories: Any) -> dict[str, dict]:
         """Select exactly *phrase*: refresh the dictionaries, download and verify its entry's
         models, and return what the cache now offers. Without a dictionary entry, models already
-        cached for the phrase are used as they are."""
+        cached for the phrase are used as they are, and ``Hey Sakura`` needs none: it is bundled."""
         async with self._lock, self._open_fetch() as fetch:
             snapshots, _ = await self._refresh(repositories, fetch)
             entry = next((item for item in self._combine(snapshots) if item["phrase"] == phrase), None)
             if entry is not None:
                 await self._install(entry, fetch)
             models = await asyncio.to_thread(self.models, phrase)
-        if not models:
+        if not models and phrase != DEFAULT_PHRASE:
             raise WakeWordError("unknown_phrase")
         return models
 
     async def _install(self, entry: dict, fetch: Fetch) -> None:
         name = slug(entry["phrase"])
-        folder = await asyncio.to_thread(self._folder, entry["phrase"])
+        folder = self._folder(entry["phrase"])
         models = _models(entry["wakeword"])
         source = {"phrase": entry["phrase"], "repository": entry["repository"], "commit": entry["commit"],
                   "version": entry.get("version"), "models": models}
@@ -443,16 +366,17 @@ class WakeWordLink:
         self._pending: Optional[tuple[str, asyncio.Future]] = None
         self._closed = False
 
-    def _phrase(self) -> str:
-        return wake_phrase(self._get, self._device_name)
+    async def _phrase(self) -> str:
+        # Off the loop: after config.yaml changes, the first read parses it again.
+        return await asyncio.to_thread(wake_phrase, self._get, self._device_name)
 
-    def _repositories(self) -> tuple:
-        return wake_word_repositories(self._get)
+    async def _repositories(self) -> tuple:
+        return await asyncio.to_thread(wake_word_repositories, self._get)
 
     async def ready(self) -> dict:
         """``ready.wake_word``: the configured phrase with the models already cached. A phrase
         configured before its models were ever fetched is left for :meth:`watch` to deliver."""
-        phrase = self._phrase()
+        phrase = await self._phrase()
         models = await asyncio.to_thread(self._words.models, phrase)
         if models or phrase == DEFAULT_PHRASE:
             self._handled = phrase
@@ -462,8 +386,7 @@ class WakeWordLink:
         """Send the device its configured phrase whenever that changes while it is connected."""
         while True:
             try:
-                # Off the loop: after config.yaml changes, the first read parses it again.
-                if await asyncio.to_thread(self._phrase) != self._handled:
+                if await self._phrase() != self._handled:
                     async with self._lock:
                         await self._follow_setting()
             except Exception:
@@ -471,20 +394,20 @@ class WakeWordLink:
             await asyncio.sleep(POLL_SECONDS)
 
     async def _follow_setting(self) -> None:
-        phrase = await asyncio.to_thread(self._phrase)
+        phrase = await self._phrase()
         if phrase == self._handled:
             return
         self._handled = phrase  # asked once; a failure is not retried until the setting changes
         try:
-            models = await self._words.select(phrase, self._repositories())
+            models = await self._words.select(phrase, await self._repositories())
             result = await self._command(phrase, models)
         except WakeWordError as exc:
             result = str(exc)
         logger.info("converse wake word: device=%r phrase=%r result=%s", self._device_name, phrase, result)
 
     async def listing(self) -> dict:
-        phrases, failed = await self._words.listing(self._repositories())
-        result = {"wake_word": self._phrase(), "phrases": phrases}
+        phrases, failed = await self._words.listing(await self._repositories())
+        result = {"wake_word": await self._phrase(), "phrases": phrases}
         if failed:
             result["unavailable_dictionaries"] = failed
         return result
@@ -494,7 +417,7 @@ class WakeWordLink:
         setting and report ``ok`` only when the device says it changed."""
         async with self._lock:
             try:
-                models = await self._words.select(phrase, self._repositories())
+                models = await self._words.select(phrase, await self._repositories())
             except WakeWordError as exc:
                 return {"result": "failed", "error": str(exc)}
             result = await self._command(phrase, models)

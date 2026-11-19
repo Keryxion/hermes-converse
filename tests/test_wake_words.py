@@ -12,7 +12,7 @@ from hermes_converse import wake_words
 from hermes_converse.conversation import ConversationHub
 from hermes_converse.voice_tools import make_handlers, register_tools
 from hermes_converse.wake_words import WakeWordError, WakeWords, wake_phrase, wake_word_repositories
-from tests.support.fake_github import FakeGitHub, FakeHTTP, sha256
+from tests.support.fake_github import FakeGitHub, sha256
 from tests.support.fake_hermes import FakeHermes
 from tests.test_route import (API_KEY, DEVICE_NAME, VOICE_PROTOCOL, Harness, _FakeStreamer, _end,
                               _key_protocol, _patch_speech, _start_msg)
@@ -86,61 +86,15 @@ async def test_sources_combine_and_the_last_one_supplies_a_duplicate_phrase_whol
     assert _source(words, "Hey Arya")["repository"] == SHARED
 
 
-async def test_phrases_differing_by_case_or_spacing_are_separate_and_keep_their_own_models(github, tmp_path):
-    github.publish(HOUSE, {"hey  arya": {"onnx": b"house-arya-onnx", "tflite": b"house-arya-tflite"}},
-                   ref="v1", commit="d")
-    words = WakeWords(tmp_path, open_fetch=github.open)
-    phrases, _ = await words.listing(SOURCES)
-    assert [item["phrase"] for item in phrases] == ["Hey Sakura", "Hey Arya", "hey  arya"]
-    with pytest.raises(WakeWordError, match="unknown_phrase"):
-        await words.select("hey arya", SOURCES)  # listed under neither spelling
-    shared = await words.select("Hey Arya", SOURCES)
-    house = await words.select("hey  arya", SOURCES)
-    # The first keeps the plain folder; the second gets one of its own, not the first one's.
-    assert shared["open_wake_word"]["url"] == "/v1/audio/wake/hey_arya/hey_arya.onnx"
-    folder = house["open_wake_word"]["url"].split("/")[-2]
-    assert folder.startswith("hey_arya.") and folder != "hey_arya"
-    assert shared["open_wake_word"]["sha256"] == sha256(b"arya-onnx")
-    assert house["open_wake_word"]["sha256"] == sha256(b"house-arya-onnx")
-    assert (_source(words, "Hey Arya")["phrase"], _source(words, "Hey Arya")["repository"]) == ("Hey Arya", SHARED)
-    assert (_source(words, "hey  arya")["phrase"], _source(words, "hey  arya")["repository"]) == ("hey  arya", HOUSE)
-
-    def served(models):
-        files = {}
-        for model in models.values():
-            _, _, _, _, name, filename = model["url"].split("/")
-            files[filename] = words.file(name, filename).read_bytes()
-            if filename == "manifest.json":
-                files["model"] = words.file(name, json.loads(files[filename])["model"]).read_bytes()
-        return files
-
-    assert served(shared)["hey_arya.onnx"] == b"arya-onnx" and served(shared)["model"] == b"arya-tflite"
-    assert served(house)["hey_arya.onnx"] == b"house-arya-onnx" and served(house)["model"] == b"house-arya-tflite"
-    # After a restart, and with GitHub gone, each phrase is still itself.
-    github.offline = True
-    words = WakeWords(tmp_path, open_fetch=github.open)
-    assert words.models("Hey Arya") == shared and words.models("hey  arya") == house
-    assert await words.select("hey  arya", SOURCES) == house and await words.select("Hey Arya", SOURCES) == shared
-    assert words.models("hey arya") == {} and words.models("HEY ARYA") == {}
-    # Selecting one again, changed, leaves the other alone.
-    github.offline = False
-    github.publish(HOUSE, {"hey  arya": {"onnx": b"house-arya-onnx-v2"}}, ref="v1", commit="e")
-    again = await words.select("hey  arya", SOURCES)
-    assert again["open_wake_word"]["url"] == house["open_wake_word"]["url"]
-    assert again["open_wake_word"]["sha256"] == sha256(b"house-arya-onnx-v2")
-    assert words.models("Hey Arya") == shared
-
-
-async def test_whichever_colliding_phrase_is_cached_first_keeps_the_plain_folder(github, tmp_path):
+async def test_phrases_differing_by_case_or_spacing_are_one_phrase(words, github):
     github.publish(HOUSE, {"hey  arya": {"onnx": b"house-arya-onnx"}}, ref="v1", commit="d")
-    words = WakeWords(tmp_path, open_fetch=github.open)
-    house = await words.select("hey  arya", SOURCES)
-    shared = await words.select("Hey Arya", SOURCES)
-    assert house["open_wake_word"] == {"url": "/v1/audio/wake/hey_arya/hey_arya.onnx",
-                                       "sha256": sha256(b"house-arya-onnx")}
-    assert shared["open_wake_word"]["url"] != house["open_wake_word"]["url"]
-    assert shared["open_wake_word"]["sha256"] == sha256(b"arya-onnx")
-    assert words.models("hey  arya") == house and words.models("Hey Arya") == shared
+    phrases, _ = await words.listing(SOURCES)
+    assert [item["phrase"] for item in phrases] == ["Hey Sakura", "hey  arya"]  # the last source's spelling
+    with pytest.raises(WakeWordError, match="unknown_phrase"):
+        await words.select("Hey Arya", SOURCES)  # selected only as listed
+    models = await words.select("hey  arya", SOURCES)
+    assert models["open_wake_word"] == {"url": "/v1/audio/wake/hey_arya/hey_arya.onnx",
+                                        "sha256": sha256(b"house-arya-onnx")}
 
 
 async def test_each_source_is_read_at_its_own_commit(words, github):
@@ -304,123 +258,8 @@ async def test_only_files_inside_a_phrase_folder_are_served(words):
                            ("hey_arya", "link.onnx"), ("hey_arya/..", "hey_arya"), ("Hey Arya", "manifest.json"),
                            ("hey_arya", "missing.onnx"), ("hey_arya", ""), ("", "manifest.json"),
                            ("hey_arya", "/etc/passwd"), (".hey_arya.new", "hey_arya.onnx"),
-                           ("hey_arya.", "hey_arya.onnx"), ("hey_arya..", "wake"), ("hey_arya.0123456789ab", ".."),
-                           ("hey_arya.0123456789ab/..", "hey_arya"), ("../wake-dictionaries", "x.json")]:
+                           ("hey_arya.", "hey_arya.onnx"), ("hey_arya..", "wake")]:
         assert words.file(name, filename) is None, (name, filename)
-
-
-# ── GitHub over HTTP: anonymous first, the profile's token only for what refuses ──
-
-GITHUB_HOSTS = {"github.com", "raw.githubusercontent.com", "api.github.com"}
-
-
-@pytest.fixture
-def http(github, monkeypatch):
-    fake = FakeHTTP(github)
-    monkeypatch.setattr(wake_words, "ClientSession", fake)
-    monkeypatch.setenv("GH_TOKEN", fake.token)
-    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-    return fake
-
-
-def _with_token(http):
-    return [url for url, headers in http.requests if "Authorization" in headers]
-
-
-async def test_public_dictionaries_and_release_assets_never_see_the_token(http, tmp_path):
-    words = WakeWords(tmp_path)
-    models = await words.select("Hey Arya", SOURCES)
-    assert models["open_wake_word"]["sha256"] == sha256(b"arya-onnx")
-    assert (words._root / "wake" / "hey_arya" / (sha256(b"arya-tflite") + ".tflite")).read_bytes() == b"arya-tflite"
-    assert _with_token(http) == [] and http.sent_to("api.github.com") == []
-    assert len(http.sent_to(FakeHTTP.SIGNED)) == 3  # each download followed its redirect
-
-
-@pytest.mark.parametrize("variable", ["GH_TOKEN", "GITHUB_TOKEN"])
-async def test_a_private_dictionary_and_its_release_assets_use_the_profile_token(
-        http, github, tmp_path, monkeypatch, caplog, variable):
-    monkeypatch.delenv("GH_TOKEN")
-    monkeypatch.setenv(variable, http.token)
-    github.private.add(HOUSE)
-    caplog.set_level("DEBUG")
-    words = WakeWords(tmp_path)
-    phrases, failed = await words.listing(SOURCES)
-    assert failed == [] and "Computer" in [item["phrase"] for item in phrases]
-    models = await words.select("Computer", SOURCES)
-    folder = words._root / "wake" / "computer"
-    assert (folder / (sha256(b"computer-tflite") + ".tflite")).read_bytes() == b"computer-tflite"
-    assert models == {"micro_wake_word": {"url": "/v1/audio/wake/computer/manifest.json",
-                                          "sha256": sha256((folder / "manifest.json").read_bytes())}}
-    # The token went to GitHub's own hosts over HTTPS, and only for the private repository.
-    assert _with_token(http) and all(
-        url.startswith("https://") and wake_words.urlsplit(url).hostname in GITHUB_HOSTS and HOUSE in url
-        for url in _with_token(http))
-    # The release was found by tag and each asset downloaded by its id from the API.
-    api = [url for url, _ in http.requests if "api.github.com" in url]
-    assert f"https://api.github.com/repos/{HOUSE}/releases/tags/bbbbbbb" in api
-    assert any(f"/repos/{HOUSE}/releases/assets/" in url for url in api)
-    assert all(headers["Authorization"] == f"Bearer {http.token}" for headers in http.sent_to("api.github.com"))
-    # The signed download the API redirects to is fetched without credentials, and the
-    # asset "url" in the release metadata is never followed.
-    signed = http.sent_to(FakeHTTP.SIGNED)
-    assert len(signed) == 2 and not any("Authorization" in headers for headers in signed)
-    assert http.sent_to("attacker.example") == []
-    assert http.token not in caplog.text
-
-
-async def test_a_private_repository_without_a_token_fails_alone(http, github, tmp_path, monkeypatch):
-    monkeypatch.delenv("GH_TOKEN")
-    github.private.add(HOUSE)
-    words = WakeWords(tmp_path)
-    phrases, failed = await words.listing(SOURCES)
-    assert failed == [HOUSE] and [item["phrase"] for item in phrases] == ["Hey Sakura", "Hey Arya"]
-    assert _with_token(http) == [] and http.sent_to("api.github.com") == []
-
-
-async def test_a_private_release_asset_is_hash_verified_like_any_other(http, github, tmp_path):
-    github.private.add(HOUSE)
-    (url,) = [url for url in github.assets if HOUSE in url and url.endswith("computer-microwakeword.tflite")]
-    github.assets[url] += b" tampered"
-    words = WakeWords(tmp_path)
-    with pytest.raises(WakeWordError, match="hash_mismatch"):
-        await words.select("Computer", SOURCES)
-    assert words.models("Computer") == {}
-    del github.assets[url]  # no longer in the release at all
-    with pytest.raises(WakeWordError, match="download_failed"):
-        await words.select("Computer", SOURCES)
-    assert words.models("Computer") == {}
-
-
-async def test_the_token_is_never_sent_to_another_host_or_over_plain_http(http):
-    async with wake_words.github_fetch() as fetch:
-        for url in ("https://models.example.com/hey_arya.onnx",
-                    "https://github.com.attacker.example/o/r/releases/download/v1/hey_arya.onnx",
-                    "https://api.github.com.attacker.example/repos/o/r/releases/tags/v1",
-                    "https://raw.githubusercontent.com@attacker.example/o/r/main/index.json",
-                    "https://attacker.example/github.com/o/r/releases/download/v1/hey_arya.onnx",
-                    "http://github.com/o/r/releases/download/v1/hey_arya.onnx",
-                    "http://raw.githubusercontent.com/o/r/main/index.json",
-                    "https://github.com:8443/o/r/releases/download/v1/hey_arya.onnx"):
-            with pytest.raises(WakeWordError, match="download_failed"):
-                await fetch(url)
-    assert _with_token(http) == []
-
-
-async def test_a_request_carrying_the_token_is_not_redirected_with_it(http):
-    def refuses_anonymous(location):
-        return lambda headers: (302, {"Location": location}, b"") if "Authorization" in headers else (404, {}, b"")
-
-    away = "https://raw.githubusercontent.com/o/r/" + "c" * 40 + "/index.json"
-    within = "https://raw.githubusercontent.com/o/r/" + "d" * 40 + "/index.json"
-    http.scripted[away] = refuses_anonymous("https://mirror.attacker.example/index.json")
-    http.scripted[within] = refuses_anonymous("/o/elsewhere/index.json")  # the same host
-    http.scripted["https://mirror.attacker.example/index.json"] = (200, {}, b"moved away")
-    http.scripted["https://raw.githubusercontent.com/o/elsewhere/index.json"] = (200, {}, b"moved within")
-    async with wake_words.github_fetch() as fetch:
-        assert await fetch(away) == b"moved away"
-        assert await fetch(within) == b"moved within"
-    assert _with_token(http) == [away, within]  # neither redirect target
-    assert http.sent_to("mirror.attacker.example") == [{}]
 
 
 # ── the route ──
@@ -488,22 +327,6 @@ async def test_ready_offers_cached_models_and_the_route_serves_them_for_the_api_
     response = await connected.client.get("/v1/audio/wake/hey_arya/" + manifest["model"], headers=AUTH)
     assert await response.read() == b"arya-tflite"
     await _end(ws)
-
-
-async def test_a_phrase_with_a_folder_of_its_own_is_offered_and_served_as_itself(connected):
-    connected.github.publish(HOUSE, {"hey  arya": {"onnx": b"house-arya-onnx"}}, ref="v1", commit="d")
-    await connected.words.select("Hey Arya", SOURCES)
-    await connected.words.select("hey  arya", SOURCES)
-    connected.settings["device_wake_words"] = {"Den Echo": "hey  arya", "Hall": "Hey Arya"}
-    den, den_ready = await _connect(connected.client, "Den Echo")
-    hall, hall_ready = await _connect(connected.client, "Hall")
-    assert den_ready["wake_word"]["phrase"] == "hey  arya" and hall_ready["wake_word"]["phrase"] == "Hey Arya"
-    for ready, onnx in ((den_ready, b"house-arya-onnx"), (hall_ready, b"arya-onnx")):
-        model = ready["wake_word"]["models"]["open_wake_word"]
-        response = await connected.client.get(model["url"], headers=AUTH)
-        assert response.status == 200 and await response.read() == onnx and sha256(onnx) == model["sha256"]
-    await _end(den)
-    await _end(hall)
 
 
 async def test_model_files_are_refused_without_the_api_key_or_outside_the_folder(connected):
@@ -639,6 +462,14 @@ async def test_a_phrase_without_verified_models_changes_nothing(connected, phras
     assert "device_wake_words" not in connected.settings
     with pytest.raises(asyncio.TimeoutError):
         await asyncio.wait_for(connected.ws.receive_json(), .2)  # no command was sent
+
+
+async def test_hey_sakura_needs_no_download_because_devices_bundle_it(connected):
+    connected.settings["wake_word_repositories"] = []
+    task, command = await _switch(connected, "Hey Sakura")
+    assert command == {"type": "set_wake_word", "phrase": "Hey Sakura", "models": {}}
+    await connected.ws.send_json({"type": "wake_word_set", "phrase": "Hey Sakura", "status": "ok"})
+    assert await _result(task) == {"result": "ok", "phrase": "Hey Sakura"}
 
 
 async def test_a_changed_setting_reaches_a_connected_device_without_a_reconnect(connected, monkeypatch):

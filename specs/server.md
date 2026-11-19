@@ -384,7 +384,7 @@ device starts with a bundled `Hey Sakura` model on first setup.
 |---|---|---|
 | `wake_word` | `Hey Sakura` | The default phrase for every named device. |
 | `device_wake_words` | none | A phrase for particular devices by `device_name`, such as `{"Den Echo": "Hey Arya"}`. |
-| `wake_word_repositories` | `[{"repository":"Keryxion/wakewords","ref":"main"}]` | Ordered list of GitHub dictionaries, each with its own branch, tag, or full commit hash. Omitted `ref` means `main`; `[]` uses only bundled and cached models. |
+| `wake_word_repositories` | `[{"repository":"Keryxion/wakewords","ref":"main"}]` | Ordered list of public GitHub dictionaries, each with its own branch, tag, or full commit hash. Omitted `ref` means `main`; `[]` uses only bundled and cached models. |
 
 For example, load the shared dictionary and a household dictionary:
 
@@ -395,80 +395,44 @@ For example, load the shared dictionary and a household dictionary:
 ]}
 ```
 
-Combine entries from all configured dictionaries. For an identical exact
-`phrase`, the last repository in the list wins. Phrases are compared exactly:
-`Hey Arya` and `hey arya` are two phrases, listed and selected separately.
-Select that entry as a whole;
-do not mix its model formats or evaluations with another dictionary's entry.
-Entry IDs are local to their repository. Reordering sources affects the next
-selection; it does not replace a device's installed model.
+A dictionary's format is defined in `Keryxion/wakewords`. The server reads its
+root `index.json` (`version: 1`), whose `entries` give each `phrase`, its
+`description`, entry `version`, and `manifest` path, and each phrase manifest,
+whose `models` map gives a pinned `url` and `sha256` for `micro_wake_word` and
+`open_wake_word` (microWakeWord also lists its `.tflite` in `files`). Reject
+other index versions. Only entries with trained models are offered.
 
-Each dictionary has `words/<slug>/wakeword.json` and a `README.md` per phrase.
-Its root `index.json` has `version: 1` and `entries`, a list of metadata objects:
-`id`, `phrase`, `description`, entry semver `version`, `languages`, `engines`,
-`tags`, `manifest`, and `readme`. The last two are repository-relative paths.
-Use metadata to browse and filter phrases before fetching manifests. Reject
-unsupported index versions. Entry versions support semver prereleases such as
-`1.0.0-bldf`.
-
-A phrase manifest has the exact `phrase` and a `models` map keyed by
-`micro_wake_word` or `open_wake_word`. Each format gives its primary file's
-pinned artifact `url` and `sha256`; microWakeWord also lists its referenced
-`.tflite` URL and hash in `files`. The default dictionary hosts its models in
-versioned releases of `Keryxion/wakewords`; training and provenance live in
-`Keryxion/wakeword-training`. Other dictionaries can reference their own
-releases. Only entries with trained models are offered; text alone does not
-create a detector.
-
-Optional `evaluations`, keyed by engine, summarize sensitivity (detected
-positive cases) and specificity (negative cases that stayed quiet). Each metric
-is a percentage from 0 to 100, rounded to two decimals; test counts stay in
-the linked report. An unmeasured metric is `null`. Include the measured
-`model_sha256`, named dataset, test conditions, detector settings and source
-report URL. Results belong to those model bytes and that test.
+Combine the entries of all configured dictionaries. Phrases that differ only by
+case or spacing are one phrase; for a phrase listed more than once, the last
+repository in the list supplies its whole entry. A phrase is selected exactly as
+the combined listing spells it. Reordering sources affects the next selection;
+it does not replace a device's installed model.
 
 Refresh the dictionaries when the `set_wake_word` tool lists or selects a
 phrase, and when a configured phrase has no cached models. Resolve each
 repository's `ref` to its own commit from the repository's Git refs, and read
 its index and manifests from that commit at `raw.githubusercontent.com`; an
-unchanged commit is not read again. Keep each dictionary, with its repository
-and resolved commit, in the profile's
-`plugin-data/hermes-converse/wake-dictionaries/`. Download a selected phrase's
-files from its pinned URLs, verify every hash, and cache them before sending
-the switch command. Record the source repository, commit, entry version and
-artifact hashes in `source.json` beside the cached model. Refreshing
-dictionaries does not install new models: a cached phrase changes only when
-that phrase is selected again.
+unchanged commit is not read again. Keep each dictionary's last good index in
+memory when its refresh fails, report that source's failure, and continue
+loading the others.
 
-Keep each dictionary's last good index when its refresh fails, and report that
-source's failure while continuing to load the others. A cached phrase still
-works when GitHub is unavailable. A failed model download leaves the cached
-model and the active phrase alone.
-
-Private-repository authentication belongs to the server. Ask for every URL
-anonymously first, so public dictionaries need no credentials. When GitHub
-refuses, retry with the profile's `GH_TOKEN` or `GITHUB_TOKEN`: a private
-repository's refs and files directly, and a private release's assets
-(`https://github.com/<repository>/releases/download/<tag>/<file>`) through the
-releases API, by finding the asset in the release and downloading it by ID.
-Verify the hash of a private artifact like any other. Send the token only to
-`github.com`, `raw.githubusercontent.com` and `api.github.com` over HTTPS. Do
-not follow a redirect with it: fetch the redirect target without credentials.
-Never log the token. Devices receive local model URLs and use the voice API key.
+Download a selected phrase's files from its pinned URLs, verify every hash, and
+cache them before sending the switch command. Record the source repository,
+commit, entry version and artifact hashes in `source.json` beside the cached
+model. Refreshing dictionaries does not install new models: a cached phrase
+changes only when that phrase is selected again. A cached phrase still works
+when GitHub is unavailable. A failed download leaves the cached model and the
+active phrase alone.
 
 Cached models live in the profile's `plugin-data/hermes-converse/wake/<slug>/`,
-where `<slug>` is the phrase in lowercase with spaces as `_` (`hey_sakura`).
-When that folder already holds another phrase's models, one differing only by
-case or spacing, the phrase gets a folder of its own named
-`<slug>.<first 12 hex digits of the phrase's SHA-256>`, so neither replaces
-the other. A
+where `<slug>` is the phrase in lowercase with spaces as `_` (`hey_sakura`). A
 folder holds a microWakeWord `manifest.json` with its `.tflite`, an openWakeWord
 `<slug>.onnx`, or both. `ready` lists only the formats present (client spec,
 section 8), each with its URL and the file's `sha256`. A phrase with no folder
-is still sent, with empty `models`. In the served microWakeWord manifest,
-name the `.tflite` by its content hash and rewrite the model reference to that
-local filename. Hash the served manifest, so a changed model also changes the
-hash advertised to clients.
+is still sent, with empty `models`. In the served microWakeWord manifest, name
+the `.tflite` by its content hash and rewrite the model reference to that local
+filename, so a changed model also changes the manifest hash advertised to
+clients.
 
 Serve the files at `GET /v1/audio/wake/<slug>/<file>` on the API server, with
 the same API key as the voice route in `Authorization: Bearer`. Serve only
@@ -478,10 +442,10 @@ with 401.
 “Hey Sakura, change your wake word to Hey Arya” calls the `set_wake_word` voice
 tool with `phrase: "Hey Arya"`. Without `phrase`, the tool lists the combined
 dictionary's phrases, their available model formats and descriptions, and the
-device's configured phrase. With a phrase, download
-and verify its models before persisting the setting or sending the command.
-The tool acts on the device attached to the calling conversation; it has no
-device argument. Send `set_wake_word` with its models on the open socket
+device's configured phrase. With a phrase, download and verify its models
+before sending the command; `Hey Sakura` needs no download, since devices
+bundle it. The tool acts on the device attached to the calling conversation; it
+has no device argument. Send `set_wake_word` with its models on the open socket
 (client spec, section 8), and save the phrase in `device_wake_words` when the
 device reports that it switched. A device override takes precedence over
 `wake_word`.
@@ -493,14 +457,13 @@ reconnect. `ready` never waits for GitHub: it carries the models already
 cached, and a configured phrase with none cached is selected and sent in
 `set_wake_word` once the device is connected.
 
-Allow one switch at a time per device. A sent command means the switch was
-requested; confirm that the device changed only after its `wake_word_set`
-reports `ok` for that phrase, within 30 seconds. An error, disconnect, or
-missing result does not confirm a switch. Report a failed switch as failed; the
-device keeps its previous model and phrase, and `device_wake_words` is left
-unchanged, so the device hears its previous phrase in `ready` when it
-reconnects. Reject a tool request with no models before sending anything.
-`assistant_name` remains the client's choice, independent of the wake phrase.
+Allow one switch at a time per device. Confirm that the device changed only
+after its `wake_word_set` reports `ok` for that phrase, within 30 seconds. An
+error, disconnect, or missing result does not confirm a switch. Report a failed
+switch as failed; the device keeps its previous model and phrase, and
+`device_wake_words` is left unchanged, so the device hears its previous phrase
+in `ready` when it reconnects. `assistant_name` remains the client's choice,
+independent of the wake phrase.
 
 | Tool result | Meaning |
 |---|---|
@@ -510,19 +473,12 @@ reconnects. Reject a tool request with no models before sending anything.
 | `{"result":"not_attached"}` | No device is connected to this conversation. |
 | `{"result":"not_a_device"}` | The call was made from a chat that is not a voice device. |
 
-Verify: two devices given one phrase send identical wake claims; a changed model
-changes its advertised hash; a device with no compatible model keeps its active
-phrase; unauthorized and out-of-folder requests are refused; a fresh device
-hears `Hey Sakura` without downloading; a live switch needs no reconnect; and
-confirmation waits for a successful device result. Multiple dictionaries supply
-one combined listing; duplicate phrases use the last source's complete entry;
-each source reads from its own pinned commit; a failed source refresh preserves
-its cache and does not block other sources; a bad model hash prevents a switch;
-and cached models remain usable when GitHub is unreachable. Phrases differing
-only by case or spacing stay separate, each with its own cached models, across
-a restart. A private dictionary's release assets download with the profile's
-token; public ones never see it, and it reaches no other host or redirect
-target.
+Verify: a fresh device hears `Hey Sakura` without downloading; a live switch
+needs no reconnect and is confirmed only by a successful device result; a
+duplicate phrase uses the last source's entry; a failed source keeps its last
+good index without blocking the others; a bad hash prevents a switch; a changed
+model changes its advertised hash; cached models work when GitHub is
+unreachable; and unauthorized or out-of-folder requests are refused.
 
 ## Gateway conversation
 
