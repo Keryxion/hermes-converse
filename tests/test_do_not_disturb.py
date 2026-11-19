@@ -398,10 +398,11 @@ async def _asked(den):
     raise AssertionError("no approval_request")
 
 
-async def test_an_approval_in_a_server_started_turn_is_the_request_alone(asking):
+async def test_an_approval_in_a_server_started_turn_has_its_tone_but_is_not_spoken(asking):
     await _asked(asking)
     await asyncio.sleep(0.05)
-    (request,) = asking.frames  # no tone
+    request, tone = asking.frames
+    assert tone == {"type": "tone", "tone": "approval"}
     assert request["type"] == "approval_request" and request["approval_id"] == "r1"
     assert request["summary"] == "Arya wants to open a network connection. Okay?"
     assert asking.session.outputs == [] and asking.session.answer_hook is None  # nothing spoken or listened for

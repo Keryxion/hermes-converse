@@ -1004,9 +1004,10 @@ section 9) sends nothing to the device:
 - Its reply or its `speak_this` text is not spoken. The reply stays in the
   conversation's history as usual, `send` reports success, and nothing is
   queued to be spoken later.
-- `play_tone` returns `do_not_disturb` and sends nothing.
+- `play_tone` returns `do_not_disturb` and sends nothing. Do Not Disturb does
+  not stop the `approval` tone.
 - An approval with `ask`, or the `command` tool's question, is sent as
-  `approval_request` alone, with no tone and nothing spoken. Speech is not taken
+  `approval_request` and the `approval` tone, with nothing spoken. Speech is not taken
   as its answer; `approval_response` answers it, and Hermes's
   `approvals.timeout` still applies.
 - What an approved `command` leaves until the reply has played, a new
@@ -1024,5 +1025,6 @@ rings and its still-ringing turn is silent; the setting follows `ready` and
 survives a reconnect and a restart; the tool and the device frame each change
 it, the tool also with no device attached; a turn that calls `do_not_disturb`
 with `on: false` is spoken and one with `on: true` is not; an approval in a
-server-started turn is `approval_request` alone and one in the person's turn is
-asked aloud; a client that never sends the frame is served as before.
+server-started turn sends `approval_request` and its tone, unspoken, and one in
+the person's turn is asked aloud; a client that never sends the frame is served
+as before.

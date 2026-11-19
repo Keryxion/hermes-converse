@@ -191,9 +191,10 @@ class Approvals:
             return  # held: nobody can answer; Hermes's timeout ends it
         p.device = attachment
         if self._hub.do_not_disturb(p.chat_id) and not self._person_turn(p.chat_id):
-            # Do Not Disturb, and nobody asked for this turn: shown, never sounded or spoken.
-            # It is answered with ``approval_response``; Hermes's timeout ends it otherwise.
+            # Do Not Disturb, and nobody asked for this turn: the request and its tone, never
+            # spoken. It is answered with ``approval_response``; Hermes's timeout ends it otherwise.
             self._send(attachment, self._request(p, attachment))
+            self._send(attachment, {"type": "tone", "tone": "approval"})
             return
         session = attachment.session
         # Not waiting on the person until this question has played: its audio moves this forward.
