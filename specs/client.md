@@ -19,7 +19,7 @@ deleted history is not restored.
 Wake selection is cooperative: it recommends an answering device without
 restricting audio processing. Section 8 defines the cooperative wake contract.
 Sections 9–10 define conversation output and countdowns. Section 11 defines
-changing the chat model.
+changing the chat model. Section 12 defines Do Not Disturb.
 
 Server lifecycle and integration details are in [the server spec](server.md).
 What a client records for tracing is in [client tracing](client_tracing.md).
@@ -191,6 +191,7 @@ All are JSON text frames:
 | `{"type": "endpointing", "on": false, "commit": true}` | Turns silence/Smart Turn endpointing off or on, and with `commit` ends the current utterance; both fields are optional. See "Push to talk" below. |
 | `{"type": "state", "turn_id": "...", "state": "listening"}` | The state the device now shows; see "The turn's state" in section 4. |
 | `{"type": "countdown", "countdown_id": "...", "ringing": true}` | A countdown is ringing, or with `ended` has ended; see section 10. |
+| `{"type": "do_not_disturb", "on": true}` | The person turned Do Not Disturb on or off on the device; see section 12. |
 | `{"type": "commands"}` | Ask which commands the server runs; see "Commands" below. |
 | `{"type": "command", "name": "new"}` | Run a Hermes command for this device's conversation, such as starting a fresh one; see "Commands" below. |
 | `{"type": "say", "text": "..."}` | Speaks the given text (trimmed, at most 400 characters) as a reply of its own: `thinking`, `speaking` + PCM, then `turn_done` with `next_action: "standby"`. No agent turn runs, nothing is added to the conversation, and no `transcript` frame is sent for it. For fixed device prompts such as a spoken help reminder. Empty or non-string text is ignored. |
@@ -353,6 +354,7 @@ Countdowns are unaffected by a command.
 | `{"type":"tone","tone":"confirm"}` | Play the named tone (see `tones.md`): `confirm` or `error` when the assistant chooses to, `approval` just before the server asks for an approval. It is not a reply: no `turn_id`, and the device reports no state for it. |
 | `client_diagnostics` | Request a fresh version, build, and diagnostic snapshot; answer on this socket with the same `request_id`, as below. |
 | `countdown`, `countdown_cancel` | Start, extend, or cancel a countdown that ends with a tone (section 10). |
+| `{"type":"do_not_disturb","on":true}` | Whether this device is in Do Not Disturb: after every `ready`, and when the assistant changes it (section 12). |
 
 These are the only server frames, apart from `model_changed` and `model_error`
 (section 11). Turn liveness is the repeated `thinking` frame; there is no
@@ -1181,7 +1183,8 @@ binary PCM of two turns. Output waits behind an active turn and its playback
 drain; stale output is discarded instead of played late. Ordinary barge-in,
 `cancel`, and state reports apply equally to these turns. Output goes to the one
 device attached to that conversation. It is never broadcast and never runs a
-wake election.
+wake election. While the device is in Do Not Disturb, this output is not
+spoken (section 12).
 
 
 ## 10. Countdowns
@@ -1378,3 +1381,56 @@ and keeps the previous choice. An invalid/missing request ID returns
 `model_error` with `error: "bad_request_id"` without echoing untrusted ID data.
 These errors do not end the voice connection. A picker keeps its previous
 confirmed choice on rejection or acknowledgement timeout and exposes a retry.
+
+
+## 12. Do Not Disturb
+
+Do Not Disturb keeps the assistant from speaking unless the person asked. It has
+nothing to do with `quiet` (section 5), which reports silence while listening.
+The setting belongs to the device, by its `device_name`, whichever assistant it
+talks to, and the server keeps it. The same frame goes both ways:
+
+```json
+{"type":"do_not_disturb","on":true}
+```
+
+`on` is a Boolean. Either side ignores a frame without one.
+
+**From the server.** It is the first frame after every `ready`, on or off, and
+it comes again whenever the assistant changes the setting ("Hey Arya, don't
+disturb me"). Show its value. It is not a reply: it has no `turn_id`, makes no
+sound, is not answered, and changes nothing about a turn, playback, the
+microphone, or a ringing countdown. The same value twice changes nothing.
+
+**From the device.** Send it when the person turns Do Not Disturb on or off on
+the device, and show the value sent; the server does not echo it. The toggle is
+available from the server's first `do_not_disturb` frame of a connection until
+that connection ends. While disconnected, keep showing the last value. The
+device does not store the setting: after it starts, it shows off until the
+first frame. A device with no control for Do Not Disturb never sends the frame.
+
+While it is on, and the person's last request on the device (a turn by wake
+word or Talk, such as stopping a timer by voice) ended more than the server's
+grace ago, five minutes by default:
+
+- Output the server starts for this device (section 9: reminders, still-ringing
+  countdowns, other messages) is not sent: no frames and no audio. The replies
+  remain in the device's conversation history and are never spoken later, not
+  even when Do Not Disturb ends.
+- Turns the person starts, by wake word or Talk, and `say`, run and are answered
+  aloud, with their tones.
+- Nothing asks for an approval a turn the server started needs: the server
+  declines it. An approval in a turn the person started is asked as usual.
+- Countdowns ring as usual, with their sound, until ended (section 10).
+- The device shows Do Not Disturb (`animations.md`).
+
+The device plays whatever it receives in either state: Do Not Disturb changes
+what the server sends, never what the device plays. A reply already playing, or
+already waiting behind the current exchange, when Do Not Disturb turns on plays
+to its end. A reconnect changes nothing: the setting follows `ready`, and a turn
+in flight carries on as section 4 describes.
+
+Within the grace, everything is sent as if Do Not Disturb were off. Turning Do
+Not Disturb on ends the grace.
+
+Do Not Disturb is not mute: the microphone and wake word work as usual.

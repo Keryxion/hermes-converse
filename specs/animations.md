@@ -131,7 +131,8 @@ Mute and Do Not Disturb are shown alongside the state, not in place of it.
 - **Error while muted:** keep the mute indication and show the error with text,
   a symbol, or the fault pulse.
 - **Do Not Disturb:** violet badge, or a 1.76 s violet pulse on entry. This is
-  not microphone mute.
+  not microphone mute: it holds back only speech the server starts
+  (`client.md` section 12).
 - **Volume:** neutral proportional bar for 1.5 s. Assistant volume, where it is
   a separate control, uses a speaking-blue bar.
 
