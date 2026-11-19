@@ -1486,8 +1486,8 @@ While it is on:
   even when Do Not Disturb ends.
 - Turns the person starts, by wake word or Talk, and `say`, run and are answered
   aloud, with their tones.
-- An approval for a turn the server started arrives as `approval_request`
-  alone, with no `approval` tone and no spoken question. Show it and answer with
+- An approval for a turn the server started arrives as `approval_request` and
+  the `approval` tone, with no spoken question. Show it and answer with
   `approval_response` (section 4, "Approvals"). An approval in a turn the person
   started is asked aloud as usual.
 - Countdowns ring as usual, with their sound, until ended (section 10).
