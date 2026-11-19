@@ -981,8 +981,8 @@ ringing, and the ring timeout from the setting.
 
 ## Do Not Disturb
 
-Do Not Disturb is a per-device setting: a column of the device's row in
-`devices.db`, off by default, shared by every assistant's conversation on that
+Do Not Disturb is a per-device setting: the `do_not_disturb` key of the JSON
+`settings` column of the device's row in `devices.db`, off by default, shared by every assistant's conversation on that
 device and kept across reconnects and restarts. It is unrelated to `quiet`,
 the silence that ends listening.
 

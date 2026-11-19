@@ -103,7 +103,7 @@ class Rig:
 
     def stored(self) -> bool:
         with sqlite3.connect(self.db) as db:
-            return bool(db.execute("SELECT do_not_disturb FROM devices").fetchone()[0])
+            return json.loads(db.execute("SELECT settings FROM devices").fetchone()[0]).get("do_not_disturb") is True
 
     async def device_sets(self, on: bool):
         await self.ws.send_json({"type": "do_not_disturb", "on": on})
@@ -238,7 +238,7 @@ async def test_the_tool_sets_it_for_a_device_that_is_not_attached(rig, device_en
     assert rig.stored()
 
 
-def test_an_existing_devices_db_gains_the_setting(tmp_path):
+def test_an_existing_devices_db_gains_settings_and_keeps_unknown_ones(tmp_path):
     path = tmp_path / "devices.db"
     with sqlite3.connect(path) as db:
         db.executescript("""
@@ -249,10 +249,15 @@ def test_an_existing_devices_db_gains_the_setting(tmp_path):
         """)
     store = DeviceStore(path)
     device = store.reserve("Arya", "Den Echo")
+    with sqlite3.connect(path) as db:  # a later release's setting, which this one keeps
+        db.execute("""UPDATE devices SET settings='{"volume": 3}'""")
     assert device.recipient_id == "8f0e3c0e-63f1-4f0a-9d53-0a9a3b9d3a11"
     assert not store.do_not_disturb(device.recipient_id)
     assert store.set_do_not_disturb(device.recipient_id, True)
     assert not store.set_do_not_disturb(device.recipient_id, True)
+    with sqlite3.connect(path) as db:
+        assert json.loads(db.execute("SELECT settings FROM devices").fetchone()[0]) == {
+            "volume": 3, "do_not_disturb": True}
     assert store.recipient_of(device.candidate_id.removeprefix("voice_")) == device.recipient_id
     store.close()
     again = DeviceStore(path)
