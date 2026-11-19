@@ -117,7 +117,7 @@ class Approvals:
             choices.append("deny")
         p = _Pending(str(prompt.request_id or ""), prompt.session_key, prompt.chat_id,
                      str(prompt.command or ""), str(prompt.description or ""), choices)
-        if choices == ["deny"] or not p.request_id:
+        if choices == ["deny"] or not p.request_id or self._declined(p.chat_id):
             self._resolve(p, "deny")
             return
         self._loop = asyncio.get_running_loop()
@@ -131,6 +131,8 @@ class Approvals:
         """Ask the person about the plugin's own *command* as a Hermes request is asked, whatever
         ``approval_choice`` says, with choices once and deny. Their choice, or None with no answer
         within *timeout* seconds (``approvals.timeout``)."""
+        if self._declined(chat_id):
+            return "deny"
         self._loop = asyncio.get_running_loop()
         p = _Pending(f"command-{uuid.uuid4().hex}", "", chat_id, command, summary, ["once", "deny"],
                      summary=summary, answer=self._loop.create_future(), deadline=time.monotonic() + timeout)
@@ -189,34 +191,30 @@ class Approvals:
         if attachment is None:
             p.device = None
             return  # held: nobody can answer; Hermes's timeout ends it
-        p.device = attachment
-        if self._hub.do_not_disturb(p.chat_id) and not self._person_turn(p.chat_id):
-            # Do Not Disturb, and nobody asked for this turn: the request and its tone, never
-            # spoken. It is answered with ``approval_response``; Hermes's timeout ends it otherwise.
-            self._send(attachment, self._request(p, attachment))
-            self._send(attachment, {"type": "tone", "tone": "approval"})
+        if self._declined(p.chat_id):  # held until a device in Do Not Disturb attached
+            self._settle(p, "deny", "denied")
             return
+        p.device = attachment
         session = attachment.session
         # Not waiting on the person until this question has played: its audio moves this forward.
         session.playback_until = math.inf
         session.answer_taken = False
         session.answer_hook = lambda text, _p=p, _a=attachment: self._spoken(_p, _a, text)
         if speech is None:
-            self._send(attachment, self._request(p, attachment))
+            self._send(attachment, {
+                "type": "approval_request",
+                "turn_id": getattr(attachment.session, "_active_turn_id", None),
+                "approval_id": p.request_id, "summary": p.summary, "command": p.command,
+                "choices": p.choices})
             # The tone says a question is coming; it plays before the summary is spoken.
             self._send(attachment, {"type": "tone", "tone": "approval"})
         self._speak(p, self._cue(speech or p.summary, p.choices))
 
-    @staticmethod
-    def _request(p: _Pending, attachment: Any) -> dict:
-        return {"type": "approval_request", "turn_id": getattr(attachment.session, "_active_turn_id", None),
-                "approval_id": p.request_id, "summary": p.summary, "command": p.command,
-                "choices": p.choices}
-
-    def _person_turn(self, chat_id: str) -> bool:
-        """A turn the person started, by wake word or Talk, is waiting on this conversation."""
+    def _declined(self, chat_id: str) -> bool:
+        """Do Not Disturb, and no turn the person started is waiting: nobody is asked, the answer is no."""
         turn = self._adapter._turns.get(chat_id)
-        return turn is not None and turn.started and turn.outcome is None and not turn.stopped
+        person = turn is not None and turn.started and turn.outcome is None and not turn.stopped
+        return not person and self._hub.do_not_disturb(chat_id)
 
     @staticmethod
     def _cue(text: str, choices: Any = ()) -> str:
