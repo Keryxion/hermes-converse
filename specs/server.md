@@ -330,6 +330,51 @@ and no overlapping runs or stale PCM after cancellation.
 Use deterministic PCM and a public speech fixture for automated regression tests.
 Private server recordings may inform local diagnostics but must not be committed.
 
+## Wake elections
+
+The collection window (`arbitrate_wake_window_seconds`) is the longest an
+election collects claims. The server ends it sooner, as soon as no connected
+device that has yet to claim is likely to.
+
+The server learns which devices hear the same utterance from the claims
+themselves, by device name. Two claims for one wake phrase that arrive within a
+window of each other were the same utterance, whether or not they shared an
+election. For each pair of devices it keeps how often that happened and the
+gaps between their arrivals the last 100 times.
+
+The chance that device B claims an utterance device A claimed is
+
+```
+claims = (claims by A that B also claimed + 1) / (claims by A + 2)
+```
+
+so a pair with no history starts at one half. Once B has let some of the pair's
+past gaps go by without claiming, the chance that its claim is still to come is
+
+```
+later = (past gaps longer than the time since A's claim + 1) / (past gaps + 1)
+still = claims × later / (claims × later + 1 − claims)
+```
+
+An election waits for B while `still` is at least 0.1 for any device that has
+claimed, and never past the window. That one number decides both whether to
+wait and how long:
+
+| A and B | The election waits for B |
+|---|---|
+| No history | The whole window |
+| A has claimed 9 times, never with B | Not at all |
+| Together 3 times in 10, 30 gaps of about 50 ms | About 50 ms |
+| The same, and one gap was 400 ms | About 50 ms |
+| Together 9 times in 10, 30 gaps of about 50 ms | The whole window, the one time in 10 that B does not claim |
+
+A device connected alone is granted at once. A claim that arrives after its
+election ended opens another, as after the window; both devices are granted,
+and the pair's history then includes it.
+
+What is learned is kept in memory. After a restart every pair starts again at
+one half.
+
 ## Named Aryas
 
 Identify a device by its `device_name` within the server/profile. Keep its
