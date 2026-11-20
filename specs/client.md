@@ -185,12 +185,11 @@ All are JSON text frames:
 | frame | meaning |
 |---|---|
 | `{"stop": true}` | Stops live work and closes the socket. The device's conversation and its history are kept for reconnection. |
-| `{"commit": true}` | Ends the current utterance now, with the audio already sent (runs a turn on it). |
 | `{"type": "cancel", "turn_id": "..."}` | Cancels the **current** turn — stops TTS and the agent — but keeps the socket, session, and history alive. |
 | `{"type": "wake", "claim_id": "...", "wake_word": "Hey Arya"}` | request an advisory wake decision while buffering the new activation locally; see section 8. |
 | `{"type": "heard", "wake_word": "Hey Arya"}` | A wake word was heard during a turn; see "A wake word heard during a turn" in section 4. |
 | `{"type": "wake_word_set", "phrase": "Hey Arya", "status": "ok"}` | The result of switching to the wake word the server sent; see section 8. |
-| `{"type": "endpointing", "on": false, "commit": true}` | Turns silence/Smart Turn endpointing off or on, and with `commit` ends the current utterance; both fields are optional. See "Push to talk" below. |
+| `{"type": "endpointing", "on": false, "commit": true}` | `on` turns silence/Smart Turn endpointing off or on. `"commit": true` ends the current utterance now, with the audio already sent (runs a turn on it). Both fields are optional. See "Push to talk" below. |
 | `{"type": "state", "turn_id": "...", "state": "listening"}` | The state the device now shows; see "The turn's state" in section 4. |
 | `{"type": "countdown", "countdown_id": "...", "ringing": true}` | A countdown is ringing, or with `ended` has ended; see section 10. |
 | `{"type": "commands"}` | Ask which commands the server runs; see "Commands" below. |
@@ -213,9 +212,10 @@ a bad Opus packet.
 | Sent | Result |
 |---|---|
 | Text that is not JSON, JSON that is not an object, or an unknown `type` | Ignored. |
-| `stop` or `commit` with a value other than `true` | Ignored. |
+| `stop` with a value other than `true` | Ignored. |
 | `cancel` whose `turn_id` is not the current turn's | Ignored. A `cancel` with no `turn_id`, or `null`, is untargeted. |
 | `endpointing` whose `on` is not a boolean | `on` is ignored; `"commit": true` still commits. |
+| `endpointing` whose `commit` is not `true` | No commit; a boolean `on` still applies. |
 | `countdown` with no string `countdown_id`, with one the server does not have, or with neither `"ringing": true` nor `"ended": true` | Ignored. |
 | `say` whose `text` is not a string or is empty after trimming | Ignored. |
 | `say` whose `text` is over 400 characters | The first 400 are spoken. |
@@ -539,7 +539,8 @@ Unmuting lands in standby ("Handling `turn_done.next_action`"); never replay
 audio accumulated while muted.
 
 Muting while listening commits what was already said: stop microphone capture,
-send all audio already captured in order, then send `{"commit": true}` before
+send all audio already captured in order, then send
+`{"type":"endpointing","commit":true}` before
 stopping upstream audio. This ends the utterance without waiting for more
 silence. With Opus, finish the partial packet and flush encoder delay before
 `commit`. The server ignores a commit with nothing said. Backgrounding and
