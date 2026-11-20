@@ -37,6 +37,17 @@ SCHEMAS = {
                      "description": "Command arguments, such as [here, 3] for compress; default []."}},
             "required": ["name"]},
     },
+    "set_wake_word": {
+        "name": "set_wake_word",
+        "description": (
+            "Voice devices only. Change the wake word of the device you are talking through. "
+            "Call with no phrase to list the phrases available and this device's current one. "
+            "Call with a phrase exactly as listed to switch: the device downloads and loads the model, and "
+            "the result is ok only once the device reports the change. On any other result the "
+            "device keeps its previous wake word; say that the change did not happen."),
+        "parameters": {"type": "object", "properties": {
+            "phrase": {"type": "string", "description": "A listed phrase, such as Hey Arya."}}},
+    },
     "speak_this": {
         "name": "speak_this",
         "description": (
@@ -168,8 +179,20 @@ def make_handlers(hub: Any) -> dict[str, Callable[..., Any]]:
         result = await asyncio.wrap_future(attachment.diagnostics())
         return json.dumps(result, ensure_ascii=False)
 
-    return {"speak_this": speak_this, "play_tone": play_tone, "standby": standby, "mute": mute,
-            "command": command, "client_diagnostics": client_diagnostics}
+    async def set_wake_word(args: dict, **kw: Any) -> str:
+        error, attachment = device()
+        if attachment is None:
+            return _result(error or "not_attached")
+        if attachment.wake_word is None:  # the device sent no wake_word_format
+            return json.dumps({"result": "failed", "error": "model_unavailable"})
+        phrase = args.get("phrase")
+        if phrase is not None and (not isinstance(phrase, str) or not phrase.strip()):
+            return json.dumps({"error": "phrase must be a listed wake phrase"})
+        result = await asyncio.wrap_future(attachment.wake_word(phrase.strip() if phrase else None))
+        return json.dumps(result, ensure_ascii=False)
+
+    return {"speak_this": speak_this, "play_tone": play_tone, "standby": standby, "mute": mute, "command": command,
+            "client_diagnostics": client_diagnostics, "set_wake_word": set_wake_word}
 
 
 def register_tools(ctx: Any, hub: Any) -> None:

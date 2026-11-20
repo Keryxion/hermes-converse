@@ -60,6 +60,7 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 | `quiet_interval` | session mode: seconds of silence between `quiet` frames, a number up to 3600 (0 = none, the default); send 1 |
 | `device_name` | The configured device label, such as `Den Echo` or `Kitchen`. Each device keeps its own conversation, titled `<assistant_name>: <device_name>`. |
 | `models` | Boolean; only `true` includes the model catalog in `ready`. Defaults to `false`. See section 11. |
+| `wake_word_format` | The wake-word model format this device runs: `micro_wake_word` or `open_wake_word`. Only a device that sends it is given a wake word; see section 8. |
 | `transcripts` | Boolean; request user and assistant transcript frames when `true`. Defaults to `false`. See section 4. |
 | `after` | The `message_id` of the last transcript this client has shown, to catch up on what it missed. Only with `transcripts: true`. See "Catching up" in section 4. |
 | `assistant_name` | What you call the assistant, normally `Arya`, without “Hey”. Used in the voice system prompt; separate from the device label, such as `Den Echo`. |
@@ -188,6 +189,7 @@ All are JSON text frames:
 | `{"type": "cancel", "turn_id": "..."}` | Cancels the **current** turn — stops TTS and the agent — but keeps the socket, session, and history alive. |
 | `{"type": "wake", "claim_id": "...", "wake_word": "Hey Arya"}` | request an advisory wake decision while buffering the new activation locally; see section 8. |
 | `{"type": "heard", "wake_word": "Hey Arya"}` | A wake word was heard during a turn; see "A wake word heard during a turn" in section 4. |
+| `{"type": "wake_word_set", "phrase": "Hey Arya", "status": "ok"}` | The result of switching to the wake word the server sent; see section 8. |
 | `{"type": "endpointing", "on": false, "commit": true}` | Turns silence/Smart Turn endpointing off or on, and with `commit` ends the current utterance; both fields are optional. See "Push to talk" below. |
 | `{"type": "state", "turn_id": "...", "state": "listening"}` | The state the device now shows; see "The turn's state" in section 4. |
 | `{"type": "countdown", "countdown_id": "...", "ringing": true}` | A countdown is ringing, or with `ended` has ended; see section 10. |
@@ -353,6 +355,7 @@ Countdowns are unaffected by a command.
 | `{"type":"tone","tone":"confirm"}` | Play the named tone (see `tones.md`): `confirm` or `error` when the assistant chooses to, `approval` just before the server asks for an approval. It is not a reply: no `turn_id`, and the device reports no state for it. |
 | `client_diagnostics` | Request a fresh version, build, and diagnostic snapshot; answer on this socket with the same `request_id`, as below. |
 | `countdown`, `countdown_cancel` | Start, extend, or cancel a countdown that ends with a tone (section 10). |
+| `set_wake_word` | Switch to this wake phrase and its models, then answer with `wake_word_set` (section 8). |
 
 These are the only server frames, apart from `model_changed` and `model_error`
 (section 11). Turn liveness is the repeated `thinking` frame; there is no
@@ -1023,6 +1026,62 @@ optional `turn_id` to target a specific turn.
 
 
 ## 8. Cooperative wake selection
+
+### The wake word
+
+Every wake-word device ships with a working `Hey Sakura` model and starts
+with that phrase on first setup. Name the model format the device runs in
+`start`:
+
+| `wake_word_format` | File | Used by |
+|---|---|---|
+| `micro_wake_word` | An ESPHome microWakeWord manifest. Its `model` names the `.tflite` file beside it. | ESP32, and Echo running microWakeWord |
+| `open_wake_word` | An openWakeWord head `.onnx`. The melspectrogram and embedding models stay bundled with the client. | macOS, iOS |
+
+The server sends the configured phrase in `ready`, with a model only in that
+format:
+
+```json
+{"type":"ready","wake_word":{"phrase":"Hey Arya","models":{
+  "micro_wake_word":{"url":"/v1/audio/wake/hey_arya/manifest.json","sha256":"9f2c…"}}}}
+```
+
+Without `wake_word_format`, `ready` has no `wake_word` and the server never
+sends `set_wake_word`.
+
+Fetch a model with `GET` on the server's host and port, with
+`Authorization: Bearer <API_SERVER_KEY>`. `sha256` is the hash of the file at
+`url`. For microWakeWord, also fetch the manifest's model file, resolving it
+relative to the manifest URL and using the same key. Cache downloads by
+`sha256`; reuse a cached model when its hash matches. If no download is
+offered for a phrase already supplied by a bundled model, use that model.
+
+The server can change the wake word on an open socket with `set_wake_word`.
+It carries the same `phrase` and `models` as `ready.wake_word`:
+
+```json
+{"type":"set_wake_word","phrase":"Hey Arya","models":{
+  "micro_wake_word":{"url":"/v1/audio/wake/hey_arya/manifest.json","sha256":"9f2c…"}}}
+```
+
+For either message, keep detecting with the current model while downloading,
+verifying the advertised hash, and loading the new model. Once loading succeeds,
+switch the model and phrase together. Send exactly the active `phrase` in wake
+claims. Report the result on the same socket:
+
+```json
+{"type":"wake_word_set","phrase":"Hey Arya","status":"ok"}
+{"type":"wake_word_set","phrase":"Hey Arya","status":"error","error":"download_failed"}
+```
+
+`phrase` identifies the requested phrase. Errors are `model_unavailable`,
+`download_failed`, `hash_mismatch`, or `load_failed`. On failure, keep the
+previous phrase and model and show that the requested one is unavailable.
+Answer a `set_wake_word` within 30 seconds; the server takes a later answer,
+or none, as no switch.
+Remember a successful switch across restarts. A `ready` without `wake_word`
+keeps the active phrase; before any switch, that is `Hey Sakura`. The `cancel`
+wake word (section 10) stays the device's own.
 
 ### Participation and lifetime
 
