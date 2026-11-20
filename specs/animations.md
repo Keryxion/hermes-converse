@@ -159,12 +159,28 @@ Ambient light effects, face blinks and glances, and user themes never cover a
 voice state, mute, or a fault. A theme may change geometry and style; it keeps
 the state colors and meanings.
 
+## Conversation state indicator
+
+On both macOS and iOS, the top-left conversation state indicator contains a
+live, squiggling waveform in its center. It has the same real audio-responsive
+character as the macOS menu-bar level meter: microphone input while listening,
+reply output while speaking, including the local playback tail. The waveform
+line takes the current state's color from the palette above.
+
+Keep the surrounding state animations. Audio activity is conveyed by the
+waveform, not by background color changes. In other states the waveform shows
+no audio activity; silence never produces fake activity. Muting stops input
+activity immediately; reply output may still drive the waveform while speaking.
+The mute and fault visibility and priority rules remain unchanged, as does the
+Reduce Motion contract.
+
 ## Device adaptations
 
 | Device | Rendering |
 |---|---|
 | macOS menu mark | The `)` arc stays visible in every state. The dot takes the state color and animation; larger animations such as thinking and mute also color and animate the arc. The level meter sits beside the dot. The mark stays legible on light and dark menu bars. |
-| iOS orb | The orb and rings take the state color. The waveform shows the microphone level while listening and the reply level while speaking. A label names the state and microphone status. |
+| macOS conversation | The top-left state indicator contains the centered waveform and keeps the surrounding state animations. |
+| iOS orb | The top-left conversation orb contains the centered waveform. The orb and rings keep the state color and animations. A label names the state and microphone status. |
 | LED ring (Voice PE, Echo) | Travelling states orbit the ring. Where the device knows the talker's direction, listening points toward the talker. |
 | LED groups (Echo Pyramid) | The four groups mirror the same state. Travelling states may breathe instead. |
 | Echo screen band | The ring unrolled into a band with the talker at the center, using the ring's colors and timing. |
