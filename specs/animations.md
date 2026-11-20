@@ -98,8 +98,8 @@ The frames named here are defined in [client.md](client.md).
 - A wake timeout is not a denial: return to standby without showing red.
 - `ready` alone does not grant a wake. Manual Talk enters listening without
   arbitration. An outbound reply enters speaking directly from standby.
-- Listening that manual Talk opened ignores `quiet` until the person's first
-  request; after that, `quiet` returns to standby as usual.
+- Listening that manual Talk opened waits four times the quiet threshold for
+  the person's first request; after that, `quiet` returns to standby as usual.
 - Stay in speaking until local playback has drained, even after `turn_done`.
   Apply `next_action` after the drain; do not show green while reply audio is
   still queued.

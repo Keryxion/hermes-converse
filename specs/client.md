@@ -47,7 +47,7 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 
 ```json
 {"type": "start", "key": "<API_SERVER_KEY>", "input_rate": 16000,
- "output_rate": 24000, "quiet_interval": 0, "assistant_name": "Arya", "device_name": "Den Echo"}
+ "output_rate": 24000, "quiet_interval": 1, "assistant_name": "Arya", "device_name": "Den Echo"}
 ```
 
 | field | what it does |
@@ -780,7 +780,10 @@ Muting is the same whoever asks: the device's own control, or `mute`. It ends
 the exchange, and nothing the server sends unmutes. `cancel` alone leaves the
 microphone as it is, including a `cancel` the device sends for a timeout of its
 own. A Stop control the person presses is `cancel` and then standby; only a
-control the person uses may add that.
+control the person uses may add that. A control that only stops listening, like
+ending dictation, is not a Stop control: it sends `{"commit": true}` if the
+person was speaking, then goes to standby, and a reply in progress plays on.
+Label it so it cannot be read as stopping the reply, such as "Stop listening".
 
 An activation that `listen` opens ends as any other does, `quiet` included; it
 has no time limit of its own.
@@ -982,9 +985,9 @@ second of silence, with the total so far:
 {"type": "quiet", "quiet_seconds": 3.0}
 ```
 
-Return to standby when `quiet_seconds` reaches your own threshold. The threshold
-is the device's: it is not sent to the server, and the server never ends an
-exchange for silence. `quiet_interval` is only how often the frames come.
+Return to standby when `quiet_seconds` reaches your threshold, 5 seconds by
+default. The threshold is the device's: it is not sent to the server, and the
+server never ends an exchange for silence. `quiet_interval` is only how often the frames come.
 
 The server counts silence in **received** audio (never wall-clock, so a
 held-open socket never accrues phantom quiet). Each listening phase counts from
@@ -993,9 +996,10 @@ the count. Audio sent while a request is captured, transcribed or answered is
 not counted.
 
 Silence sent before you stopped streaming does not carry over. After manual
-Talk, ignore `quiet` until the person's first request (a new turn starts); the
-person pressed Talk to speak, so silence before they do is not a reason to stop
-listening. After that request, `quiet` returns to standby as usual. A `turn_done` with `next_action: "standby"` also returns to standby
+Talk, wait four times the threshold, 20 seconds by default, before the person's
+first request (a new turn starts): they pressed Talk to speak, so give them
+longer to begin. After that request, `quiet` returns to standby at the usual
+threshold. A `turn_done` with `next_action: "standby"` also returns to standby
 ("Handling `turn_done.next_action`", section 4).
 
 ## 6. Typical flow
