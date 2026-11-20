@@ -378,12 +378,12 @@ A prompt does not bypass a scheduling tool's refusal.
 
 The server sets each device's wake phrase and serves the models that detect it,
 so devices using the same phrase send identical wake claims. Every wake-word
-device starts with a bundled `Hey Sakura` model on first setup.
+device starts with a bundled `Hey Arya` model on first setup.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `wake_word` | `Hey Sakura` | The default phrase for every named device. |
-| `device_wake_words` | none | A phrase for particular devices by `device_name`, such as `{"Den Echo": "Hey Arya"}`. |
+| `wake_word` | `Hey Arya` | The default phrase for every named device. |
+| `device_wake_words` | none | A phrase for particular devices by `device_name`, such as `{"Den Echo": "Hey Sakura"}`. |
 | `wake_word_repositories` | `[{"repository":"Keryxion/wakewords","ref":"main"}]` | Ordered list of public GitHub dictionaries, each with its own branch, tag, or full commit hash. Omitted `ref` means `main`; `[]` uses only bundled and cached models. |
 
 For example, load the shared dictionary and a household dictionary:
@@ -425,7 +425,7 @@ when GitHub is unavailable. A failed download leaves the cached model and the
 active phrase alone.
 
 Cached models live in the profile's `plugin-data/hermes-converse/wake/<slug>/`,
-where `<slug>` is the phrase in lowercase with spaces as `_` (`hey_sakura`). A
+where `<slug>` is the phrase in lowercase with spaces as `_` (`hey_arya`). A
 folder holds a microWakeWord `manifest.json` with its `.tflite`, an openWakeWord
 `<slug>.onnx`, or both. `ready` and `set_wake_word` offer only the format the
 device named in `start`'s `wake_word_format` (client spec, section 8), with its
@@ -442,12 +442,12 @@ the same API key as the voice route in `Authorization: Bearer`. Serve only
 files in that folder; answer anything else with 404, and a missing or wrong key
 with 401.
 
-“Hey Sakura, change your wake word to Hey Arya” calls the `set_wake_word` voice
-tool with `phrase: "Hey Arya"`. Without `phrase`, the tool lists the combined
+“Hey Arya, change your wake word to Hey Sakura” calls the `set_wake_word` voice
+tool with `phrase: "Hey Sakura"`. Without `phrase`, the tool lists the combined
 dictionary's phrases, their available model formats and descriptions, and the
 device's configured phrase. With a phrase, download and verify its models
 before sending the command; a phrase with no model in the device's format fails
-with `model_unavailable`, and `Hey Sakura` needs no download, since devices
+with `model_unavailable`, and `Hey Arya` needs no download, since devices
 bundle it. The tool acts on the device attached to the calling conversation; it
 has no device argument. Send `set_wake_word` with its models on the open socket
 (client spec, section 8), and save the phrase in `device_wake_words` when the
@@ -471,13 +471,13 @@ independent of the wake phrase.
 
 | Tool result | Meaning |
 |---|---|
-| `{"wake_word":"Hey Sakura","phrases":[{"phrase":"Hey Arya","formats":["micro_wake_word","open_wake_word"],"description":"..."}]}` | No `phrase` was given: the device's configured phrase and the phrases on offer. `unavailable_dictionaries` lists repositories that could not be refreshed. |
-| `{"result":"ok","phrase":"Hey Arya"}` | The device reported that it switched. |
+| `{"wake_word":"Hey Arya","phrases":[{"phrase":"Hey Sakura","formats":["micro_wake_word","open_wake_word"],"description":"..."}]}` | No `phrase` was given: the device's configured phrase and the phrases on offer. `unavailable_dictionaries` lists repositories that could not be refreshed. |
+| `{"result":"ok","phrase":"Hey Sakura"}` | The device reported that it switched. |
 | `{"result":"failed","error":"..."}` | No switch was confirmed. `unknown_phrase`, `model_unavailable`, `download_failed` and `hash_mismatch` come from the server before anything was sent; `model_unavailable`, `download_failed`, `hash_mismatch` and `load_failed` come from the device; `timeout` and `disconnected` mean it did not answer; `setting_not_saved` means the device switched but its setting could not be written. |
 | `{"result":"not_attached"}` | No device is connected to this conversation. |
 | `{"result":"not_a_device"}` | The call was made from a chat that is not a voice device. |
 
-Verify: a fresh device hears `Hey Sakura` without downloading; a device is
+Verify: a fresh device hears `Hey Arya` without downloading; a device is
 offered only its own model format; a live switch
 needs no reconnect and is confirmed only by a successful device result; a
 duplicate phrase uses the last source's entry; a failed source keeps its last

@@ -24,7 +24,7 @@ from aiohttp import ClientError, ClientSession, ClientTimeout
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_PHRASE = "Hey Sakura"  # the model every wake-word device ships with
+DEFAULT_PHRASE = "Hey Arya"  # the model every wake-word device ships with
 DEFAULT_REPOSITORIES = (("Keryxion/wakewords", "main"),)
 ENGINES = ("micro_wake_word", "open_wake_word")
 ROUTE_PREFIX = "/v1/audio/wake"
@@ -269,7 +269,7 @@ class WakeWords:
     async def select(self, phrase: str, repositories: Any) -> dict[str, dict]:
         """Select exactly *phrase*: refresh the dictionaries, download and verify its entry's
         models, and return what the cache now offers. Without a dictionary entry, models already
-        cached for the phrase are used as they are, and ``Hey Sakura`` needs none: it is bundled."""
+        cached for the phrase are used as they are, and ``Hey Arya`` needs none: it is bundled."""
         async with self._lock, self._open_fetch() as fetch:
             snapshots, _ = await self._refresh(repositories, fetch)
             entry = next((item for item in self._combine(snapshots) if item["phrase"] == phrase), None)
@@ -438,7 +438,7 @@ class WakeWordLink:
 
     def _usable(self, phrase: str, models: dict[str, dict]) -> dict[str, dict]:
         """What to send for *phrase*; ``model_unavailable`` when it has nothing in the device's
-        format (``Hey Sakura`` needs nothing: it is bundled)."""
+        format (``Hey Arya`` needs nothing: it is bundled)."""
         offered = self._offer(models)
         if not offered and phrase != DEFAULT_PHRASE:
             raise WakeWordError("model_unavailable")
