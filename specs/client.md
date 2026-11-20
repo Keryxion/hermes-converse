@@ -781,8 +781,9 @@ the exchange, and nothing the server sends unmutes. `cancel` alone leaves the
 microphone as it is, including a `cancel` the device sends for a timeout of its
 own. A Stop control the person presses is `cancel` and then standby; only a
 control the person uses may add that. A control that only stops listening, like
-ending dictation, is not a Stop control: it sends `{"commit": true}` if the
-person was speaking, then goes to standby, and a reply in progress plays on.
+ending dictation, is not a Stop control: it sends
+`{"type":"endpointing","commit":true}` if the person was speaking, then goes to
+standby, and a reply in progress plays on.
 Label it so it cannot be read as stopping the reply, such as "Stop listening".
 
 An activation that `listen` opens ends as any other does, `quiet` included; it
