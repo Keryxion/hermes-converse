@@ -96,11 +96,12 @@ Every close before `ready` is preceded by an error frame naming it, such as
 
 For a wake-word client, detect the wake word locally, buffer microphone
 PCM while awaiting arbitration for up to **1000 ms**, and start streaming
-only on a matching grant. Send the buffered audio first, in capture order,
+on a matching grant or when that deadline expires without a matching decision.
+Send the buffered audio first, in capture order,
 then live mono audio at `input_rate` without a gap or duplication.
 For PCM16, send little-endian samples; 30 ms blocks are ideal (e.g. 480 samples
 at 16 kHz). For Opus, use the 20 ms packets defined below. Keep streaming throughout
-the granted activation, including thinking and playback (sections 4 and 8).
+the activation, including thinking and playback (sections 4 and 8).
 A client that does not use wake detection may start streaming after `ready`.
 
 The server replies with `ready`:
@@ -407,15 +408,15 @@ microphone local; an open socket and `ready` do not start upstream audio.
 On detection, send `wake` and buffer all microphone audio while waiting up
 to **1000 ms** for the matching decision. Retain the detector's available
 pre-roll and every sample during the wait so the start of the utterance is
-not lost. On a grant, send that buffer once, in capture order, then stream
+not lost. On a grant or timeout, send that buffer once, in capture order, then stream
 live PCM continuously for the rest of the activation. Include silence.
 
 | client state or event | microphone transport and server use |
 |---|---|
 | Idle / waiting for a local wake word | Local wake detection only; no upstream PCM. |
 | Awaiting matching wake decision (up to 1000 ms) | Buffer locally; no upstream PCM for this activation yet. |
-| Matching `wake_grant` | Flush buffered PCM in order, then continue with live PCM. Server VAD/endpointer captures the request for transcription. |
-| Matching `wake_deny` or timeout | Discard the activation buffer and resume local wake detection; do not stream this activation. |
+| Matching `wake_grant` before the deadline, or timeout without a matching decision | Flush buffered PCM once in order, then continue with live PCM. Server VAD/endpointer captures the request for transcription. |
+| Matching `wake_deny` before the deadline | Discard the activation buffer and resume local wake detection; do not stream this activation or play a listening tone. |
 | `transcript` / `thinking` after request endpoint | Keep sending live PCM. Accepted speech interrupts the old reply and becomes a continuation in the same conversation. |
 | `speaking` and queued speaker playback | Keep sending live PCM. The server rejects speaker echo and captures accepted user interruptions as continuations. |
 | Turn ended and playback drained, activation still open | Keep streaming; server may capture the next user utterance normally. |
@@ -1002,8 +1003,8 @@ listening. After that request, `quiet` returns to standby as usual. A `turn_done
 
 1. Open `ws://<host>:<port>/v1/audio/converse`, send `start`, and receive `ready`.
 2. Detect the wake word locally; send `wake` and buffer PCM while awaiting
-   the matching grant for up to 1000 ms. On denial/timeout, discard the buffer.
-3. On grant, flush the buffered PCM and continue with live PCM. Server VAD
+   a matching decision for up to 1000 ms. On a timely matching denial, discard the buffer and stay silent.
+3. On grant or timeout, flush the buffered PCM once and continue with live PCM. Server VAD
    endpoints the user request, then emits `thinking` (followed by the user `transcript` if enabled).
    The user may pause after the wake word, or mid-request, for up to
    `endpoint_max_silence_ms` (default 3 s) without the request being split.
@@ -1186,16 +1187,33 @@ act as soon as the matching decision arrives. The server's collection window
 only a nominal 250 ms for request/response transit and scheduling for the earliest
 claimant; measure actual deployment latency. A larger collection window reduces
 detector skew failures but claims arriving after it still open independent
-elections. Keep the client deadline at 1000 ms and fail closed on timeout.
+elections. Keep the client deadline at 1000 ms and proceed on timeout.
 Explicit saved server values such as `0.25` require a configuration update to
 `0.75`; the new default does not replace them.
 
 | outcome | client action |
 |---|---|
 | Matching `wake_grant` before the deadline | Flush buffered audio once, oldest first, then live PCM without dropping, duplicating, or reordering samples. Stream continuously through the activation, including thinking and playback. |
-| Matching `wake_deny` before the deadline | Discard the activation buffer and resume local wake detection; do not stream it. |
-| No matching decision within 1000 ms | Assume loss, discard the activation buffer, and resume local wake detection. No cancel or stop frame is needed. |
-| Late decision or decision for another `claim_id` | Ignore it; never release an abandoned buffer or reactivate a completed claim. |
+| Matching `wake_deny` before the deadline | Discard the activation buffer and resume local wake detection; do not stream it or play a listening tone. |
+| No matching decision within 1000 ms | Proceed with the buffered activation exactly as on a grant: flush once, oldest first, then live PCM. Enter listening and play its local tone once. Do not send another `wake`, `cancel`, or `stop` for the timeout. |
+| Late decision or decision for another `claim_id` or `wake_word` | Ignore it; never flush again, interrupt a timeout-opened activation, release an abandoned buffer, or reactivate a completed claim. |
+
+A decision matches only the pending claim's `claim_id` and exact `wake_word`
+on the socket that sent it. Compare the monotonic clock when handling the
+decision with the deadline. At or after the deadline it is late, even if the
+timer callback has not run yet: resolve the
+timeout once and ignore the decision. Grant and timeout use the same one-time
+buffer-to-live handoff; neither creates a second wake claim or cancel.
+
+Timeout is not permission to override user intent or a failed connection.
+Disconnect, mute, manual Stop listening, session close, `bad_wake`, or buffer
+failure abandons a pending activation and discards its buffer. Cancel its
+deadline; neither a queued timeout callback nor a later decision may reopen
+the microphone. Never carry a pending claim or its audio to a replacement
+socket. If any of these safety conditions holds at the deadline, do not stream.
+These safety rules also apply during the buffer-to-live handoff: queued audio
+and listening cues belong to the still-active activation on its original
+socket, and cannot run after it has been stopped, muted, or disconnected.
 
 Allocate enough buffer for the full one-second wait plus detector pre-roll,
 including on ESP32. At 16 kHz PCM16 mono, the wait alone is 32,000 bytes.
@@ -1203,10 +1221,28 @@ If buffering fails, abandon the activation rather than silently dropping its
 beginning. A later detection always gets a new `claim_id`. A grant reserves
 nothing server-side; if the activation is abandoned, no release is needed.
 
-Cooperating clients prevent duplicate requests by streaming only after a
-grant. The server still accepts audio from noncooperating clients after a
-denial or without a wake claim; it does not enforce that client-side gate.
-This does not justify streaming from losing or idle wake-word clients.
+Cooperating clients suppress duplicate requests when matching decisions arrive
+in time. Timeout deliberately favors preserving the activation over exclusive
+selection: multiple devices can proceed if their decisions arrive late or not
+at all. The server still accepts audio after a denial or without a wake claim;
+it does not enforce that client-side gate. This does not justify streaming
+from clients that received a timely matching denial or from idle wake-word clients.
+
+Check the client with identifiable pre-roll, waiting, and live PCM samples:
+
+- A matching grant before 1000 ms flushes once and starts live audio immediately.
+- A matching denial before 1000 ms sends no activation audio or listening tone.
+- No matching decision by 1000 ms flushes once, then live audio, with no missing,
+  duplicated, or reordered samples and no extra wake, cancel, or stop frame.
+- A matching grant or denial at or after 1000 ms, including before a delayed
+  timer callback runs, leaves the timeout-opened activation unchanged.
+- A wrong ID, wrong phrase, or decision from an old socket cannot resolve the
+  pending claim. A subsequent detection uses a fresh ID, even for the same phrase.
+- Each abandonment condition above, just before the deadline or with its callback
+  already queued, discards the buffer and prevents audio, listening cues, and
+  reactivation by that callback or a late decision.
+- Stop, mute, or disconnect during the buffer-to-live handoff prevents any
+  remaining queued activation audio or listening cue from being sent or played.
 
 
 ## 9. Conversation output without user input

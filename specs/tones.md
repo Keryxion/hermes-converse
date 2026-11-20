@@ -6,7 +6,7 @@ in [animations.md](animations.md).
 
 | Tone | When | Sound |
 |---|---|---|
-| Listening | Every time the device enters listening: a matching `wake_grant`, manual Talk, a `state` of `listening`, or a return to listening after a reply | Rising pair: 523 Hz then 784 Hz, 70 ms each |
+| Listening | Every time the device enters listening: a timely matching `wake_grant`, wake timeout, manual Talk, a `state` of `listening`, or a return to listening after a reply | Rising pair: 523 Hz then 784 Hz, 70 ms each |
 | Thinking | Entering thinking (a `state` of `thinking`), then each repeated `thinking` frame while thinking lasts | One soft 280 ms pulse at 330 Hz |
 | Listening ended | Listening ends in silence with no request (a `quiet` frame), and the device returns to standby | Falling pair: 784 Hz then 523 Hz, 70 ms each |
 | Confirm | A `tone` frame naming `confirm`: the assistant did what was asked and has nothing to say | One note: 1047 Hz, 70 ms |
@@ -20,8 +20,12 @@ in [animations.md](animations.md).
 - A tone is short enough that it cannot be mistaken for the assistant starting
   to speak.
 - After a wake word, the listening tone plays locally as soon as the matching
-  `wake_grant` arrives. It does not wait for the server. A denied or timed-out
-  claim makes no sound.
+  `wake_grant` arrives before the deadline, or at the 1000 ms timeout when the
+  activation proceeds. It does not wait for a server listening frame. Play it
+  once for that activation; late decisions or a server listening frame while
+  already listening do not replay it. A timely matching
+  denial or an abandoned claim makes no sound. The safety rules in
+  [client.md](client.md) apply before playing the tone or streaming audio.
 - A thinking tone still sounding when the reply starts, or on interruption,
   cancellation, or error, is cut off. It never overlaps the reply: `thinking`
   frames that arrive while the reply is playing make no sound.

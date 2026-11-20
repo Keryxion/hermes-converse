@@ -20,7 +20,7 @@ below.
 |---|---|
 | Connection | `device_name`, `session.id`, how long connecting took, and why it ended: the close code, or that it was lost |
 | Wake claim | `device_name`, `session.id`, `claim_id`, `wake_word`, `wake.outcome` |
-| Turn | `device_name`, `session.id`, `turn_id`, and the `claim_id` of the wake that started the exchange, if one did. An exchange runs from a granted wake until the device next returns to standby. |
+| Turn | `device_name`, `session.id`, `turn_id`, and the `claim_id` of the wake that started the exchange, if one did. An exchange runs from a granted or timed-out wake until the device next returns to standby. |
 | Playback | `turn_id`, when the first reply audio played, when the last did, and when the state left `speaking` |
 
 For a client that displays assistant reply status, record status changes so a
@@ -50,13 +50,13 @@ client's record is matched to the server's record of the same election.
 ## The outcome of a claim
 
 Record exactly one `wake.outcome` for every claim sent. The record runs from
-sending the claim to its outcome, so its duration is how long the decision took.
+sending the claim to its outcome, so its duration is how long resolution took.
 
 | `wake.outcome` | Meaning |
 |---|---|
 | `granted` | A matching `wake_grant` arrived before the deadline. |
 | `denied` | A matching `wake_deny` arrived before the deadline. |
-| `timeout` | No decision within 1000 ms. The buffered audio was dropped. |
+| `timeout` | No matching decision within 1000 ms. The client proceeded with the buffered activation, then live audio. |
 | `abandoned` | The client gave up first. `wake.reason` says why: `disconnected`, `cancelled`, `buffer_overflow`, or `bad_wake`. |
 
 A decision that arrives late, or for another claim, does not change the
@@ -77,10 +77,11 @@ outcome.
 1. A device that wins records one claim with `granted`, and its turns carry
    that `claim_id` through a follow-up and a barge-in.
 2. A device that loses records one claim with `denied` and no turn.
-3. A grant that arrives after 1000 ms: the device records `timeout`, sends no
-   audio, and the late grant changes nothing.
-4. Each claim record matches one claim in the server's election record by
-   `session.id` and `claim_id`.
+3. A grant or denial that arrives at or after 1000 ms: the device records one
+   `timeout`, flushes buffered audio once before live audio, and the late
+   decision changes nothing. Its turns retain that claim's `claim_id`.
+4. When the server received the claim, correlate its election record by
+   `session.id` and `claim_id`. A client timeout does not prove server receipt.
 5. A reply played to the end records when playback started, when it ended, and
    the state leaving `speaking` after the end, not at `turn_done`.
 6. With export off or the collector down, the client behaves the same.

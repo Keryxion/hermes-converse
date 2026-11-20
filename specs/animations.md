@@ -31,9 +31,9 @@ A device shows one state at a time.
 | `reconnecting` | Connection lost; retrying | Orange | Two 180 ms pulses 180 ms apart, then a 1.46 s rest |
 | `idle` | No active session and no wake detector | Neutral | Small, gently breathing or twinkling mark |
 | `standby` | Connected; waiting for the wake word or manual Talk | Neutral | Small, gently breathing or twinkling mark |
-| `arbitrating` | Wake word heard; waiting for the grant | Orange | Smooth 1 s breath between 35% and 100% brightness |
-| `wake_denied` | Matching `wake_deny` received | Red | Steady for 1.5 s, then standby |
-| `listening` | Wake granted, manual Talk, follow-up listening, or waiting for an approval answer | Green | Steady, with a meter driven by the microphone level where the device can show one |
+| `arbitrating` | Wake word heard; waiting for a matching decision | Orange | Smooth 1 s breath between 35% and 100% brightness |
+| `wake_denied` | Matching `wake_deny` received before the deadline | Red | Steady for 1.5 s, then standby |
+| `listening` | Wake granted or timed out, manual Talk, follow-up listening, or waiting for an approval answer | Green | Steady, with a meter driven by the microphone level where the device can show one |
 | `thinking` | The agent turn has started | Orange | Clearly animated: an orbit on a ring or screen, a breath on a single LED |
 | `speaking` | Reply playing, including its local tail | Speaking blue | Large and prominent, driven by the reply audio level where the device can show it |
 | `error` | Connection, authentication, capture, or playback failure | Fault red | Persistent pulse, with error text or a warning symbol where available |
@@ -69,9 +69,9 @@ stateDiagram-v2
     booting --> connecting
     connecting --> standby: ready / wake mode
     standby --> arbitrating: local wake claim
-    arbitrating --> listening: matching wake_grant
-    arbitrating --> wake_denied: matching wake_deny
-    arbitrating --> standby: timeout / abandon
+    arbitrating --> listening: timely matching wake_grant / timeout
+    arbitrating --> wake_denied: timely matching wake_deny
+    arbitrating --> standby: abandon
     wake_denied --> standby: 1.5 s, if no newer event
     standby --> listening: manual Talk
     listening --> thinking: state thinking
@@ -95,7 +95,9 @@ stateDiagram-v2
 
 The frames named here are defined in [client.md](client.md).
 
-- A wake timeout is not a denial: return to standby without showing red.
+- A wake timeout is not a denial: enter listening without showing red, unless
+  the activation was abandoned under the safety rules in [client.md](client.md).
+  Late decisions do not change the state or replay a cue.
 - `ready` alone does not grant a wake. Manual Talk enters listening without
   arbitration. An outbound reply enters speaking directly from standby.
 - Listening that manual Talk opened ignores `quiet` until the person's first
