@@ -230,7 +230,9 @@ without Smart Turn, so "Hey Arya … set a timer" is one request while a continu
 
 An `endpointing` frame's `"commit": true` ends the capture at once with the
 audio already received, bypassing Smart Turn and the wake pause. The utterance
-limit still applies.
+limit still applies. Until 2026-12-20, also accept the bare `{"commit": true}`
+frame that older clients send, with the same meaning; the client spec no longer
+has it.
 
 The frame's `on` turns endpointing off or on until the device changes it; each
 connection starts with it on. While it is off only `commit` ends the utterance;
