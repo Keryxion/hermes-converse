@@ -995,11 +995,14 @@ zero: speech, a turn, and resuming upstream audio after stopping it all restart
 the count. Audio sent while a request is captured, transcribed or answered is
 not counted.
 
-Silence sent before you stopped streaming does not carry over. After manual
-Talk, wait four times the threshold, 20 seconds by default, before the person's
-first request (a new turn starts): they pressed Talk to speak, so give them
-longer to begin. After that request, `quiet` returns to standby at the usual
-threshold. A `turn_done` with `next_action: "standby"` also returns to standby
+Silence sent before you stopped streaming does not carry over.
+
+Manual Talk is the special case. When the person opens listening with the Talk
+control or the device's action button, wait four times the threshold, 20
+seconds by default, for their first request (a new turn starts): they pressed
+it to speak, and get extra time to compose their thoughts. After that request,
+`quiet` returns to standby at the usual threshold. A wake word gets no extra
+time. A `turn_done` with `next_action: "standby"` also returns to standby
 ("Handling `turn_done.next_action`", section 4).
 
 ## 6. Typical flow
