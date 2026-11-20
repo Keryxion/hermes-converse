@@ -1907,7 +1907,8 @@ async def _produce_speech(d: _Driver, turn: _Turn) -> None:
                         turn.pcm_q.put_nowait({"type": "transcript", "role": "assistant",
                                                "turn_id": turn.turn_id, "text": text})
                 turn.spoken_parts.append(piece)
-                chunks = await asyncio.to_thread(lambda text=piece: iter(d.synth.synth(text)))
+                chunks = await asyncio.to_thread(
+                    lambda text=speech.speakable(piece): iter(d.synth.synth(text)))
                 while (chunk := await asyncio.to_thread(next, chunks, None)) is not None:
                     if turn.tts_stop.is_set():
                         return
