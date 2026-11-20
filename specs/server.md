@@ -590,6 +590,25 @@ socket to the new conversation: the device reconnects and attaches to it in the
 ordinary way. The conversation keeps the title
 `<assistant_name>: <device_name>`.
 
+## Choices for a paused conversation
+
+When Hermes pauses a conversation over a lost turn — a restart left a turn
+unfinished — its notice names the only commands that go on, `discard` and
+`reset`. Raise that as a choice ("Choices" in `client.md`): speak the notice's
+question and send `choice_request` with one entry per named command, its
+`name` and a one-line `description` of what it does. Take the answer from the
+speech that follows the question, from the next activation while the choice is
+pending, or from a `choice_response`, and run it through the same path as a
+`command` frame — never as a message to the paused conversation. Settle it
+with `choice_resolved`: the chosen name when an answer runs, `cancelled` when
+the pause is resolved another way, such as a chat user sending the command
+first.
+
+The pause itself persists in Hermes, so keep the pending choice — its
+`choice_id`, summary, and entries — with the device route's settings, and when
+the device reconnects with the choice still pending, raise it again with the
+same `choice_id`.
+
 ## Catching up
 
 Give every user `transcript` frame, and the closing assistant frame of each
