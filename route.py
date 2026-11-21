@@ -53,7 +53,7 @@ from typing import Any, Awaitable, Callable, Optional
 from aiohttp import ClientError, ClientSession, ClientTimeout, web
 
 from . import command_catalog
-from .approvals import phrase, summary
+from .approvals import summary
 
 from .arbitrate import Arbitrator
 from .audio_transport import AudioTransport, audio_format
@@ -764,9 +764,9 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
         canonical = await asyncio.to_thread(client.canonical_command, name)
         if canonical is None:
             return "unknown_command"
-        description = phrase(await asyncio.to_thread(command_catalog.description, canonical))
+        description = await asyncio.to_thread(command_catalog.description, canonical)
         question = summary(attachment.assistant_name,
-                           f"run a command for you: {description}" + (f", {', '.join(args)}" if args else ""))
+                           description + (f", {', '.join(args)}" if args else ""))
         text = f"/{name} {' '.join(args)}".strip()
         if await gateway.approvals.ask(attachment.conversation_id, text, question, timeout) != "once":
             return "denied"

@@ -12,7 +12,6 @@ import pytest
 from aiohttp import web
 
 from hermes_converse import command_catalog
-from hermes_converse.approvals import phrase
 from hermes_converse.voice_tools import make_handlers, register_tools
 from tests.support.fake_hermes import FakeHermes
 from tests.test_route import (API_KEY, VOICE_PROTOCOL, Harness, _FakeStreamer, _key_protocol, _patch_speech,
@@ -110,8 +109,8 @@ async def test_an_approved_command_runs_in_the_turn_and_returns_its_reply(monkey
     fake, harness, ws, request, frames, streamer = await _turn_calling(
         monkeypatch, device_env, "compress", "once", args=["here", "3"])
     try:
-        description = phrase(command_catalog.description("compress"))
-        summary = f"Arya wants to run a command for you: {description}, here, 3. Okay?"
+        description = command_catalog.description("compress")
+        summary = f"Arya wants permission for: {description}, here, 3. Okay?"
         assert request["summary"] == summary and request["command"] == "/compress here 3"
         assert request["choices"] == ["once", "deny"]
         assert {"type": "tone", "tone": "approval"} in frames
@@ -191,8 +190,8 @@ async def test_new_starts_the_conversation_only_after_the_reply_has_played(monke
         monkeypatch, device_env, "reset", "once", transcript="start over",
         settings={"playback_tail_timeout_seconds": .1} if playback == "timeout" else None)
     try:
-        description = phrase(command_catalog.description("new"))
-        assert request["summary"] == f"Arya wants to run a command for you: {description}. Okay?"
+        description = command_catalog.description("new")
+        assert request["summary"] == f"Arya wants permission for: {description}. Okay?"
         assert "new conversation" in fake.results[0]
         turn_done = frames[-1]
         if playback == "timeout":
@@ -304,6 +303,10 @@ async def test_server_started_new_waits_for_the_final_reply_not_the_approval(mon
         await ws.send_json({"type": "approval_response", "approval_id": frames[-1]["approval_id"], "choice": "once"})
         frames = await _frames_until(ws, "turn_done")
         await ws.send_json({"type": "state", "turn_id": frames[-1]["turn_id"], "state": "listening"})
+        # The approval outcome is spoken separately from the question and the final reply.
+        frames = await _frames_until(ws, "turn_done")
+        await ws.send_json({"type": "state", "turn_id": frames[-1]["turn_id"], "state": "listening"})
+        assert "Approved." in streamer.requests
         with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(ws.receive(), .15)
         assert fake.commands == [] and not ws.closed

@@ -149,21 +149,17 @@ progress, so `turn_timeout_seconds` does not end the turn; Hermes's
 
 #### The summary
 
-Hermes's prompt is a command and a description, which is not something to read
-aloud. The summary says who is asking, then what will happen:
+The server formats the device's `assistant_name` and Hermes's description as
+the summary:
 
-> Arya wants to open a network connection to the Kitchen speaker to read its
-> logs. Okay?
+> Arya wants permission for: Network connection (to a device). Okay?
 
-The server writes the start, the device's `assistant_name` and "wants to", and
-the end, "Okay?". A separate model call, outside the conversation, writes only
-what will happen, in twenty words or fewer: it adds nothing to the history and
-does not run as a turn, and it is given the command and the description. If
-that call fails, use Hermes's description in its place.
+This same sentence is spoken and sent in `approval_request.summary`. With no
+assistant name, use "The assistant"; with no description, use "Run a command".
 
 #### The answer
 
-Whatever the person says next goes to a second separate model call, with the
+Whatever the person says next goes to a separate model call, with the
 summary and the choices Hermes allows, which returns one of those choices or
 unclear.
 
@@ -191,9 +187,10 @@ while it is still pending, ask again in both ways: send `approval_request` and
 speak the summary. So a person who put the app away comes back to the question,
 not to a refusal.
 
-Send `approval_resolved` when the request is settled. A response for another
-request, a second response, one from another device, or one with a choice that
-was not offered changes nothing.
+Send `approval_resolved` when the request is settled and say "Approved.",
+"Denied.", "Expired.", or "Cancelled." on the attached device to match the
+outcome. A response for another request, a second response, one from another
+device, or one with a choice that was not offered changes nothing.
 
 While a request is pending, speech from the device is an answer to it, not a new
 request and not an interruption of the waiting turn. The spoken summary itself
@@ -207,11 +204,12 @@ run, the agent's reply says so.
 Verify each allowed choice by voice and by screen; a plain yes answering `once`;
 a single short "yes" heard the first time it is said;
 a choice that was not offered; an unclear reply once and
-twice, a failed summary call, Hermes's timeout, a stale or repeated response,
+twice, Hermes's timeout, a stale or repeated response,
 cancellation, a disconnect and reconnect while pending, a prompt that arrives with
 no device attached, a deny-only prompt, and the summary's own echo. Verify
-the action runs once after approval and never otherwise, and that neither model
-call appears in the conversation's history.
+the action runs once after approval and never otherwise, that the outcome is
+spoken once, and that the answer model call adds nothing to the conversation's
+history.
 
 ### Endpointing, completion, and recovery
 
@@ -797,8 +795,7 @@ command does to the conversation: it is asked as for a Hermes approval
 `approval` tone plays, then the server, not the agent, says what will happen,
 from the description listed by the `commands` frame and `args`:
 
-> Arya wants to run a command for you: start a new session, with fresh
-> session ID + history. Okay?
+> Arya wants permission for: Start a new session (fresh session ID + history). Okay?
 
 `approval_request` carries the same summary, the command as given, and choices
 `once` and `deny`. Answers use the spoken or on-screen flow under Approvals;
