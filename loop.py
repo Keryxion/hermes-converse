@@ -399,6 +399,10 @@ class Utterance(str):
         return self
 
 
+class TypedMessage(str):
+    """A typed request uses the agent pipeline without claiming microphone origin."""
+
+
 def _default_transcribe(wav_path: str) -> str:
     return speech.transcribe_wav(wav_path)
 
@@ -1584,7 +1588,10 @@ async def drive_converse_turns(
         tt = start_turn(recorder=getattr(item, "recorder", None), turn_id=turn_id,
                         **{"session.id": getattr(session, "session_id", None)})
         take_origin = getattr(session, "take_origin", None)
-        claim_id, source = take_origin() if take_origin is not None else (None, "speech")
+        if isinstance(item, TypedMessage):
+            claim_id, source = None, "text"
+        else:
+            claim_id, source = take_origin() if take_origin is not None else (None, "speech")
         _open_trace(session, tt, turn_id, source, claim_id)
         meta: dict[str, Any] = {"turn_id": turn_id}
         if tt.traceparent:
