@@ -430,7 +430,10 @@ interrupts the old reply, preserves the new utterance, and transcribes it as a
 continuation in the same conversation. The original request remains context.
 Do not require another wake word or make the user repeat the interruption.
 Playback echo rejection remains the server's responsibility; clients should
-provide clean microphone audio without suppressing user speech. Send it at the
+provide clean microphone audio without suppressing user speech. When the server
+finds that speech heard over a reply was the reply's own words coming back
+([audio.md](audio.md)), nothing follows the old turn's `interrupted` and
+`turn_done`: no `transcript`, no `thinking`, no new turn. Send it at the
 level it was captured: no automatic gain control and no fixed digital gain on
 the upstream path. Echo cancellation, lossless format conversion and analog
 preamp settings are allowed; a wake word engine that needs another level changes

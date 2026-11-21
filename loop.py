@@ -34,6 +34,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
 from . import speech, vad
 from .audio_transport import on_audio_thread
+from .echo import ReplyLevel, says_reply
 from .level import InputLevel
 from .speech_detector import DEFAULT_VAD_MODEL, SpeechDetector
 from .settings import (
@@ -496,6 +497,10 @@ class ConverseSession:
         self._block = int(self._input_rate * vad.BLOCK_MS / 1000)
         self._detector = SpeechDetector(np, model=vad_model, input_rate=self._input_rate, mult=barge_multiplier)
         self._level = InputLevel(np)  # specs/audio.md: one gain for this device, held through turns
+        # The reply being played, as the server sent it (echo.py): how loud it is now, and its words.
+        self._reply_level = ReplyLevel(np)
+        self._reply_words: list[str] = []
+        self._capture_over: Optional[list[str]] = None  # the reply the capture under way began over
         self._pre_roll: deque = deque(maxlen=max(1, vad.PRE_ROLL_MS // vad.BLOCK_MS))
         self._endpoint_blocks = max(1, math.ceil(endpoint_silence_ms / vad.BLOCK_MS))
         self._max_silence_blocks = max(self._endpoint_blocks, math.ceil(endpoint_max_silence_ms / vad.BLOCK_MS))
@@ -547,6 +552,14 @@ class ConverseSession:
             self._playing.clear()
             if not self._turn_active.is_set():
                 self._tts_stop = None
+
+    def reply_audio(self, pcm: bytes, rate: int, start: float) -> None:
+        """Driver hook: reply PCM16 sent, due to start playing at *start* (``time.monotonic()``)."""
+        self._reply_level.sent(pcm, rate, start)
+
+    def reply_text(self, text: str) -> None:
+        """Driver hook: words about to be spoken in the reply being played."""
+        self._reply_words.append(text)
 
     @_session_state
     def take_interrupted(self) -> bool:
@@ -703,6 +716,15 @@ class ConverseSession:
                         self.release_capture()
                         if interrupt is not None:
                             interrupt.resolve(None)
+                    elif transcript and self._capture_over and says_reply(transcript, " ".join(self._capture_over)):
+                        # The reply's own words, heard while it played: the device's echo, not a request.
+                        logger.info("converse: capture over a reply was its echo; dropped (session=%s, %d chars)",
+                                    self.session_id, len(transcript))
+                        recorder.set(outcome="echo")
+                        emit_turn_trace(recorder)
+                        self.release_capture()
+                        if interrupt is not None:
+                            interrupt.resolve("echo")
                     elif transcript and self._answers_approval(transcript):
                         recorder.set(outcome="answer")
                         emit_turn_trace(recorder)
@@ -755,7 +777,8 @@ class ConverseSession:
             answering = (self.answer_hook is not None
                          and time.monotonic() >= self.playback_until + APPROVAL_LISTEN_GRACE_SECONDS)
             playing = (self.playing() or self._tail_active) and not answering
-        heard = await on_audio_thread(self._detect, blocks, learn, playing, busy and not answering)
+            reference = self._reply_level.at(time.monotonic()) if playing else None
+        heard = await on_audio_thread(self._detect, blocks, learn, playing, busy and not answering, reference)
         with self._state_lock:
             if self._stop.is_set() or self.stream._epoch != epoch:
                 return None  # stopped, or drained while the blocks were being heard
@@ -792,6 +815,7 @@ class ConverseSession:
                     except Exception:
                         logger.debug("converse on_trip callback failed", exc_info=True)
                 self._continuation_capture = busy
+                self._capture_over = self._reply_words if playing else None
                 wake, self._wake_pending = self._wake_pending, False
                 for utterance in (self._queued_utterance, self._active_utterance):
                     if utterance is not None:
@@ -812,14 +836,15 @@ class ConverseSession:
                 return recorder, wake, self._generation, interrupt
         return None
 
-    def _detect(self, blocks: list, learn: bool, playing: bool, interrupting: bool) -> list[tuple]:
+    def _detect(self, blocks: list, learn: bool, playing: bool, interrupting: bool,
+                reference: Optional[float] = None) -> list[tuple]:
         """Audio thread: each block at the session's gain through the speech detector, up to the
         first block where speech starts. One ``(data, phase, gain, level, probability, threshold)``
         per block heard."""
         detector, heard = self._detector, []
         for raw in blocks:
             data = self._level.apply(raw, learn=learn)
-            phase = detector.feed(data, playing, interrupting=interrupting)
+            phase = detector.feed(data, playing, interrupting=interrupting, reference=reference)
             heard.append((data, phase, self._level.gain, getattr(detector, "level", None),
                           getattr(detector, "probability", None), getattr(detector, "threshold", None)))
             if phase is not None:
@@ -892,6 +917,7 @@ class ConverseSession:
         """Bind cancellation from thinking through playback to this exact turn."""
         if self._active_turn_id != turn_id or not self._turn_active.is_set():
             self._generation += 1
+            self._reply_words = []  # a capture begun over the last reply keeps that reply's words
         self._active_turn_id = turn_id
         self._tts_stop = tts_stop
         self._interrupt_callback = on_interrupt
@@ -1907,6 +1933,7 @@ async def _produce_speech(d: _Driver, turn: _Turn) -> None:
                         turn.pcm_q.put_nowait({"type": "transcript", "role": "assistant",
                                                "turn_id": turn.turn_id, "text": text})
                 turn.spoken_parts.append(piece)
+                getattr(d.session, "reply_text", lambda text: None)(piece)
                 chunks = await asyncio.to_thread(lambda text=piece: iter(d.synth.synth(text)))
                 while (chunk := await asyncio.to_thread(next, chunks, None)) is not None:
                     if turn.tts_stop.is_set():
@@ -1992,7 +2019,10 @@ async def _stream_reply(d: _Driver, turn: _Turn, turn_task: asyncio.Future) -> N
                 deadline += d.loop.time() - paced  # waiting on playback is not a stalled run
             if turn.tts_stop.is_set():
                 break
-            play_end = max(play_end, d.loop.time()) + len(chunk) / 2 / rate
+            play_start = max(play_end, d.loop.time())
+            play_end = play_start + len(chunk) / 2 / rate
+            getattr(d.session, "reply_audio", lambda *sent: None)(
+                chunk, rate, play_start - d.loop.time() + time.monotonic())
             d.session.playback_until = play_end - d.loop.time() + time.monotonic()
         else:
             d.session.playback_until = math.inf
