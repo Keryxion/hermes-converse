@@ -298,7 +298,7 @@ class ConverseRoute:
             await self._connected(ws, session, api_key, http, base_url, synth, cap, names[0],
                                   quiet_interval, settings, attachment, recv_ms, input_rate, output_rate,
                                   named=(device, connection), transcripts=frame.get("transcripts") is True,
-                                  models=frame.get("models") is True, reasoning=frame.get("reasoning") is True, turns=turns,
+                                  models=frame.get("models") is True, turns=turns,
                                   wake_word_format=frame.get("wake_word_format"),
                                   after=frame.get("after"), audio=audio)
         except NamedError as exc:
@@ -325,7 +325,7 @@ class ConverseRoute:
 
     async def _connected(self, ws, session, api_key, http, base_url, synth, cap, name,
                          quiet_interval, settings, attachment, server_recv_unix_ms, input_rate, output_rate,
-                         *, named, transcripts=False, models=False, reasoning=False, turns=None, after=None, audio=None,
+                         *, named, transcripts=False, models=False, turns=None, after=None, audio=None,
                          wake_word_format=None):
         client = turns
         device, connection = named
@@ -352,24 +352,15 @@ class ConverseRoute:
             ready["input"].update(format="opus", block_ms=20)
             ready["output"].update(format="opus", block_ms=20)
         catalog = {}
-        if models or reasoning:
+        if models:
             try:
                 catalog = public_model_catalog(await _model_options(base_url, api_key, http))
             except Exception:
                 logger.warning("converse model catalog unavailable", exc_info=True)
-            if models:
-                ready["model_catalog"] = catalog or {"providers": []}
-        if not catalog and not (settings.model and settings.provider) and hasattr(client, "configured_route"):
-            try:
-                catalog = await asyncio.to_thread(client.configured_route)
-            except Exception:
-                logger.debug("converse: default model unavailable", exc_info=True)
-        default_route = (settings.model or (catalog.get("model") if not settings.provider or
-                                            settings.provider == catalog.get("provider") else None),
-                         settings.provider or (catalog.get("provider") if not settings.model or
-                                               settings.model == catalog.get("model") else None))
-        if reasoning:
-            ready["reasoning"] = {**await asyncio.to_thread(client.reasoning_state, *default_route), "pending": False}
+            ready["model_catalog"] = catalog or {"providers": []}
+        default_route = (catalog.get("model"), catalog.get("provider"))
+        await client.apply_voice_default(settings.model, settings.provider)
+        ready["current_model"] = await asyncio.to_thread(client.current_model, default_route)
         history = getattr(client, "history", None)
         rows = None
         if transcripts and history is not None:
@@ -416,7 +407,7 @@ class ConverseRoute:
                      device_id=device_id, hub=self.hub, attachment=attachment,
                      named_device=device, named_connection=connection, transcripts=transcripts,
                      relay=relay, adopted=adopted, audio=audio, wake_word=wake_word,
-                     reasoning=reasoning, default_route=default_route)
+                     default_route=default_route)
 
 
 async def _model_options(base_url: str, api_key: str, http: ClientSession) -> dict[str, Any]:
@@ -575,7 +566,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                  device_id: str = "", hub=None, attachment=None,
                  transcripts: bool = False, relay: Optional[Relay] = None,
                  adopted: Optional[Detached] = None, audio=None,
-                 wake_word: Optional[WakeWordLink] = None, reasoning=False, default_route=(None, None)) -> None:
+                 wake_word: Optional[WakeWordLink] = None, default_route=(None, None)) -> None:
     """Run the client pump and the turn driver until the socket ends; always stop the live turn."""
     loop = asyncio.get_running_loop()
     session.enable_turn_control()
@@ -596,83 +587,42 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                                     settings.countdown_ring_timeout_seconds, loop)
     if attachment is not None and getattr(hub, "gateway", None) is not None:
         hub.gateway.approvals.attached(attachment)  # a request still pending asks again
-    default_model = (settings.model, settings.provider)
-    selected_model = default_model
-    reasoning_change = None
+    model_change = None
     dispatched = False
     pending_state = None
     active_submissions = set()
 
-    def reasoning_selection(value):
-        from hermes_constants import parse_reasoning_effort
-        return isinstance(value, str) and (value == "reset" or parse_reasoning_effort(value) is not None)
-
-    def reasoning_route():
-        return default_route if selected_model == default_model else selected_model
-
-    async def reasoning_reply(request_id, *, state=None, **fields):
-        pending = bool(reasoning_change and not reasoning_change.done() and
-                       asyncio.current_task() is not reasoning_change)
-        if state is None:
-            state = pending_state if pending and pending_state else await asyncio.to_thread(
-                client.reasoning_state, *reasoning_route())
-        if not ws.closed:
-            await ws.send_json({"type": "reasoning", "request_id": request_id, **state,
-                                "pending": pending, **fields})
+    async def snapshot():
+        if pending_state is not None:
+            return {**pending_state, "pending": True}
+        state = await asyncio.to_thread(client.current_model, default_route)
+        return {**state, "pending": bool(model_change and not model_change.done())}
 
     async def wait_then_change(frame, earlier, approved):
         nonlocal dispatched, pending_state
-        structured = "applies_to" in frame
-        request_id = frame.get("request_id")
-        route = reasoning_route()
         try:
-            # A barged or adopted gateway run can outlive its local voice coroutine.
+            pending_state = await asyncio.to_thread(client.current_model, default_route)
             for done in earlier:
                 await asyncio.shield(done)
             await client.wait_for_voice_turn()
-            if reasoning:
-                pending_state = await asyncio.to_thread(client.reasoning_state, *route)
-            if structured:
-                args = frame.get("args")
-                if (frame.get("model"), frame.get("provider")) != route:
-                    return await reasoning_reply(request_id, error="model_changed")
-                if (not isinstance(args, list) or len(args) != 1 or
-                        args[0] not in [*pending_state["levels"], "reset"]):
-                    return await reasoning_reply(request_id, error="unsupported_effort")
-                if await asyncio.to_thread(client.canonical_command, "reasoning") != "reasoning":
-                    return await reasoning_reply(request_id, error="unknown_command")
-            if ws.closed or named_connection.replaced.is_set():
-                return
-            if not structured:
+            if not ws.closed and not named_connection.replaced.is_set():
                 await _command(frame, approved=approved)
-                return
-            from agent.i18n import t
-            value = args[0]
-            dispatched = True
-            result = await client.run_command("/reasoning " + value, stop=False)
-            expected = None if value == "reset" else value
-            success = (t("gateway.reasoning.reset_done") if value == "reset" else
-                       t("gateway.reasoning.set_session", effort=value))
-            confirmed = await asyncio.to_thread(client.reasoning_state, *route)
-            if result != success or confirmed["preference"] != expected:
-                return await reasoning_reply(request_id, state=confirmed, error="failed")
-            await reasoning_reply(request_id, state=confirmed)
         except Exception:
-            logger.warning("converse: reasoning change failed", exc_info=True)
+            logger.warning("converse: model command failed", exc_info=True)
             if not ws.closed:
-                if structured:
-                    await ws.send_json({"type": "reasoning", "request_id": request_id, "error": "failed"})
-                else:
-                    await ws.send_json({**frame, "error": "failed"})
+                await ws.send_json({"type": "command", "name": frame["name"], "args": frame["args"], "error": "failed"})
         finally:
             dispatched = False
             pending_state = None
 
-    def queue_reasoning(frame, *, approved=False):
-        nonlocal reasoning_change
-        reasoning_change = asyncio.create_task(wait_then_change(frame, tuple(active_submissions), approved))
-        wake_tasks.add(reasoning_change)
-        reasoning_change.add_done_callback(wake_tasks.discard)
+    def queue_model_change(frame, *, approved=False):
+        nonlocal model_change
+        if model_change and not model_change.done():
+            return False
+        model_change = asyncio.create_task(wait_then_change(frame, tuple(active_submissions), approved))
+        wake_tasks.add(model_change)
+        model_change.add_done_callback(wake_tasks.discard)
+        return True
 
     wake_tasks: set[asyncio.Task] = set()
     if wake_word is not None:
@@ -698,7 +648,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                 _trace_immediate_wake(frame, session=session, sent=sent)
 
     async def _pump_client() -> None:
-        nonlocal selected_model, explicit_stop, reasoning_change
+        nonlocal explicit_stop
         try:
             async for msg in ws:
                 if msg.type == web.WSMsgType.BINARY:
@@ -764,53 +714,17 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                         listing = getattr(client, "commands", None)  # reads config.yaml: off the loop
                         await ws.send_json({"type": "commands", "commands": await asyncio.to_thread(listing)}
                                            if listing else {"type": "commands", "error": "failed"})
-                    if (frame.get("type") == "get_reasoning" or
-                            (frame.get("type") == "command" and "applies_to" in frame)):
-                        request_id = frame.get("request_id")
-                        if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", request_id):
-                            await ws.send_json({"type": "reasoning", "error": "bad_request_id"})
-                        elif not reasoning:
-                            await ws.send_json({"type": "reasoning", "request_id": request_id, "error": "not_requested"})
-                        elif frame["type"] == "get_reasoning":
-                            await reasoning_reply(request_id)
-                        elif frame.get("name") != "reasoning" or frame["applies_to"] != "next_turn":
-                            await reasoning_reply(request_id, error="bad_command")
-                        elif reasoning_change and not reasoning_change.done():
-                            await reasoning_reply(request_id, error="change_pending")
-                        else:
-                            queue_reasoning(frame)
-                        continue
-                    if (frame.get("type") == "command" and frame.get("name") == "reasoning"
-                            and isinstance(frame.get("args"), list) and len(frame["args"]) == 1
-                            and reasoning_selection(frame["args"][0])):
-                        if reasoning_change and not reasoning_change.done():
-                            await ws.send_json({"type": "command", "name": "reasoning", "args": frame["args"],
-                                                "error": "change_pending"})
-                        else:
-                            queue_reasoning(frame)
-                        continue
+                    if frame.get("type") == "current_model":
+                        await ws.send_json({"type": "current_model", "current_model": await snapshot()})
                     if frame.get("type") == "command":
-                        task = asyncio.create_task(_command(frame))
-                        wake_tasks.add(task)
-                        task.add_done_callback(wake_tasks.discard)
-                    if frame.get("type") == "set_model":
-                        request_id = frame.get("request_id")
-                        if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", request_id):
-                            await ws.send_json({"type": "model_error", "error": "bad_request_id"})
-                            continue
-                        try:
-                            choice = parse_model_selection(frame)
-                        except ValueError:
-                            await ws.send_json({"type": "model_error", "request_id": request_id,
-                                                "error": "bad_model_selection"})
-                            continue
-                        if reasoning_change and not reasoning_change.done():
-                            await ws.send_json({"type": "model_error", "request_id": request_id, "error": "change_pending"})
-                            continue
-                        selected_model = default_model if choice == (None, None) else choice
-                        await ws.send_json({"type": "model_changed", "request_id": request_id,
-                                            "model": selected_model[0], "provider": selected_model[1],
-                                            "uses_default": choice == (None, None), "applies_to": "next_turn"})
+                        if frame.get("name") in ("model", "reasoning") and frame.get("args"):
+                            if not queue_model_change(frame):
+                                await ws.send_json({"type": "command", "name": frame["name"], "args": frame["args"],
+                                                    "error": "change_pending", "current_model": await snapshot()})
+                        else:
+                            task = asyncio.create_task(_command(frame))
+                            wake_tasks.add(task)
+                            task.add_done_callback(wake_tasks.discard)
                     if frame.get("type") == "wake":
                         if isinstance(frame.get("claim_id"), str) and frame["claim_id"].strip():
                             session.note_claim(frame["claim_id"])
@@ -853,15 +767,15 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
             reply["error"] = "busy"
         else:
             if command == "new":
-                if reasoning_change and not reasoning_change.done():
+                if model_change and not model_change.done():
                     if not dispatched:
-                        reasoning_change.cancel()
-                    await asyncio.gather(reasoning_change, return_exceptions=True)
+                        model_change.cancel()
+                    await asyncio.gather(model_change, return_exceptions=True)
                 session.cancel()
             text = f"/{name} {' '.join(args)}".strip()
             previous_session = await asyncio.to_thread(client.session_id) if command == "new" else None
             try:
-                if asyncio.current_task() is reasoning_change:
+                if asyncio.current_task() is model_change:
                     if ws.closed or named_connection.replaced.is_set():
                         return
                     dispatched = True
@@ -873,6 +787,11 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                 reply["error"] = "failed"
             else:
                 reply["reply"] = result
+        if name in ("model", "reasoning"):
+            if command == "model" and args and args[0] == "reset" and result is not None:
+                await client.apply_voice_default(settings.model, settings.provider)
+            reply["current_model"] = (await asyncio.to_thread(client.current_model, default_route)
+                                      if asyncio.current_task() is model_change else await snapshot())
         if not ws.closed:
             await ws.send_json(reply)
             if ("reply" in reply and command == "new"
@@ -909,10 +828,9 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
             return "denied"
         if hub.attachment(attachment.conversation_id) is None:
             return "not_attached"
-        if canonical == "reasoning" and len(args) == 1 and reasoning_selection(args[0]):
-            if reasoning_change and not reasoning_change.done():
+        if canonical in ("model", "reasoning") and args:
+            if not queue_model_change({"type": "command", "name": name, "args": args}, approved=True):
                 return "change_pending"
-            queue_reasoning({"type": "command", "name": name, "args": args}, approved=True)
             return "Approved. The setting will be applied before the next voice turn."
         if canonical == "stop":
             return "busy"
@@ -953,8 +871,8 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
             await action()
 
     async def _run_turn(transcript: str, on_delta, *, interrupted: bool) -> tuple[str, Optional[str]]:
-        if reasoning_change and not reasoning_change.done():
-            await asyncio.shield(asyncio.gather(reasoning_change, return_exceptions=True))
+        if model_change and not model_change.done():
+            await asyncio.shield(asyncio.gather(model_change, return_exceptions=True))
         finished = loop.create_future()
         active_submissions.add(finished)
         try:
@@ -966,23 +884,14 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
     async def _submit_turn(transcript, on_delta):
         nonlocal after_reply
         after_reply = None
-        model, provider = selected_model  # Snapshot once; do not alter a turn already in flight.
         commands = await asyncio.to_thread(client.commands) if hasattr(client, "commands") else None
-        state = None
-        if all(reasoning_route()) and hasattr(client, "reasoning_state"):
-            try:
-                state = await asyncio.to_thread(client.reasoning_state, *reasoning_route())
-            except Exception:
-                logger.warning("converse: turn reasoning metadata unavailable", exc_info=True)
-            if state and state["support"] == "unknown":
-                state = None
+        state = await snapshot()
         result = await client.run_turn(
             text=transcript, on_delta=on_delta, turn_id=getattr(session, "_active_turn_id", None),
             instructions=voice_system_prompt(
                 guidance, name,
                 device_name=named_device.device_name, recipient_id=named_device.recipient_id, commands=commands,
-                reasoning_state=state),
-            model=model, provider=provider)
+                current_model=state))
         after_reply = getattr(result, "after_playback", None)
         return result.reply, result.error
 
@@ -1047,7 +956,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
         if not detached:
             driver.cancel()
         for task in wake_tasks:
-            if task is not reasoning_change or not dispatched:
+            if task is not model_change or not dispatched:
                 task.cancel()
         fence.cancel()
         await asyncio.gather(pump, *([] if detached else [driver]), *wake_tasks, fence,

@@ -203,7 +203,8 @@ async def test_subprotocol_key_accept_full_turn_through_the_gateway(monkeypatch)
     assert turn["chat_name"] == f"{ASSISTANT_NAME}: {DEVICE_NAME}"
     assert turn["instructions"] == voice_system_prompt(
         DEFAULT_FILE.read_text(encoding="utf-8"), ASSISTANT_NAME, device_name=DEVICE_NAME,
-        recipient_id=ready["recipient_id"], commands=command_catalog.catalog())
+        recipient_id=ready["recipient_id"], commands=command_catalog.catalog(),
+        current_model=ready["current_model"])
     assert turn["model"] is None and turn["provider"] is None and not fake.commands
     assert streamer.requests == ["Turn it on."]
 
@@ -337,10 +338,11 @@ async def test_settings_drive_the_model_and_the_prompt(monkeypatch):
             await _end(ws)
     (turn,) = fake.turns
     assert turn["model"] == "fast-model" and turn["provider"] == "local-llm"
-    assert fake.commands == ["/model fast-model --provider local-llm"]
+    assert fake.commands == ["/model fast-model --provider local-llm --session"]
     assert turn["instructions"] == voice_system_prompt(
         DEFAULT_FILE.read_text(encoding="utf-8"), "Hal", device_name=DEVICE_NAME,
-        recipient_id=ready["recipient_id"], commands=command_catalog.catalog())
+        recipient_id=ready["recipient_id"], commands=command_catalog.catalog(),
+        current_model=ready["current_model"])
 
 
 @pytest.mark.asyncio
