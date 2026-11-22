@@ -275,8 +275,10 @@ one per argument. Omit it for no arguments, the same as `[]`:
 {"type":"command","name":"compress","args":["here","3"]}
 ```
 
-The server ends any turn in flight, runs the command for the device's
-conversation, and answers with the same frame plus the command's own reply:
+Only `new` and its aliases (including `reset`) interrupt the active turn before dispatch.
+Other commands preserve capture and playback. A `stop` command during a run returns `busy`. A session effort selection using
+`reasoning` waits for the current gateway turn to finish and runs before
+the next voice turn. The reply uses the same frame plus the command's own text:
 
 ```json
 {"type":"command","name":"new","reply":"Started a new conversation."}
@@ -774,7 +776,7 @@ ending is applied:
 | `turn_done`, `standby` | Standby. | Stay in standby. | Stay muted. |
 | `turn_done`, `mute` | Mute. | Mute. | Stay muted. |
 | `error`, then `turn_done` | Stay listening. | Stay in standby. | Stay muted. |
-| `interrupted`, then `turn_done`, after this device's `cancel` or `command` | Stay listening. | Stay in standby. | Stay muted. |
+| `interrupted`, then `turn_done`, after this device's `cancel` or new-session command | Stay listening. | Stay in standby. | Stay muted. |
 | `interrupted`, then `turn_done`, with neither from this device: the person spoke | Stay listening; the continuation follows. | Listen; the continuation follows. | Stay muted. |
 
 Apply `mute` on receipt: the reply keeps playing with the microphone already
@@ -1449,3 +1451,29 @@ and keeps the previous choice. An invalid/missing request ID returns
 `model_error` with `error: "bad_request_id"` without echoing untrusted ID data.
 These errors do not end the voice connection. A picker keeps its previous
 confirmed choice on rejection or acknowledgement timeout and exposes a retry.
+
+### Reasoning effort on the next turn
+
+Send `"reasoning":true` in `start` to receive a `reasoning` object in `ready`.
+Its `model` and `provider` identify the route. `support` is `supported`,
+`unsupported`, or `unknown`. Only `levels` listed by a supported route can be
+selected. `preference` is the session override (null follows the server default);
+`effective` is the known effective level, otherwise null.
+
+After changing model or reconnecting, read fresh state. Keep using `set_model` for a model picker selection. Use a unique request ID
+(1–80 letters, digits, underscores or hyphens) on each read and write.
+
+```json
+{"type":"get_reasoning","request_id":"read_1"}
+{"type":"reasoning","request_id":"read_1","model":"example","provider":"openrouter","support":"supported","levels":["low","high"],"preference":null,"effective":"low","pending":false}
+{"type":"command","name":"reasoning","args":["high"],"request_id":"pick_2","model":"example","provider":"openrouter","applies_to":"next_turn"}
+```
+
+The write replies with `type:"reasoning"`, the same request ID and confirmed state.
+Send `["reset"]` to clear the session override. A change during a reply waits;
+it does not cancel the reply or interrupt audio. The next voice submission waits
+for the result. While a change is pending, another selection or model switch
+receives `change_pending`. Other errors include `unsupported_effort`, `model_changed`
+and `failed`. After an acknowledgement timeout, read again and check `pending`
+and the confirmed preference before retrying. Reconnecting reads the device
+session's current preference; a client should never automatically replay a write.

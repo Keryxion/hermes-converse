@@ -329,7 +329,9 @@ class ConverseAdapter(BasePlatformAdapter):
             return
         turn = self._own(event)
         if turn is None:
-            self._server_turns.pop(chat_id, None)
+            server_turn = self._server_turns.pop(chat_id, None)
+            if server_turn is not None:
+                server_turn.done.set()
         else:
             self._complete_voice_turn(turn, outcome)
 
@@ -657,6 +659,35 @@ class GatewayTurns:
             turn.barged, turn.heard = True, heard
             turn.on_delta = lambda _text: None
             turn.released.set()
+
+    async def wait_for_voice_turn(self) -> None:
+        for turn in (self._adapter._server_turns.get(self._chat_id), self._following, self._turn):
+            if turn is not None:
+                await turn.done.wait()
+
+    def configured_route(self):
+        """Profile defaults for voice clients that did not request the model inventory."""
+        runner = getattr(self._adapter._message_handler, "__self__", None)
+        if not hasattr(runner, "config_path"):
+            return {}
+        from gateway.run import _load_gateway_config
+        cfg = _load_gateway_config(config_path=runner.config_path).get("model")
+        if isinstance(cfg, dict):
+            return {"model": cfg.get("default") or cfg.get("model"), "provider": cfg.get("provider")}
+        return {}
+
+    def reasoning_state(self, model, provider):
+        from .reasoning import capability, level
+
+        runner = getattr(self._adapter._message_handler, "__self__", None)
+        resolve = getattr(runner, "_resolve_session_reasoning_config", None)
+        peek = getattr(runner, "_peek_session_state", None)
+        support, levels = capability(model, provider) if resolve and peek else ("unknown", [])
+        state = peek(self._session_key) if peek else None
+        preference = level(state.conversation.reasoning_override) if state else None
+        effective = level(resolve(source=self._source, session_key=self._session_key, model=model or "")) if resolve else None
+        return {"model": model, "provider": provider, "support": support, "levels": levels,
+                "preference": preference, "effective": effective if effective in levels else None}
 
     def commands(self) -> list[dict[str, Any]]:
         """The gateway commands this device may name in a ``command`` frame."""

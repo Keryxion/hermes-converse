@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Awaitable, Callable, Optional
 
 
 class ServerTurn:
     def __init__(self) -> None:
+        self.done = asyncio.Event()
         self.spoken: list[str] = []
         self.exclusive = False
         self.standby = False

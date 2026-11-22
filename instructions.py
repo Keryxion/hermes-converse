@@ -53,7 +53,8 @@ def load_voice_guidance() -> str:
 
 
 def voice_system_prompt(guidance: str, name: str | None = None, *, device_name: str | None = None,
-                        recipient_id: str | None = None, commands: list[dict[str, Any]] | None = None) -> str:
+                        recipient_id: str | None = None, commands: list[dict[str, Any]] | None = None,
+                        reasoning_state: dict[str, Any] | None = None) -> str:
     """Channel prompt for one spoken turn: the server's name preamble, the profile's prose, then
     the server's device identity and gateway command catalog."""
     name = (name or "").strip()
@@ -98,5 +99,12 @@ def voice_system_prompt(guidance: str, name: str | None = None, *, device_name: 
             "speak to that device first, do not say it was asked, and asking again is safe. "
             "unknown: it may have acted; say so, and check before asking again.")
     if commands is not None:
+        parts.append(
+            "When asked which reasoning levels this model supports, use the route's advertised levels."
+            " If support is unsupported, say the route does not offer reasoning controls. Otherwise,"
+            " if no levels are available, say Hermes has no confirmed list for this route."
+            " The reasoning command lists gateway-wide arguments.")
+        if reasoning_state:
+            parts.append("Reasoning for this turn: " + json.dumps(reasoning_state, separators=(",", ":")))
         parts.append("Gateway command catalog: " + json.dumps(commands, ensure_ascii=False, separators=(",", ":")))
     return "\n\n".join(parts)
