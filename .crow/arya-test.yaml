@@ -1,4 +1,4 @@
-# Live Penny contract check. Suite: Keryxion/arya-test, as last published to the arya_test_source secret.
+# Live Penny contract check. Suite: Keryxion/arya-test main, cloned on each run.
 # Run only after the alpha workflow successfully deploys to Penny.
 when:
   - event: deployment
@@ -7,24 +7,16 @@ depends_on:
   - alpha
 labels:
   backend: docker
-  platform: linux/amd64
+  platform: linux/arm64
 steps:
   - name: live-penny-free
     image: python:3.13-slim
     environment:
       ARYA_API_KEY: { from_secret: arya_penny_api_key }
-      ARYA_TEST_BUNDLE: { from_secret: arya_test_source }
+      # Lets the suite post its report as a comment on the deployed pull request.
+      GITHUB_TOKEN: { from_secret: arya_report_github_token }
       ARYA_URL: wss://penny.z13.org/v1/audio/converse
-      ARYA_SPEC_FILE: ${CI_WORKSPACE}/specs/client.md
     commands:
-      - apt-get update -qq && apt-get install -y -qq --no-install-recommends espeak-ng ffmpeg libopus0
-      - |
-        python - <<'PY'
-        import base64, io, os, pathlib, tarfile
-        bundle = base64.b64decode(os.environ.pop('ARYA_TEST_BUNDLE'), validate=True)
-        pathlib.Path('arya-test').mkdir()
-        with tarfile.open(fileobj=io.BytesIO(bundle), mode='r:gz') as archive:
-            archive.extractall('arya-test', filter='data')
-        PY
-      - unset ARYA_TEST_BUNDLE
+      - apt-get update -qq && apt-get install -y -qq --no-install-recommends espeak-ng ffmpeg git libopus0
+      - git clone -q --depth 1 https://github.com/Keryxion/arya-test
       - cd arya-test && sh ci/run.sh

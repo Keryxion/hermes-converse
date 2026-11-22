@@ -56,7 +56,7 @@
 
 These files have copies or dependents in other Keryxion repositories; a change here also belongs there.
 
-- `specs/client.md`: arya-test keeps a byte-for-byte snapshot, and arya-echo, arya-esp32, arya-ios and arya-macos implement it; a contract change that stops here fails the live suite and leaves the clients on the old protocol.
+- `specs/client.md`: arya-test asserts it, and arya-echo, arya-esp32, arya-ios and arya-macos implement it; a contract change that stops here fails the live suite on the old contract and leaves the clients on the old protocol.
 - `specs/tones.md`, `specs/animations.md` and `specs/client_tracing.md` are implemented by the Arya clients: a change here is client work too.
 - `.github/workflows/alpha.yml` and `.crow/alpha.yaml` are the same deploy pipeline as Keryxion/cadence's: a deploy fix here is needed there.
 - `.github/workflows/code-owner-approval.yml`, `code-owner-review.yml` and `.github/CODEOWNERS` are the setup in DTTerastar/code-owner-approval's README: the gate changes there and this copy follows it. Only public repos run it, because GitHub cannot enforce a required check on a private one.
