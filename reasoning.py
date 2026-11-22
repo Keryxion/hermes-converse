@@ -2,9 +2,19 @@
 from __future__ import annotations
 
 
+def gateway_levels() -> list[str]:
+    """The levels the gateway's /reasoning parser accepts, for routes with no confirmed list."""
+    try:
+        from hermes_constants import VALID_REASONING_EFFORTS
+    except ImportError:
+        return []
+    return ["none", *VALID_REASONING_EFFORTS]
+
+
 def capability(model: str | None, provider: str | None) -> tuple[str, list[str]]:
+    unknown = ("unknown", gateway_levels())
     if not model or not provider:
-        return "unknown", []
+        return unknown
     try:
         if provider == "openai-codex":
             from agent.reasoning_effort import codex_supported_efforts
@@ -15,25 +25,25 @@ def capability(model: str | None, provider: str | None) -> tuple[str, list[str]]
         )
         from hermes_constants import parse_reasoning_effort
     except ImportError:
-        return "unknown", []
+        return unknown
     readers = {"openrouter": (warm_openrouter_reasoning_caps_async, openrouter_model_reasoning_capabilities),
                "nous": (warm_nous_reasoning_caps_async, nous_model_reasoning_capabilities)}
     if provider not in readers:
-        return "unknown", []
+        return unknown
     warm, lookup = readers[provider]
     try:
         warm()
         caps = lookup(model)
     except (OSError, ValueError, RuntimeError):
-        return "unknown", []
+        return unknown
     if not caps or caps.get("supports_reasoning") is None:
-        return "unknown", []
+        return unknown
     if caps["supports_reasoning"] is False:
         return "unsupported", []
     levels = [level for level in (caps.get("supported_efforts") or [])
               if isinstance(level, str) and parse_reasoning_effort(level) is not None
               and not (caps.get("mandatory") and level == "none")]
-    return ("supported", levels) if levels else ("unknown", [])
+    return ("supported", levels) if levels else unknown
 
 
 def level(config):

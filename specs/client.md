@@ -1441,7 +1441,10 @@ replacement a queued, undispatched change is dropped. A dispatched change settle
 before the replacement receives its snapshot.
 
 `reasoning_override:null` follows the default. `reasoning_level:null` means the
-effective level is unknown. Offer the advertised `reasoning_levels` for a
-`supported` route. `unsupported` identifies a route that explicitly lacks reasoning
-controls. `unknown` with an empty list means Hermes has no confirmed levels to offer.
+effective level is unknown. Offer the advertised `reasoning_levels` whenever the list is non-empty and
+support is not `unsupported`. `unsupported` identifies a route that explicitly lacks reasoning
+controls. `unknown` means Hermes has no confirmed levels for the model; a non-empty
+list then holds the levels the gateway accepts, not confirmed for this model. Offer
+them, marked "Not confirmed for this model", and allow reset. `unknown` with an
+empty list means there is nothing to offer.
 Model and provider can be null when their identity is unknown.

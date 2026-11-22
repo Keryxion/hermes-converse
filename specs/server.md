@@ -571,9 +571,10 @@ voice work and ahead of its next submission. Dispatch Hermes's session-scoped
 before confirming a picker write. Advertise exact supported efforts from Hermes's
 OpenRouter or Nous catalog, intersected with its command parser, or the gateway's
 model-specific Codex wire levels. Missing metadata
-or an unknown route yields unknown support; an explicit negative yields unsupported.
-Supply the same route-specific levels to the voice agent on each turn. When no list
-is confirmed, the agent says so.
+or an unknown route yields unknown support with the levels Hermes's `/reasoning`
+command parser accepts, which are unconfirmed for the model; an explicit negative
+yields unsupported with no levels. Supply the same levels to the voice agent on each
+turn. When unknown support carries no levels, the agent says there is no confirmed list.
 
 Answer a `commands` frame with Hermes's command registry as its Telegram
 command menu lists it: each command that runs outside a terminal, with its

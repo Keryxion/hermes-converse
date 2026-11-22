@@ -127,10 +127,13 @@ def test_capability_uses_catalog_and_parser(monkeypatch):
 
     from agent.reasoning_effort import codex_supported_efforts
     assert reasoning.capability("gpt-5.6", "openai-codex") == ("supported", list(codex_supported_efforts("gpt-5.6")))
-    assert reasoning.capability("example", "other") == ("unknown", [])
+    gateway = reasoning.gateway_levels()
+    assert gateway and "none" in gateway and "high" in gateway
+    assert reasoning.capability("example", "other") == ("unknown", gateway)
+    assert reasoning.capability(None, "openrouter") == ("unknown", gateway)
     for caps, expected in [
-        (None, ("unknown", [])),
-        ({"supports_reasoning": True}, ("unknown", [])),
+        (None, ("unknown", gateway)),
+        ({"supports_reasoning": True}, ("unknown", gateway)),
         ({"supports_reasoning": True, "mandatory": True, "supported_efforts": ["none", "high"]}, ("supported", ["high"])),
         ({"supports_reasoning": False}, ("unsupported", [])),
         ({"supports_reasoning": True, "supported_efforts": ["low", "high", "not-a-command"]},

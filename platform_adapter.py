@@ -654,7 +654,7 @@ class GatewayTurns:
             await self.run_command(f"/model {args} --session", stop=False)
 
     def current_model(self, default_route):
-        from .reasoning import capability, level
+        from .reasoning import capability, gateway_levels, level
 
         override = self.model_override()
         if override.get("model"):
@@ -672,12 +672,12 @@ class GatewayTurns:
         runner = getattr(self._adapter._message_handler, "__self__", None)
         resolve = getattr(runner, "_resolve_session_reasoning_config", None)
         peek = getattr(runner, "_peek_session_state", None)
-        support, levels = capability(model, provider) if resolve and peek else ("unknown", [])
+        support, levels = capability(model, provider) if resolve and peek else ("unknown", gateway_levels())
         state = peek(self._session_key) if peek else None
         preference = level(state.conversation.reasoning_override) if state else None
         effective = level(resolve(source=self._source, session_key=self._session_key, model=model or "")) if resolve else None
         return {"model": model, "provider": provider, "reasoning_support": support, "reasoning_levels": levels,
-                "reasoning_override": preference, "reasoning_level": effective if effective in levels else None,
+                "reasoning_override": preference, "reasoning_level": effective,
                 "pending": False}
 
     def commands(self) -> list[dict[str, Any]]:

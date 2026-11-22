@@ -101,8 +101,10 @@ def voice_system_prompt(guidance: str, name: str | None = None, *, device_name: 
     if commands is not None:
         parts.append(
             "When asked which reasoning levels this model supports, use the route's advertised levels."
-            " If support is unsupported, say the route does not offer reasoning controls. Otherwise,"
-            " if no levels are available, say Hermes has no confirmed list for this route."
+            " If support is unsupported, say the route does not offer reasoning controls. If support is"
+            " unknown and levels are listed, say the gateway accepts them but they are not confirmed for"
+            " this model. If support is unknown and no levels are listed, say Hermes has no confirmed"
+            " list for this route."
             " The reasoning command lists gateway-wide arguments.")
         if current_model:
             parts.append("Current model for this turn: " + json.dumps(current_model, separators=(",", ":")))
