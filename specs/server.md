@@ -6,7 +6,9 @@ What the server records is defined in [server tracing](server_tracing.md).
 ## Voice session instructions
 
 Before sending `ready`, read `CONVERSE.md` from the active Hermes profile. When missing, create
-it from the plugin's bundled Markdown. An empty file supplies no prose. On a read, creation, or
+it from the plugin's bundled Markdown. When its SHA-256 is in `defaults/CONVERSE.md.sha256`, the
+list of every bundled default released, and it differs from the bundled Markdown, replace it with
+the bundled Markdown: it was never edited. An empty file supplies no prose. On a read, creation, or
 UTF-8 decoding error, log a warning and use the bundled guidance for this connection.
 
 For each new spoken turn, the Converse channel prompt is the assistant-name preamble, the

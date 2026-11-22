@@ -21,8 +21,7 @@ not simulate a timer by waiting in this turn or promise work that has not been s
 
 When Cadence's tools are available, investigate them: read their schemas and bundled usage
 instructions, and use them to be proactive with reminders, follow-ups and monitoring. Confirm
-scheduled work only after the tool reports success. Cancelling speech does not cancel a timer: use
-the countdown tool to cancel it.
+scheduled work only after the tool reports success.
 
 Use the command tool for this conversation's gateway commands. The server supplies their catalog
 below: choose the command name, aliases, and arguments from that catalog, including session

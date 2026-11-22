@@ -1,8 +1,10 @@
 import asyncio
+import hashlib
 import json
 
 import pytest
 
+from hermes_converse import instructions
 from hermes_converse.instructions import DEFAULT_FILE, load_voice_guidance, voice_system_prompt
 
 
@@ -18,6 +20,26 @@ async def test_concurrent_profile_initialization_and_edits(tmp_path, monkeypatch
     monkeypatch.setenv("HERMES_HOME", str(other))
     assert load_voice_guidance() == expected
     assert path.read_text(encoding="utf-8") == "   \n"
+
+
+def test_unedited_earlier_default_is_updated_and_an_edited_file_is_kept(tmp_path, monkeypatch, caplog):
+    # Changing defaults/CONVERSE.md means adding its hash here, keeping the earlier ones.
+    current = DEFAULT_FILE.read_bytes()
+    assert hashlib.sha256(current).hexdigest() in instructions.SHIPPED_HASHES_FILE.read_text().split()
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    path, earlier = tmp_path / "CONVERSE.md", b"An earlier release's guidance.\n"
+    shipped = tmp_path / "shipped"
+    shipped.write_text(hashlib.sha256(earlier).hexdigest() + "\n" + hashlib.sha256(current).hexdigest() + "\n")
+    monkeypatch.setattr(instructions, "SHIPPED_HASHES_FILE", shipped)
+    path.write_bytes(earlier)
+    with caplog.at_level("INFO"):
+        assert load_voice_guidance() == current.decode("utf-8")
+    assert path.read_bytes() == current and str(path) in caplog.text
+    assert [entry.name for entry in tmp_path.iterdir() if entry.name.startswith(".CONVERSE")] == []
+    path.write_bytes(earlier + b"Speak French.\n")
+    assert load_voice_guidance() == (earlier + b"Speak French.\n").decode("utf-8")
+    assert path.read_bytes() == earlier + b"Speak French.\n"
 
 
 @pytest.mark.parametrize("unreadable", ["directory", "invalid UTF-8"])

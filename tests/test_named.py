@@ -155,7 +155,6 @@ def test_prompt_explains_names_proactivity_and_real_scheduling_receipts():
     assert 'physical microphone/speaker' in prompt and 'default destination is this device' in prompt
     assert 'persistent conversation' in prompt and 'without a new user message or wake word' in prompt
     assert "Cadence's tools are available, investigate them" in prompt and 'be proactive' in prompt
-    assert 'Cancelling speech does not cancel a timer' in prompt
     assert 'use the countdown tool' in prompt and 'set a timer for ten minutes' in prompt   # not pulse, for a timer
     assert 'If a tool or delivery integration is unavailable' in prompt
     # Each device's conversation names itself after the device so Cadence requests can reach it.

@@ -1,34 +1,52 @@
 """Profile-local prose and per-turn context for the Converse channel prompt."""
 
+import hashlib
 import json
 import logging
+import os
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
 
 logger = logging.getLogger(__name__)
 DEFAULT_FILE = Path(__file__).with_name("defaults") / "CONVERSE.md"
+# SHA-256 of every default this plugin has shipped, one per line. A profile file matching one
+# was never edited, so a release with a new default replaces it.
+SHIPPED_HASHES_FILE = DEFAULT_FILE.with_name("CONVERSE.md.sha256")
 
 
 def load_voice_guidance() -> str:
-    """Read the active profile's guidance, installing the editable default on first use."""
+    """Read the active profile's guidance, installing the editable default on first use and
+    replacing an unedited earlier default."""
     from hermes_constants import get_hermes_home
 
     path = get_hermes_home() / "CONVERSE.md"
     try:
+        default = DEFAULT_FILE.read_bytes()
         try:
-            return path.read_text(encoding="utf-8")
+            found = path.read_bytes()
         except FileNotFoundError:
             # Publish a complete file without replacing one created by a concurrent start or edit.
             path.parent.mkdir(parents=True, exist_ok=True)
             with NamedTemporaryFile(dir=path.parent, prefix=".CONVERSE.md-") as seed:
-                seed.write(DEFAULT_FILE.read_bytes())
+                seed.write(default)
                 seed.flush()
                 try:
                     path.hardlink_to(seed.name)
                 except FileExistsError:
                     pass
-        return path.read_text(encoding="utf-8")
+            found = path.read_bytes()
+        if found != default and hashlib.sha256(found).hexdigest() in SHIPPED_HASHES_FILE.read_text().split():
+            with NamedTemporaryFile(dir=path.parent, prefix=".CONVERSE.md-", delete=False) as update:
+                update.write(default)
+            try:
+                os.replace(update.name, path)
+            except OSError:
+                os.unlink(update.name)
+                raise
+            logger.info("Updated unedited %s to this release's Converse guidance", path)
+            found = default
+        return found.decode("utf-8")
     except (OSError, UnicodeError) as exc:
         logger.warning("Cannot load %s, using bundled Converse guidance: %s", path, exc)
         return DEFAULT_FILE.read_text(encoding="utf-8")
