@@ -157,7 +157,7 @@ plugin settings form):
 | `arbitrate_policy` | `wake_signal` | rank wake claims with `wake_signal` |
 | `arbitrate_device_id` | `""` | optional label prefix for server-generated unique socket identifiers |
 | `arbitrate_wake_window_seconds` | `0.75` | how long the arbitrator collects concurrent wake claims for the same wake word before electing the primary device |
-| `wake_word` | `Hey Sakura` | wake phrase for every named device |
+| `wake_word` | `Hey Arya` | wake phrase for every named device |
 | `device_wake_words` | `{}` | wake phrase for particular devices by `device_name`; the `set_wake_word` voice tool writes it |
 | `wake_word_repositories` | `[{repository: Keryxion/wakewords, ref: main}]` | ordered GitHub wake-word dictionaries; the last one listing a phrase supplies it, and `[]` uses only cached models |
 

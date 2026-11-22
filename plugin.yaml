@@ -102,8 +102,8 @@ config_schema:
     description: "How long a countdown alarm rings if nobody ends it. Sent to the device as ring_seconds; the server also keeps the countdown this long past its deadline."
   wake_word:
     type: str
-    default: "Hey Sakura"
-    description: "Wake phrase for every named device. Devices ship with a Hey Sakura model."
+    default: "Hey Arya"
+    description: "Wake phrase for every named device. Devices ship with a Hey Arya model."
   device_wake_words:
     type: dict
     default: {}

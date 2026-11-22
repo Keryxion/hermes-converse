@@ -1039,7 +1039,7 @@ optional `turn_id` to target a specific turn.
 
 ### The wake word
 
-Every wake-word device ships with a working `Hey Sakura` model and starts
+Every wake-word device ships with a working `Hey Arya` model and starts
 with that phrase on first setup. Name the model format the device runs in
 `start`:
 
@@ -1052,8 +1052,8 @@ The server sends the configured phrase in `ready`, with a model only in that
 format:
 
 ```json
-{"type":"ready","wake_word":{"phrase":"Hey Arya","models":{
-  "micro_wake_word":{"url":"/v1/audio/wake/hey_arya/manifest.json","sha256":"9f2c…"}}}}
+{"type":"ready","wake_word":{"phrase":"Hey Sakura","models":{
+  "micro_wake_word":{"url":"/v1/audio/wake/hey_sakura/manifest.json","sha256":"9f2c…"}}}}
 ```
 
 Without `wake_word_format`, `ready` has no `wake_word` and the server never
@@ -1070,8 +1070,8 @@ The server can change the wake word on an open socket with `set_wake_word`.
 It carries the same `phrase` and `models` as `ready.wake_word`:
 
 ```json
-{"type":"set_wake_word","phrase":"Hey Arya","models":{
-  "micro_wake_word":{"url":"/v1/audio/wake/hey_arya/manifest.json","sha256":"9f2c…"}}}
+{"type":"set_wake_word","phrase":"Hey Sakura","models":{
+  "micro_wake_word":{"url":"/v1/audio/wake/hey_sakura/manifest.json","sha256":"9f2c…"}}}
 ```
 
 For either message, keep detecting with the current model while downloading,
@@ -1080,8 +1080,8 @@ switch the model and phrase together. Send exactly the active `phrase` in wake
 claims. Report the result on the same socket:
 
 ```json
-{"type":"wake_word_set","phrase":"Hey Arya","status":"ok"}
-{"type":"wake_word_set","phrase":"Hey Arya","status":"error","error":"download_failed"}
+{"type":"wake_word_set","phrase":"Hey Sakura","status":"ok"}
+{"type":"wake_word_set","phrase":"Hey Sakura","status":"error","error":"download_failed"}
 ```
 
 `phrase` identifies the requested phrase. Errors are `model_unavailable`,
@@ -1090,7 +1090,7 @@ previous phrase and model and show that the requested one is unavailable.
 Answer a `set_wake_word` within 30 seconds; the server takes a later answer,
 or none, as no switch.
 Remember a successful switch across restarts. A `ready` without `wake_word`
-keeps the active phrase; before any switch, that is `Hey Sakura`. The `cancel`
+keeps the active phrase; before any switch, that is `Hey Arya`. The `cancel`
 wake word (section 10) stays the device's own.
 
 ### Participation and lifetime
