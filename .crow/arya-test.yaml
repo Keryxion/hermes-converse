@@ -17,7 +17,6 @@ steps:
       # Lets the suite post its report as a comment on the deployed pull request.
       GITHUB_TOKEN: { from_secret: arya_report_github_token }
       ARYA_URL: wss://penny.z13.org/v1/audio/converse
-      ARYA_SPEC_FILE: ${CI_WORKSPACE}/specs/client.md
     commands:
       - apt-get update -qq && apt-get install -y -qq --no-install-recommends espeak-ng ffmpeg libopus0
       - |
