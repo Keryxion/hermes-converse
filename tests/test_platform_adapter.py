@@ -347,6 +347,17 @@ async def test_turn_that_outlives_its_stop_never_blocks_or_speaks(rig):
     assert rig.adapter._abandoned == {} and rig.hub._attachments["den"].session.outputs == []
 
 
+async def test_reply_is_judged_by_its_own_message_not_the_next_one_started(rig):
+    """Hermes can start a queued, abandoned voice turn before the run ahead of it sends its final.
+    That final names its own message and is delivered; the abandoned turn's is not."""
+    rig.hub.attach("den", Device())
+    rig.adapter._abandoned["gone"] = object()
+    rig.adapter._active["den"] = "gone"
+    await rig.adapter.send("den", "First turn finished.", reply_to="first", metadata=NOTIFY)
+    await rig.adapter.send("den", "stale", reply_to="gone", metadata=NOTIFY)
+    assert [o.text for o in rig.hub._attachments["den"].session.outputs] == ["First turn finished."]
+
+
 @pytest.mark.parametrize("heard", [False, True])
 async def test_barged_run_nobody_follows_is_delivered_only_if_unheard(rig, heard):
     """Barge-in leaves the run going. If the person's words never reach it (the capture was
