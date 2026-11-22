@@ -1,0 +1,26 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: NousResearch/hermes-agent
+          path: hermes-agent
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install ./hermes-agent pytest pytest-asyncio numpy av
+      - run: python -m pytest
+        env:
+          HERMES_AGENT_ROOT: ${{ github.workspace }}/hermes-agent
