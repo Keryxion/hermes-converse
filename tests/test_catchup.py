@@ -26,6 +26,27 @@ ROWS = [
 ]
 
 
+def test_persistence_history_provides_user_message_ids_for_live_and_replay():
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from hermes_converse.catchup import History, MessageIds
+    messages = pytest.importorskip("persistence.conversation.messages")
+    read = Mock(return_value=[
+        messages.TranscriptRow(id=1, session_id="sid", role="user", content="Question", timestamp=0,
+                               visibility=messages.RowVisibility.ACTIVE, platform_message_id="turn"),
+    ])
+    store = Mock(spec=["peek_session_id", "_persistence_for_session_id"])
+    store.peek_session_id.return_value = "sid"
+    store._persistence_for_session_id.return_value.messages.read_transcript = read
+    history = History(store, "device-key")
+    assert MessageIds(SimpleNamespace(history=history))._find("turn") == (("1", "Question"), None, True)
+    store._persistence_for_session_id.assert_called_once_with("sid")
+    read.assert_called_once_with("sid", messages.TranscriptRead(view=messages.TranscriptView.DISPLAY,
+                                                               include_lineage=True))
+    assert replay_frames(history.rows(), None)[0]["text"] == "Question"
+
+
 def test_replay_is_user_and_assistant_text_for_speech():
     frames = replay_frames(ROWS, None)
     assert [(f["message_id"], f["role"], f["text"]) for f in frames] == [
