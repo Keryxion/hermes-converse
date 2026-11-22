@@ -1,0 +1,20 @@
+# A CONVERSE.md nobody edited is replaced when a release ships new default guidance. The server
+# recognises it by the hashes in defaults/CONVERSE.md.sha256, so this fails a pull request that
+# changes the default without listing its hash, or that drops a hash main already lists.
+when:
+  - event: pull_request
+    path: ['defaults/**', '.crow/converse-default.yaml']
+
+labels:
+  backend: docker
+  platform: linux/amd64
+
+steps:
+  - name: hashes
+    image: alpine/git
+    commands:
+      - cd defaults
+      - grep -qx "$(sha256sum CONVERSE.md | cut -d' ' -f1)" CONVERSE.md.sha256
+      - git fetch -q --depth=1 origin main
+      - git show FETCH_HEAD:defaults/CONVERSE.md.sha256 > /tmp/released || true
+      - if grep -vxFf CONVERSE.md.sha256 /tmp/released; then echo "hashes above were removed" >&2; exit 1; fi

@@ -19,6 +19,13 @@
   The default pool is small (a 2-CPU host has 6 threads) and shared by every
   connection. `to_thread` is only for short blocking calls such as a database read.
 
+## Default voice guidance
+
+- After changing `defaults/CONVERSE.md`, add its hash and keep the earlier lines:
+  `sha256sum defaults/CONVERSE.md | cut -d' ' -f1 >> defaults/CONVERSE.md.sha256`.
+  Hosts whose `CONVERSE.md` matches a listed hash are moved to the new default; a missing line
+  leaves them on the old one. `.crow/converse-default.yaml` checks this on every pull request.
+
 ## Database storage
 
 - Keep new columns to a minimum. Prefer JSON stored in a settings or attributes
