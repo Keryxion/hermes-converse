@@ -56,6 +56,7 @@ output while speaking.
 | Blue | `#3478F6` |
 | Fault red | `#FF3B30` |
 | Violet | `#AF52DE` |
+| Yellow | `#FFCC00` |
 
 LED devices apply their own brightness and gamma calibration to reach these
 colors. Brightness, night mode, and ambient-light adjustment dim the output
@@ -121,7 +122,8 @@ The frames named here are defined in [client.md](client.md).
 
 ## Mute and overlays
 
-Mute and Do Not Disturb are shown alongside the state, not in place of it.
+Mute, Do Not Disturb, and waiting notifications are shown alongside the
+state, not in place of it.
 
 - **Muted:** steady red, softer than fault red, with a microphone-off label
   where text is available. Never show green listening while muted, and stop the
@@ -134,11 +136,15 @@ Mute and Do Not Disturb are shown alongside the state, not in place of it.
 - **Do Not Disturb:** violet badge, or a 1.76 s violet pulse on entry. This is
   not microphone mute: it holds back only speech the server starts
   (`client.md` section 12).
+- **Notifications waiting:** while the `notifications` list is not empty, a
+  1.5 s yellow pulse every 6 s in `standby`, or a yellow badge with the count on
+  a screen. It stops when the list is empty.
 - **Volume:** neutral proportional bar for 1.5 s. Assistant volume, where it is
   a separate control, uses a speaking-blue bar.
 
 On a device with a single surface, the order of priority is mute and faults,
-then volume, then the voice state, then ambient effects. When an overlay ends,
+then volume, then the voice state, then waiting notifications, then ambient
+effects. When an overlay ends,
 show the current state.
 
 ## Other indications

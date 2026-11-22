@@ -535,8 +535,8 @@ background process completion, runs as an ordinary turn. Its final reply reaches
 |---|---|
 | Device attached and idle | Spoken once. |
 | Device capturing or replying | Spoken after the current exchange. |
-| Device in Do Not Disturb | Not spoken; the reply remains in the conversation's history. |
-| No device attached, or the reply expired after 60 s | `send` reports failure; nothing is queued for a later connection. |
+| Device in Do Not Disturb | Not spoken; it becomes a notification. |
+| No device attached, or the reply expired after 60 s | Not spoken; it becomes a notification. Nothing is queued to be spoken later. |
 | `speak_this` with `""`, or an empty or `[SILENT]` reply | No speech. |
 | Voice turn interrupted | Its late reply is discarded. |
 | Stream delta arriving after the final | Discarded, so nothing is spoken twice. |
@@ -646,19 +646,19 @@ nobody was attached, and do not resend audio.
 ### Nobody attached
 
 A turn can run with no device attached, because a turn outlives a dropped
-connection and other producers start turns too. Its output goes nowhere, and
+connection and other producers start turns too. Its output is not spoken, and
 that is expected:
 
 - Do not synthesize speech for it. The reply is in the conversation's history
   and is replayed as a transcript when a client catches up, with the text it
-  would have said.
+  would have said. It also becomes a notification (Notifications).
 - `speak_this`, `play_tone`, `standby`, `mute`, `set_wake_word`, and `countdown` return `not_attached`,
   so the agent can tell nobody is there and tell another room or chat instead.
 - Nothing is queued to be spoken later.
 - A pending approval is held, as described under Approvals.
 
 Verify: a reply that finished while the device was away is replayed as a
-transcript and never spoken; no speech is synthesized for it; connecting twice
+transcript, becomes a notification, and is never spoken; no speech is synthesized for it; connecting twice
 with the same `after` replays the same frames; connecting with the newest `message_id`
 replays none; a turn cancelled after its message was stored replays a user transcript with no
 reply, and one cancelled before that replays nothing; no user `transcript` is
@@ -698,7 +698,8 @@ credentials or conversation content.
 ## Voice tools
 
 The agent has tools for controlling or inspecting the device it is talking through and
-its conversation. They act only on the device whose conversation calls them.
+its conversation. They act only on the device whose conversation calls them; `notifications`
+reads the list every device shares.
 
 A tool call always happens inside a turn, and the tools act on that turn however
 it started: by speech, or by the server for a reminder, a still-ringing alarm,
@@ -715,6 +716,7 @@ being connected with no turn for a tool to act on.
 | `command` | `name`: a gateway command without a leading slash; `args`: an array of strings, default `[]` | Runs the command in this conversation and returns its reply to the agent. |
 | `client_diagnostics` | None | Returns a fresh diagnostic snapshot from the attached client, as described above. |
 | `do_not_disturb` | `on`: Boolean | Turns Do Not Disturb on or off for this device, attached or not (Do Not Disturb). |
+| `notifications` | None | Returns every notification, oldest first, with its `text`, `device_name`, and time, and clears them all (Notifications). |
 
 ### `speak_this`
 
@@ -917,7 +919,7 @@ none is ringing.
 
 The turn is an ordinary message submitted to the gateway session. Its reply is
 spoken on the device like any other, or not at all when the agent calls
-`speak_this` with `""`. Under Do Not Disturb its reply is not spoken
+`speak_this` with `""`. Under Do Not Disturb its reply becomes a notification
 and the countdown keeps ringing. A snooze starts the sequence again once the
 countdown rings again.
 
@@ -971,7 +973,8 @@ it on. The grace is per device, in memory: it survives reconnects, not restarts.
 While it is on and the grace has passed, a turn the server starts for that
 device (client spec, section 9) sends nothing to the device:
 
-- Its reply or its `speak_this` text is not spoken. The reply stays in the
+- Its reply or its `speak_this` text is not spoken and becomes a notification
+  (Notifications). The reply stays in the
   conversation's history as usual, `send` reports success, and nothing is
   queued to be spoken later.
 - `play_tone` returns `do_not_disturb` and sends nothing.
@@ -990,8 +993,8 @@ accepted for speaking, playing or waiting behind the current exchange, is
 spoken. A turn the person starts, by wake word or Talk, is never held, and
 neither is `say` or a tone or approval in that turn. Countdowns ring as usual.
 
-Verify: a reminder during Do Not Disturb produces no speech or tones and is not
-spoken when it ends; the person's own request is answered aloud; a countdown
+Verify: a reminder during Do Not Disturb becomes a notification, produces no
+speech or tones, and is not spoken when it ends; the person's own request is answered aloud; a countdown
 rings and its still-ringing turn is silent; the setting follows `ready` and
 survives a reconnect and a restart; the tool and the device frame each change
 it, the tool also with no device attached; a turn that calls `do_not_disturb`
@@ -1001,3 +1004,33 @@ asked aloud; the agent is told in a server-started turn and not in the person's
 own; within the grace after the person's request nothing is held, the grace
 ends after its seconds, and turning Do Not Disturb on, also in a request, ends
 it; a client that never sends the frame is served as before.
+
+## Notifications
+
+A notification is output that was not spoken. There is one list for the
+profile, shared by every device:
+
+- output held back by Do Not Disturb;
+- output for a device that is not attached, or that expired after 60 s
+  (Gateway conversation);
+- everything Hermes sends to the `converse` home channel.
+
+The plugin seeds the `converse` platform's home channel as chat `notifications`,
+named "Notifications", so a scheduled job can deliver to `converse` and Hermes
+does not ask for `/sethome`. `send` to that chat adds a notification and speaks
+nothing. The platform sets `gateway_restart_notification: false`, so a restart
+adds none.
+
+Store notifications in `plugin-data/hermes-converse/notifications.db`, keeping
+the newest 100 until they are read. Each has a `notification_id`, its `text`,
+the `device_name` whose output it was (none for the home channel), and
+`created_unix_ms`. Send every attached device the whole list in a
+`notifications` frame after `ready` and whenever it changes.
+
+The `notifications` tool returns the list and clears it; every attached device
+then receives an empty list. The agent reads them aloud in its reply.
+
+Verify: a cron job delivering to `converse` adds a notification on every device
+and speaks nothing; a reply with nobody attached adds one with its
+`device_name`; the list survives a restart; reading from one device clears it on
+all; the 101st notification drops the oldest; a restart adds none.
