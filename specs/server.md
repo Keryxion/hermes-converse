@@ -3,6 +3,16 @@
 Server responsibilities behind the [client contract](client.md).
 What the server records is defined in [server tracing](server_tracing.md).
 
+## Voice session instructions
+
+Before sending `ready`, read `CONVERSE.md` from the active Hermes profile. When missing, create
+it from the plugin's bundled Markdown. An empty file supplies no prose. On a read, creation, or
+UTF-8 decoding error, log a warning and use the bundled guidance for this connection.
+
+For each new spoken turn, supply the connection's copy of the prose as the Converse channel
+prompt, followed by the available assistant and device identity and that turn's gateway command
+catalog. A reattached turn keeps the prompt it started with.
+
 ## Audio transport
 
 Apply `start.audio_format` to both directions as defined in the client spec.

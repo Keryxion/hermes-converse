@@ -135,6 +135,19 @@ A countdown is a timer that ends with a tone on a device; see
 [client spec section 10](specs/client.md#10-countdowns). Spoken reminders come from a scheduler
 plugin such as Cadence and play as ordinary server-started turns.
 
+## Editing voice instructions
+
+On the first voice session, Converse creates `CONVERSE.md` in the active Hermes profile,
+alongside `SOUL.md`, with the [default voice guidance](defaults/CONVERSE.md). Edit it directly
+or ask an authorized agent to edit it. Save it as UTF-8 Markdown. A fresh voice connection
+picks up the edits, and a turn already in progress keeps its instructions.
+
+On every spoken turn, Hermes receives the file's prose as Converse channel guidance, followed by
+the available voice identity and gateway command catalog. Leave the file empty for just that
+generated context. Delete it to restore the defaults on the next connection. If Converse cannot
+read or initialize the file, it logs a warning and uses the bundled guidance for that connection.
+Other Hermes platforms use their usual instructions.
+
 ## Settings
 
 All optional, under `plugins.entries.hermes-converse.settings` in `config.yaml` (or the Desktop

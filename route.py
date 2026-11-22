@@ -65,8 +65,9 @@ from .conversation import ConversationHub
 from .named import DeviceStore, NamedError, parse_names
 from .platform_adapter import GatewayTurns
 from .model_selection import parse_model_selection, public_model_catalog
+from .instructions import load_voice_guidance, voice_system_prompt
 from .loop import (ConversationOutput, ConverseSession, drive_converse_turns,
-                   parse_start_config, voice_system_prompt)
+                   parse_start_config)
 from .settings import Settings, load_settings
 from .tracing import ConnectionTrace, emit_span, force_flush
 from .wake_words import ENGINES as WAKE_WORD_FORMATS
@@ -363,6 +364,7 @@ class ConverseRoute:
             if isinstance(after, str):
                 # True when the client's cursor is not a message of the device's current session.
                 ready["new_session"] = not (after.isdigit() and int(after) in {row["id"] for row in rows or []})
+        guidance = await asyncio.to_thread(load_voice_guidance)
         ready["server_send_unix_ms"] = int(time.time() * 1000)
         await ws.send_json(ready)
         # Catch the client up before anything live, then hand it any turn still running.
@@ -397,7 +399,7 @@ class ConverseRoute:
         logger.info("converse session: session=%s device_id=%s name=%r arbitrated=%s",
                     getattr(session, "session_id", None), device_id, name, arbitrator is not None)
         await _serve(ws, session=session, synth=synth, cap=cap, client=client, settings=settings,
-                     name=name, quiet_interval=quiet_interval, arbitrator=arbitrator,
+                     name=name, guidance=guidance, quiet_interval=quiet_interval, arbitrator=arbitrator,
                      device_id=device_id, hub=self.hub, attachment=attachment,
                      named_device=device, named_connection=connection, transcripts=transcripts,
                      relay=relay, adopted=adopted, audio=audio, wake_word=wake_word)
@@ -554,7 +556,7 @@ async def _await_start_frame(ws: web.WebSocketResponse, *,
 
 
 async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: Any, cap: int,
-                 client: Any, settings: Settings, name: str, quiet_interval: float,
+                 client: Any, settings: Settings, name: str, guidance: str, quiet_interval: float,
                  named_device, named_connection, arbitrator: Optional[Arbitrator] = None,
                  device_id: str = "", hub=None, attachment=None,
                  transcripts: bool = False, relay: Optional[Relay] = None,
@@ -818,7 +820,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
         result = await client.run_turn(
             text=transcript, on_delta=on_delta, turn_id=getattr(session, "_active_turn_id", None),
             instructions=voice_system_prompt(
-                name,
+                guidance, name,
                 device_name=named_device.device_name, recipient_id=named_device.recipient_id, commands=commands),
             model=model, provider=provider)
         after_reply = getattr(result, "after_playback", None)

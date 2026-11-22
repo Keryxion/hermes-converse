@@ -41,7 +41,7 @@ async def test_voice_turn_runs_in_the_gateway_conversation(tmp_path, monkeypatch
     assert turn["text"] == "hello" and turn["status"] == "completed"
     assert turn["chat_name"] == "Arya: Den Echo" and turn["user_name"] == "Den Echo"
     assert turn["user_id"] == ready["recipient_id"]
-    assert "Your name is Arya" in turn["instructions"] and '"device_name": "Den Echo"' in turn["instructions"]
+    assert '"assistant_name": "Arya"' in turn["instructions"] and '"device_name": "Den Echo"' in turn["instructions"]
 
 
 async def test_reconnect_keeps_the_same_gateway_conversation(tmp_path, monkeypatch):
@@ -116,6 +116,9 @@ async def test_device_is_refused_when_the_platform_is_not_hosted(tmp_path, monke
 
 
 async def test_reconnecting_during_a_turn_is_told_where_it_stands(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    path = tmp_path / "CONVERSE.md"
+    path.write_text("Before reconnect.", encoding="utf-8")
     fake = _patch(monkeypatch)
     fake.hang, fake.tool_calls = True, 2
     harness = Harness(fake, device_store=DeviceStore(tmp_path / "devices.db"))
@@ -133,6 +136,7 @@ async def test_reconnecting_during_a_turn_is_told_where_it_stands(tmp_path, monk
             if harness.route.hub.detached:
                 break
             await asyncio.sleep(0.01)
+        path.write_text("After reconnect.", encoding="utf-8")
         ws, ready = await _connect(client)
         assert ready["type"] == "ready"
         # The replay names the turn as live did, and holds its user message only.
@@ -150,6 +154,10 @@ async def test_reconnecting_during_a_turn_is_told_where_it_stands(tmp_path, monk
         closing = next(f for f in rest if f["type"] == "transcript")
         assert closing["text"] == "" and closing["message_id"] and closing["turn_id"] == turn_id
         assert rest[-1] == {"type": "turn_done", "turn_id": turn_id}
+        (resumed,) = fake.turns
+        assert resumed["instructions"].startswith("Before reconnect.")
+        await _say(ws)
+        assert fake.turns[1]["instructions"].startswith("After reconnect.")
         await ws.close()
 
 
