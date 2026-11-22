@@ -41,7 +41,7 @@ async def test_voice_turn_runs_in_the_gateway_conversation(tmp_path, monkeypatch
     assert turn["text"] == "hello" and turn["status"] == "completed"
     assert turn["chat_name"] == "Arya: Den Echo" and turn["user_name"] == "Den Echo"
     assert turn["user_id"] == ready["recipient_id"]
-    assert '"assistant_name": "Arya"' in turn["instructions"] and '"device_name": "Den Echo"' in turn["instructions"]
+    assert "Your name is Arya" in turn["instructions"] and '"device_name": "Den Echo"' in turn["instructions"]
 
 
 async def test_reconnect_keeps_the_same_gateway_conversation(tmp_path, monkeypatch):
@@ -155,9 +155,10 @@ async def test_reconnecting_during_a_turn_is_told_where_it_stands(tmp_path, monk
         assert closing["text"] == "" and closing["message_id"] and closing["turn_id"] == turn_id
         assert rest[-1] == {"type": "turn_done", "turn_id": turn_id}
         (resumed,) = fake.turns
-        assert resumed["instructions"].startswith("Before reconnect.")
+        assert "Before reconnect." in resumed["instructions"]
         await _say(ws)
-        assert fake.turns[1]["instructions"].startswith("After reconnect.")
+        assert "After reconnect." in fake.turns[1]["instructions"]
+        assert "Before reconnect." not in fake.turns[1]["instructions"]
         await ws.close()
 
 

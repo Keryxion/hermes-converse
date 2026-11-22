@@ -142,10 +142,11 @@ alongside `SOUL.md`, with the [default voice guidance](defaults/CONVERSE.md). Ed
 or ask an authorized agent to edit it. Save it as UTF-8 Markdown. A fresh voice connection
 picks up the edits, and a turn already in progress keeps its instructions.
 
-On every spoken turn, Hermes receives the file's prose as Converse channel guidance, followed by
-the available voice identity and gateway command catalog. Leave the file empty for just that
-generated context. Delete it to restore the defaults on the next connection. If Converse cannot
-read or initialize the file, it logs a warning and uses the bundled guidance for that connection.
+On every spoken turn, Hermes receives the file's prose as Converse channel guidance. Converse
+adds its own text around it: the assistant's name before, and the device identity and gateway
+command catalog after. Leave the file empty for just that generated text. Delete it to restore
+the defaults on the next connection. If Converse cannot read or initialize the file, it logs a
+warning and uses the bundled guidance for that connection.
 Other Hermes platforms use their usual instructions.
 
 ## Settings

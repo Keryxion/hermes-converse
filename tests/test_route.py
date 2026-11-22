@@ -269,10 +269,10 @@ async def test_session_snapshots_guidance_but_refreshes_commands(monkeypatch, tm
         assert default == DEFAULT_FILE.read_text(encoding="utf-8")
         path.write_text("Use short answers.", encoding="utf-8")
         first = await speak(ws)
-        assert first.startswith(default) and first.endswith('[{"name":"first"}]')
+        assert default.strip() in first and first.endswith('[{"name":"first"}]')
         commands[:] = [{"name": "second"}]
         second = await speak(ws)
-        assert second.startswith(default) and second.endswith('[{"name":"second"}]')
+        assert default.strip() in second and second.endswith('[{"name":"second"}]')
         await _end(ws)
 
         ws = await client.ws_connect("/v1/audio/converse")

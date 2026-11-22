@@ -9,9 +9,9 @@ Before sending `ready`, read `CONVERSE.md` from the active Hermes profile. When 
 it from the plugin's bundled Markdown. An empty file supplies no prose. On a read, creation, or
 UTF-8 decoding error, log a warning and use the bundled guidance for this connection.
 
-For each new spoken turn, supply the connection's copy of the prose as the Converse channel
-prompt, followed by the available assistant and device identity and that turn's gateway command
-catalog. A reattached turn keeps the prompt it started with.
+For each new spoken turn, the Converse channel prompt is the assistant-name preamble, the
+connection's copy of the prose, the device identity and its routing guidance, and that turn's
+gateway command catalog, in that order. The prose never replaces the generated parts. A reattached turn keeps the prompt it started with.
 
 ## Audio transport
 

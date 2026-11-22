@@ -39,12 +39,15 @@ def test_failed_read_preserves_profile_file(tmp_path, monkeypatch, caplog, unrea
 def test_custom_prose_and_generated_context():
     guidance = "Use {{literal braces}}."
     assert voice_system_prompt(guidance) == guidance
-    assert voice_system_prompt("", "Arya") == 'Assistant name: "Arya"'
+    assert voice_system_prompt("", "Arya").startswith("Your name is Arya. ")
+    assert voice_system_prompt(guidance, "Arya").endswith("\n\n" + guidance)
     device = 'Den "Echo"'
     prompt = voice_system_prompt(guidance, device_name=device, recipient_id="opaque", commands=[])
     prose, identity, catalog = prompt.split("\n\n")
     assert prose == guidance
-    assert json.loads(identity.removeprefix("Voice identity supplied by the server: ")) == {
+    labels, _ = json.JSONDecoder().raw_decode(identity.removeprefix("Voice identity supplied by the server: "))
+    assert "Cadence's request tool" in identity
+    assert labels == {
         "device_name": device, "assistant_name": "", "conversation_name": device, "recipient_id": "opaque"}
     assert catalog == "Gateway command catalog: []"
 
