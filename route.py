@@ -64,7 +64,7 @@ from .client_diagnostics import ClientDiagnostics
 from .conversation import ConversationHub
 from .named import DeviceStore, NamedError, parse_names
 from .platform_adapter import GatewayTurns
-from .model_selection import parse_model_selection, public_model_catalog
+from .model_selection import public_model_catalog
 from .instructions import load_voice_guidance, voice_system_prompt
 from .loop import (ConversationOutput, ConverseSession, drive_converse_turns,
                    parse_start_config)
