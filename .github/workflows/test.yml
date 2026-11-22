@@ -21,6 +21,7 @@ jobs:
           cd hermes-agent
           source ./activate --test-extras all,voice
           cd ..
+          python -m pip install pytest pytest-asyncio numpy av
           python -m pytest
         env:
           HERMES_AGENT_ROOT: ${{ github.workspace }}/hermes-agent
