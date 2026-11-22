@@ -25,7 +25,7 @@ python_dependencies:
   - "onnxruntime>=1.20,<2; (sys_platform != 'darwin' or platform_machine != 'x86_64') and sys_platform != 'android'"
   - "transformers>=4.46,<6"
   - "huggingface_hub>=0.26,<2"
-provides_tools: [speak_this, play_tone, standby, mute, command, countdown, client_diagnostics, set_wake_word]
+provides_tools: [speak_this, play_tone, standby, mute, command, countdown, client_diagnostics, set_wake_word, do_not_disturb]
 provides_hooks: [on_stream_start, on_stream_delta, pre_tool_call, post_tool_call, post_api_request]
 config_schema:
   vad_model:
@@ -112,3 +112,7 @@ config_schema:
     type: list
     default: [{repository: Keryxion/wakewords, ref: main}]
     description: "Ordered GitHub wake-word dictionaries, each {repository, ref}; ref defaults to main. The last one listing a phrase supplies it. [] uses only cached models."
+  do_not_disturb_grace_seconds:
+    type: number
+    default: 300
+    description: "Under Do Not Disturb, what the server starts (reminders, follow-ups, approvals) is still delivered for this long after the person's last request on the device. 0 holds it at once. Turning Do Not Disturb on ends the grace."

@@ -19,6 +19,9 @@ DEFAULT_ARBITRATE_DEVICE_ID = None  # ''/None = auto-generate from socket
 DEFAULT_ARBITRATE_ENABLED = False
 # How long a countdown alarm rings if nobody ends it; sent to the device as ring_seconds.
 DEFAULT_COUNTDOWN_RING_TIMEOUT_SECONDS = 900
+# Under Do Not Disturb, what the server starts is still delivered this long after the person's last
+# request on the device; 0 holds it at once.
+DEFAULT_DO_NOT_DISTURB_GRACE_SECONDS = 300
 # How long the arbitrator collects concurrent wake claims for the same wake word before electing
 # the primary device. Long enough to cover detector jitter across devices, short enough that a
 # client is not left waiting before it starts streaming.
@@ -69,6 +72,7 @@ class Settings:
     arbitrate_device_id: Optional[str] = DEFAULT_ARBITRATE_DEVICE_ID
     arbitrate_wake_window_seconds: float = DEFAULT_ARBITRATE_WAKE_WINDOW_SECONDS
     countdown_ring_timeout_seconds: int = DEFAULT_COUNTDOWN_RING_TIMEOUT_SECONDS
+    do_not_disturb_grace_seconds: float = DEFAULT_DO_NOT_DISTURB_GRACE_SECONDS
 
 
 def _number(raw: Any, default: float) -> float:
@@ -142,4 +146,7 @@ def load_settings(get: Getter) -> Settings:
         countdown_ring_timeout_seconds=_milliseconds(
             get("countdown_ring_timeout_seconds", DEFAULT_COUNTDOWN_RING_TIMEOUT_SECONDS),
             DEFAULT_COUNTDOWN_RING_TIMEOUT_SECONDS),
+        do_not_disturb_grace_seconds=max(0.0, _number(
+            get("do_not_disturb_grace_seconds", DEFAULT_DO_NOT_DISTURB_GRACE_SECONDS),
+            DEFAULT_DO_NOT_DISTURB_GRACE_SECONDS)),
     )

@@ -6,12 +6,14 @@ from typing import Awaitable, Callable, Optional
 
 
 class ServerTurn:
-    def __init__(self) -> None:
+    def __init__(self, session_key: str = "") -> None:
+        self.session_key = session_key  # the gateway session it runs in
         self.spoken: list[str] = []
         self.exclusive = False
         self.standby = False
         self.mute = False
         self.no_barge_in = False
+        self.held = False  # its reply was ready under Do Not Disturb and was not spoken
         self.after_playback: Optional[Callable[[], Awaitable[None]]] = None
 
     def speak(self, text: str) -> None:

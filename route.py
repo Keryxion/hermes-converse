@@ -34,7 +34,9 @@ Protocol:
            ``{"type":"wake_word_set","phrase":"...","status":"ok"}`` the result of a wake-word switch.
   server → ``ready`` (rates, ``session_id``, ``wake_word``, clock-skew timestamps), ``set_wake_word``,
            ``transcript``, ``thinking``,
-           ``speaking`` + binary PCM, ``interrupted``, ``turn_done`` (``next_action``), ``quiet``, ``error``.
+           ``speaking`` + binary PCM, ``interrupted``, ``turn_done`` (``next_action``), ``quiet``, ``error``,
+           ``do_not_disturb`` (after ``ready`` and when the agent changes it; the client sends the
+           same frame when the person changes it).
 """
 
 from __future__ import annotations
@@ -131,7 +133,9 @@ class ConverseRoute:
         self.hub = hub or ConversationHub()
         self._arbitrator: Optional[Arbitrator] = None
         self._arbitrator_lock = asyncio.Lock()
-        self._devices = device_store or DeviceStore()
+        if device_store is not None:
+            self.hub.devices = device_store
+        self._devices = self.hub.devices
         self._named_locks: dict[tuple[str, str], asyncio.Lock] = {}  # per device: one device's setup never waits on another's
         self._named_connections: dict[str, _NamedConnection] = {}
 
@@ -293,7 +297,8 @@ class ConverseRoute:
                 synth, cap, session = await asyncio.to_thread(
                     _resolve_session, settings, input_rate, output_rate, quiet_interval)
                 connection.session = session
-                attachment = self.hub.attach(conversation_id, session, device.assistant_name)
+                attachment = self.hub.attach(conversation_id, session, device.assistant_name,
+                                             device.recipient_id)
                 self._named_connections[device.recipient_id] = connection
             await self._connected(ws, session, api_key, http, base_url, synth, cap, names[0],
                                   quiet_interval, settings, attachment, recv_ms, input_rate, output_rate,
@@ -367,6 +372,8 @@ class ConverseRoute:
         guidance = await asyncio.to_thread(load_voice_guidance)
         ready["server_send_unix_ms"] = int(time.time() * 1000)
         await ws.send_json(ready)
+        await ws.send_json({"type": "do_not_disturb",
+                            "on": self._devices.do_not_disturb(device.recipient_id)})
         # Catch the client up before anything live, then hand it any turn still running.
         relay = Relay(ws, audio=audio, source_rate=output_rate)
         adopted = self.hub.detached.pop(attachment.conversation_id, None)
@@ -582,6 +589,8 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                                     settings.countdown_ring_timeout_seconds, loop)
     if attachment is not None and getattr(hub, "gateway", None) is not None:
         hub.gateway.approvals.attached(attachment)  # a request still pending asks again
+    if hub is not None:
+        hub.do_not_disturb_grace = settings.do_not_disturb_grace_seconds
     default_model = (settings.model, settings.provider)
     selected_model = default_model
     wake_tasks: set[asyncio.Task] = set()
@@ -649,6 +658,11 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                     if (frame.get("type") == "countdown" and attachment is not None
                             and getattr(hub, "countdowns", None) is not None):
                         hub.countdowns.reported(attachment.conversation_id, frame)
+                    if (frame.get("type") == "do_not_disturb" and attachment is not None
+                            and isinstance(frame.get("on"), bool)):
+                        # The person's own toggle: kept for the device, never echoed back.
+                        await asyncio.to_thread(hub.store_do_not_disturb,
+                                                attachment.recipient_id, frame["on"])
                     if frame.get("type") == "approval_response" and attachment is not None:
                         gateway = getattr(hub, "gateway", None)
                         if gateway is not None:
@@ -819,12 +833,17 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
         after_reply = None
         model, provider = selected_model  # Snapshot once; do not alter a turn already in flight.
         commands = await asyncio.to_thread(client.commands) if hasattr(client, "commands") else None
-        result = await client.run_turn(
-            text=transcript, on_delta=on_delta, turn_id=getattr(session, "_active_turn_id", None),
-            instructions=voice_system_prompt(
-                guidance, name,
-                device_name=named_device.device_name, recipient_id=named_device.recipient_id, commands=commands),
-            model=model, provider=provider)
+        started = time.monotonic()
+        try:
+            result = await client.run_turn(
+                text=transcript, on_delta=on_delta, turn_id=getattr(session, "_active_turn_id", None),
+                instructions=voice_system_prompt(
+                    guidance, name,
+                    device_name=named_device.device_name, recipient_id=named_device.recipient_id, commands=commands),
+                model=model, provider=provider)
+        finally:
+            if hub is not None and attachment is not None:
+                hub.request_ended(attachment.recipient_id, started)  # Do Not Disturb's grace starts now
         after_reply = getattr(result, "after_playback", None)
         return result.reply, result.error
 

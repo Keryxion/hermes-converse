@@ -536,6 +536,7 @@ background process completion, runs as an ordinary turn. Its final reply reaches
 |---|---|
 | Device attached and idle | Spoken once. |
 | Device capturing or replying | Spoken after the current exchange. |
+| Device in Do Not Disturb | Not spoken; the reply remains in the conversation's history. |
 | No device attached, or the reply expired after 60 s | `send` reports failure; nothing is queued for a later connection. |
 | `speak_this` with `""`, or an empty or `[SILENT]` reply | No speech. |
 | Voice turn interrupted | Its late reply is discarded. |
@@ -715,6 +716,7 @@ being connected with no turn for a tool to act on.
 | `no_barge_in` | None | From the call until this turn's playback has ended, microphone audio does not interrupt the turn. |
 | `command` | `name`: a gateway command without a leading slash; `args`: an array of strings, default `[]` | Runs the command in this conversation and returns its reply to the agent. |
 | `client_diagnostics` | None | Returns a fresh diagnostic snapshot from the attached client, as described above. |
+| `do_not_disturb` | `on`: Boolean | Turns Do Not Disturb on or off for this device, attached or not (Do Not Disturb). |
 
 ### `speak_this`
 
@@ -951,8 +953,9 @@ none is ringing.
 
 The turn is an ordinary message submitted to the gateway session. Its reply is
 spoken on the device like any other, or not at all when the agent calls
-`speak_this` with `""`. A snooze starts the sequence again once the countdown
-rings again.
+`speak_this` with `""`. Under Do Not Disturb its reply is not spoken
+and the countdown keeps ringing. A snooze starts the sequence again once the
+countdown rings again.
 
 ### Stopping by voice
 
@@ -975,3 +978,62 @@ cancel while ringing, still-ringing turns at 1, 2, 4 and 8 minutes and none
 after `ended`, two countdowns ringing at once (one turn naming both, a
 dismissal ending both, one cancelled while the other rings), a reconnect while
 ringing, and the ring timeout from the setting.
+
+## Do Not Disturb
+
+Do Not Disturb is a per-device setting: the `do_not_disturb` key of the JSON
+`settings` column of the device's row in `devices.db`, off by default, shared by every assistant's conversation on that
+device and kept across reconnects and restarts. It is unrelated to `quiet`,
+the silence that ends listening.
+
+The device's `do_not_disturb` frame and the agent's `do_not_disturb` tool both
+set it; a frame whose `on` is not a Boolean is ignored. Send the setting to the
+device as the first frame after every `ready`, and again when the tool changes
+its value; do not echo the device's own frame back. The tool works whether or
+not the device is attached, returns `ok`, and returns `not_a_device` outside a
+voice device conversation.
+
+The server has no timer for it. To end it at a time, the agent schedules a turn
+in the device's conversation that calls the tool: with Cadence's `pulse`, an
+`at` wake for one night or a `cron` role for each end of a nightly window. The
+voice prompt tells the agent how.
+
+It holds only what the server starts after a grace: `do_not_disturb_grace_seconds`
+(default 300; 0 for none) since the end of the person's last turn on that
+device, by wake word or Talk. Within the grace, nothing is held. Turning Do Not
+Disturb on, by frame or tool, ends the grace, including in the turn that turned
+it on. The grace is per device, in memory: it survives reconnects, not restarts.
+
+While it is on and the grace has passed, a turn the server starts for that
+device (client spec, section 9) sends nothing to the device:
+
+- Its reply or its `speak_this` text is not spoken. The reply stays in the
+  conversation's history as usual, `send` reports success, and nothing is
+  queued to be spoken later.
+- `play_tone` returns `do_not_disturb` and sends nothing.
+- An approval with `ask`, or the `command` tool's question, is denied at once,
+  and nothing is sent. One already pending is denied when a device in Do Not
+  Disturb attaches.
+- What an approved `command` leaves until the reply has played, a new
+  conversation, happens when the turn ends.
+- The turn is told so, through Hermes's `pre_llm_call` context, so the agent
+  can notify the person another way its tools provide. A still-ringing
+  countdown turn still runs.
+
+Whether a reply is held is decided when it is ready, so a turn that turns Do
+Not Disturb off is spoken and one that turns it on is not. A reply already
+accepted for speaking, playing or waiting behind the current exchange, is
+spoken. A turn the person starts, by wake word or Talk, is never held, and
+neither is `say` or a tone or approval in that turn. Countdowns ring as usual.
+
+Verify: a reminder during Do Not Disturb produces no speech or tones and is not
+spoken when it ends; the person's own request is answered aloud; a countdown
+rings and its still-ringing turn is silent; the setting follows `ready` and
+survives a reconnect and a restart; the tool and the device frame each change
+it, the tool also with no device attached; a turn that calls `do_not_disturb`
+with `on: false` is spoken and one with `on: true` is not; an approval in a
+server-started turn is denied with nothing sent, and one in the person's turn is
+asked aloud; the agent is told in a server-started turn and not in the person's
+own; within the grace after the person's request nothing is held, the grace
+ends after its seconds, and turning Do Not Disturb on, also in a request, ends
+it; a client that never sends the frame is served as before.
