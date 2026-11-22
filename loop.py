@@ -941,7 +941,8 @@ class ConverseSession:
             self._mic = None
         self._turn_active.clear()
         self._active_utterance = None
-        self._tts_stop = None
+        if not self._tail_active:
+            self._tts_stop = None
         self._interrupt_callback = None
         self._reset_quiet()
 
@@ -1002,6 +1003,8 @@ class ConverseSession:
         if self._tail_interrupted:
             return
         self._tail_interrupted = True
+        if self._tts_stop is not None:
+            self._tts_stop.set()  # invalidate deferred actions while the final reply still plays
         if self.on_tail_barge is not None:
             self.on_tail_barge(self._tail_turn_id)
         else:
@@ -1712,10 +1715,11 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
         turn.ms("pcm_done"), len(turn.reply_parts), sum(len(p) for p in turn.reply_parts),
         getattr(session, "session_id", None), turn.turn_id, outcome, len(turn.result.get("reply") or ""),
         sum(len(p) for p in turn.spoken_parts), turn.pcm_chunks, next_action, action_source)
-    # Ordinary completion preserves the device's interaction mode. Only an
-    # explicit standby or mute decision overrides it; never reopen a released PTT mic.
+    # Ordinary completion preserves the device's interaction mode. An explicit output
+    # question can open listening; an ordinary reply never reopens a released PTT mic.
     turn_done: dict[str, Any] = {"type": "turn_done", "turn_id": turn.turn_id}
-    if next_action in ("standby", "mute"):
+    if next_action in ("standby", "mute") or (
+            turn.output is not None and turn.output.next_action == "listen"):
         turn_done["next_action"] = next_action
     await d.send_json(turn_done)
     _finish_trace(tt, turn, reply, err=turn_err, barged=barged, next_action=next_action)
