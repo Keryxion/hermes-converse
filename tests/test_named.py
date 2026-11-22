@@ -69,7 +69,7 @@ async def test_names_select_the_conversation_without_exposing_it(tmp_path, monke
         assert 'Your name is Arya' in prompt
         assert '"assistant_name": "Arya"' in prompt and '"device_name": "Den Echo"' in prompt
         assert 'physical microphone/speaker' in prompt and ready['recipient_id'] in prompt
-        assert 'pulse' in prompt and 'without a new user' in prompt
+        assert "Cadence's tools" in prompt and 'without a new user' in prompt
         await ws.close()
 
 
@@ -148,13 +148,13 @@ async def test_wrong_key_cannot_create_device_or_conversation(tmp_path, monkeypa
 
 
 def test_prompt_explains_names_proactivity_and_real_scheduling_receipts():
-    from hermes_converse.loop import voice_system_prompt
-    prompt = voice_system_prompt('Arya', device_name='Den Echo', recipient_id='opaque')
+    from hermes_converse.instructions import DEFAULT_FILE, voice_system_prompt
+    guidance = DEFAULT_FILE.read_text(encoding='utf-8')
+    prompt = ' '.join(voice_system_prompt(guidance, 'Arya', device_name='Den Echo', recipient_id='opaque').split())
     assert 'Your name is Arya' in prompt and 'Your name is Den Echo' not in prompt
     assert 'physical microphone/speaker' in prompt and 'default destination is this device' in prompt
     assert 'persistent conversation' in prompt and 'without a new user message or wake word' in prompt
-    assert 'pulse tool is available' in prompt and 'tool\'s receipt' in prompt
-    assert 'Cancelling speech does not cancel a timer' in prompt
+    assert "Cadence's tools are available, investigate them" in prompt and 'be proactive' in prompt
     assert 'use the countdown tool' in prompt and 'set a timer for ten minutes' in prompt   # not pulse, for a timer
     assert 'If a tool or delivery integration is unavailable' in prompt
     # Each device's conversation names itself after the device so Cadence requests can reach it.
@@ -166,8 +166,8 @@ def test_prompt_explains_names_proactivity_and_real_scheduling_receipts():
     for state in ("awaiting_answer:", "not_delivered:", "unknown:"):
         assert state in prompt
     assert "reachable is false" in prompt
-    assert "request tool" not in voice_system_prompt('Arya')   # no device, nothing to name it after
-    long = voice_system_prompt('Arya', device_name='Upstairs Guest Bedroom Echo Show Fifteen')
+    assert "request tool" not in voice_system_prompt(guidance, 'Arya')   # no device, nothing to name it after
+    long = voice_system_prompt(guidance, 'Arya', device_name='Upstairs Guest Bedroom Echo Show Fifteen')
     assert '"conversation_name": "Arya: Upstairs Guest Bedroom Echo Show F"' in long   # Cadence allows 40
 
 

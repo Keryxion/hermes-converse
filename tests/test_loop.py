@@ -19,7 +19,7 @@ from hermes_converse import speech, vad
 from hermes_converse.loop import (
     AsyncQueue,
     HISTORY_MAX_MESSAGES, ConverseSession, QuietTick, TailBarge, Utterance,
-    drive_converse_turns, parse_start_config, voice_system_prompt)
+    drive_converse_turns, parse_start_config)
 from hermes_converse.synth import decode_audio_file_to_pcm16, resample_synth, resolve_synthesizer
 
 from tests.support.converse_audio import calibration, silence, speech_like
@@ -523,11 +523,6 @@ def test_parse_start_config_defaults_and_clamps():
         assert parse_start_config({"input_rate": bad, "output_rate": bad}) == (16000, 24000, 0.0)
     for bad in (-3, 0, "15", True, None, float("nan")):
         assert parse_start_config({"quiet_interval": bad})[2] == 0.0
-
-
-def test_voice_system_prompt_names_the_assistant():
-    assert "Your name is Arya" in voice_system_prompt("Arya")
-    assert "Your name" not in voice_system_prompt(None)
 
 
 # ── converse synthesizer ──

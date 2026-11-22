@@ -17,7 +17,7 @@ from aiohttp import WSServerHandshakeError, web
 from aiohttp.test_utils import TestClient, TestServer
 
 from hermes_converse import speech
-from hermes_converse.loop import voice_system_prompt
+from hermes_converse.instructions import DEFAULT_FILE, voice_system_prompt
 from hermes_converse import command_catalog
 from gateway.config import PlatformConfig
 from hermes_converse.named import DeviceStore
@@ -202,7 +202,8 @@ async def test_subprotocol_key_accept_full_turn_through_the_gateway(monkeypatch)
     assert turn["text"] == "turn it on"
     assert turn["chat_name"] == f"{ASSISTANT_NAME}: {DEVICE_NAME}"
     assert turn["instructions"] == voice_system_prompt(
-        ASSISTANT_NAME, device_name=DEVICE_NAME, recipient_id=ready["recipient_id"], commands=command_catalog.catalog())
+        DEFAULT_FILE.read_text(encoding="utf-8"), ASSISTANT_NAME, device_name=DEVICE_NAME,
+        recipient_id=ready["recipient_id"], commands=command_catalog.catalog())
     assert turn["model"] is None and turn["provider"] is None and not fake.commands
     assert streamer.requests == ["Turn it on."]
 
@@ -242,6 +243,45 @@ async def test_session_id_is_stable_across_turns_on_one_socket(monkeypatch):
         finally:
             await _end(ws)
     assert len(fake.turns) == 2 and len({turn["chat_id"] for turn in fake.turns}) == 1
+
+
+@pytest.mark.asyncio
+async def test_session_snapshots_guidance_but_refreshes_commands(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    path = tmp_path / "CONVERSE.md"
+    fake = FakeHermes(API_KEY)
+    _patch_speech(monkeypatch, _FakeStreamer([b"\x01\x02"]))
+    monkeypatch.setattr(speech, "transcribe_wav", lambda *args, **kwargs: "again")
+    commands = [{"name": "first"}]
+    monkeypatch.setattr(command_catalog, "catalog", lambda: commands.copy())
+
+    async def speak(ws):
+        for frame in _speech_then_silence_pcm():
+            await ws.send_bytes(frame)
+        await _collect_turn(ws)
+        return fake.turns[-1]["instructions"]
+
+    async with Harness(fake) as client:
+        ws = await client.ws_connect("/v1/audio/converse")
+        await ws.send_str(_start_msg(key=API_KEY))
+        ready = await ws.receive_json()
+        default = path.read_text(encoding="utf-8")
+        assert default == DEFAULT_FILE.read_text(encoding="utf-8")
+        path.write_text("Use short answers.", encoding="utf-8")
+        first = await speak(ws)
+        assert default.strip() in first and first.endswith('[{"name":"first"}]')
+        commands[:] = [{"name": "second"}]
+        second = await speak(ws)
+        assert default.strip() in second and second.endswith('[{"name":"second"}]')
+        await _end(ws)
+
+        ws = await client.ws_connect("/v1/audio/converse")
+        await ws.send_str(_start_msg(key=API_KEY))
+        assert (await ws.receive_json())["type"] == "ready"
+        assert await speak(ws) == voice_system_prompt(
+            "Use short answers.", ASSISTANT_NAME, device_name=DEVICE_NAME,
+            recipient_id=ready["recipient_id"], commands=commands)
+        await _end(ws)
 
 
 @pytest.mark.asyncio
@@ -299,7 +339,8 @@ async def test_settings_drive_the_model_and_the_prompt(monkeypatch):
     assert turn["model"] == "fast-model" and turn["provider"] == "local-llm"
     assert fake.commands == ["/model fast-model --provider local-llm"]
     assert turn["instructions"] == voice_system_prompt(
-        "Hal", device_name=DEVICE_NAME, recipient_id=ready["recipient_id"], commands=command_catalog.catalog())
+        DEFAULT_FILE.read_text(encoding="utf-8"), "Hal", device_name=DEVICE_NAME,
+        recipient_id=ready["recipient_id"], commands=command_catalog.catalog())
 
 
 @pytest.mark.asyncio
