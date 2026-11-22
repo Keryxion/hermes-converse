@@ -34,7 +34,9 @@ def audio_format(frame: dict) -> str:
 
 class AudioTransport:
     def __init__(self, fmt: str, input_rate: int, output_rate: int):
-        self.output_rate = output_rate
+        self.input_rate, self.output_rate = input_rate, output_rate
+        self.input_resampler = None
+        self.input_carry = b""
         self.decoder = Decoder(input_rate) if fmt == "opus" else None
         try:
             self.encoder = Encoder(output_rate) if fmt == "opus" else None
@@ -66,13 +68,29 @@ class AudioTransport:
             self.decoder.close()
             self.encoder.close()
 
-    def decode(self, packet: bytes) -> bytes:
-        if self.decoder is None:
-            return packet
-        pcm = self.decoder.decode(packet)
-        # Still decode DTX-only packets to maintain codec state, but don't let generated
-        # comfort noise teach the room gain or trigger speech detection.
-        return bytes(len(pcm)) if len(packet) <= 2 else pcm
+    def decode(self, packet: bytes, *, target_rate=None) -> bytes:
+        pcm = packet
+        if self.decoder is not None:
+            pcm = self.decoder.decode(packet)
+            # Decode DTX to maintain codec state, but suppress generated comfort noise.
+            if len(packet) <= 2:
+                pcm = bytes(len(pcm))
+        if target_rate is None or target_rate == self.input_rate:
+            return pcm
+        # A reconnect may negotiate another microphone rate while its turn retains the detector.
+        import av
+        import numpy as np
+        if self.input_resampler is None:
+            self.input_resampler = av.AudioResampler(format="s16", layout="mono", rate=target_rate)
+        pcm = self.input_carry + pcm
+        cut = len(pcm) - len(pcm) % 2
+        pcm, self.input_carry = pcm[:cut], pcm[cut:]
+        if not pcm:
+            return b""
+        frame = av.AudioFrame.from_ndarray(np.frombuffer(pcm, dtype="<i2").reshape(1, -1),
+                                          format="s16", layout="mono")
+        frame.sample_rate = self.input_rate
+        return b"".join(f.to_ndarray().tobytes() for f in self.input_resampler.resample(frame))
 
     def encode(self, pcm: bytes, source_rate: int):
         if self.encoder is not None:

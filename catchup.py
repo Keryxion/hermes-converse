@@ -219,26 +219,28 @@ class Relay:
                 self.ws = None
 
     async def send_json(self, frame: dict) -> None:
-        if self.ws is not None:
+        ws = self.ws
+        if ws is not None:
             audio = self.audio
             if audio is not None and _changes_audio(frame):
                 # The Opus state is the audio thread's: every change to it runs there, in order.
                 for packet in await on_audio_thread(_audio_frame, audio, frame):
-                    if self.ws is None:
+                    if self.ws is not ws or self.audio is not audio:
                         return
                     await self._send("send_bytes", packet)
-                if self.ws is None:
+                if self.ws is not ws or self.audio is not audio:
                     return
             await self._send("send_json", frame)
 
     async def send_bytes(self, data: bytes) -> None:
-        if self.ws is not None:
+        ws = self.ws
+        if ws is not None:
             audio = self.audio
             if audio is None:
                 await self._send("send_bytes", data)
             else:
                 for packet in await on_audio_thread(lambda: list(audio.encode(data, self.source_rate))):
-                    if self.ws is None:
+                    if self.ws is not ws or self.audio is not audio:
                         return
                     await self._send("send_bytes", packet)
 
@@ -266,6 +268,6 @@ class Detached:
 
     relay: Relay
     client: Any  # the GatewayTurns running it
-    session: Any  # the dropped connection's session, which can still cancel the turn
+    session: Any  # the live detector, playback guard and input owner kept with its driver
     driver: asyncio.Future
     control: Any = None  # the driver's hooks: `resume` tells a new connection where the turn stands

@@ -269,8 +269,6 @@ class ConverseRoute:
                 if old is not None:
                     if not old.done.is_set():
                         # Fence before closing: no further PCM/control can enter the old session.
-                        if old.session is not None:
-                            old.session.stop()
                         old.replaced.set()
                         try:
                             await asyncio.wait_for(old.done.wait(), REPLACEMENT_TIMEOUT)
@@ -329,6 +327,17 @@ class ConverseRoute:
                          wake_word_format=None):
         client = turns
         device, connection = named
+        adopted = self.hub.detached.pop(attachment.conversation_id, None)
+        if adopted is not None and adopted.driver.done():
+            adopted.session.stop()
+            adopted = None
+        if adopted is not None:
+            session.stop()
+            session = adopted.session
+            adopted.control["detached"] = False
+            session.set_quiet_interval(quiet_interval)
+            connection.session = attachment.session = session
+            client = adopted.client
         # Only a device that names the model format it runs has a server-managed wake word.
         wake_word = WakeWordLink(ws, self._wake_words, device.device_name, wake_word_format,
                                  get=self._settings_getter, persist=self._set_device_wake_word
@@ -372,8 +381,7 @@ class ConverseRoute:
         ready["server_send_unix_ms"] = int(time.time() * 1000)
         await ws.send_json(ready)
         # Catch the client up before anything live, then hand it any turn still running.
-        relay = Relay(ws, audio=audio, source_rate=output_rate)
-        adopted = self.hub.detached.pop(attachment.conversation_id, None)
+        relay = adopted.relay if adopted is not None else Relay(ws, audio=audio, source_rate=output_rate)
         running = adopted.client.message_key if adopted is not None and not adopted.client.settled else None
         if rows is not None:
             for replay in replay_frames(rows or [], after if isinstance(after, str) else None):
@@ -567,10 +575,11 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                  transcripts: bool = False, relay: Optional[Relay] = None,
                  adopted: Optional[Detached] = None, audio=None,
                  wake_word: Optional[WakeWordLink] = None, default_route=(None, None)) -> None:
-    """Run the client pump and the turn driver until the socket ends; always stop the live turn."""
+    """Run socket input and its single driver; preserve an unfinished turn on disconnect."""
     loop = asyncio.get_running_loop()
     session.enable_turn_control()
-    session.start()
+    if adopted is None:
+        session.start()
     history: list[dict[str, str]] = []
     diagnostics = ClientDiagnostics(ws)
     if attachment is not None:
@@ -624,6 +633,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
         model_change.add_done_callback(wake_tasks.discard)
         return True
 
+    control = adopted.control if adopted is not None else {}
     wake_tasks: set[asyncio.Task] = set()
     if wake_word is not None:
         wake_tasks.add(asyncio.create_task(wake_word.watch()))
@@ -651,9 +661,12 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
         nonlocal explicit_stop
         try:
             async for msg in ws:
+                if named_connection.replaced.is_set():
+                    break
                 if msg.type == web.WSMsgType.BINARY:
                     try:
-                        pcm = audio.decode(msg.data) if audio is not None else msg.data
+                        pcm = (audio.decode(msg.data, target_rate=session._input_rate)
+                               if audio is not None else msg.data)
                     except OpusError:
                         explicit_stop = True
                         await _fail(ws, "bad_audio", 4400)
@@ -695,8 +708,6 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                             gateway.approvals.respond(attachment, frame)
                     if frame.get("type") == "cancel":
                         session.cancel(frame.get("turn_id"))
-                        if adopted is not None:  # a turn carried over from the previous connection
-                            adopted.session.cancel(frame.get("turn_id"))
                     if frame.get("type") == "heard":
                         # Neither cancel nor barge-in: the turn carries on unchanged, unless it
                         # called `no_barge_in`, where the wake word is how the person interrupts.
@@ -745,7 +756,6 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
         diagnostics.close()
         if wake_word is not None:
             wake_word.close()
-        session.stop()
 
     async def _command(frame: dict, *, approved=False) -> None:
         nonlocal dispatched
@@ -920,15 +930,15 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
         )
 
     detached = False
-    control: dict[str, Any] = {}
     pump = asyncio.ensure_future(_pump_client())
-    driver = asyncio.ensure_future(_drive_turns())
+    driver = adopted.driver if adopted is not None else asyncio.ensure_future(_drive_turns())
     fence = asyncio.create_task(named_connection.replaced.wait())
     try:
         done, _ = await asyncio.wait({pump, driver, fence}, return_when=asyncio.FIRST_COMPLETED)
         if driver in done:
             driver.result()  # surface a crash
-        elif not explicit_stop and hub is not None and attachment is not None and not client.settled:
+        elif (not explicit_stop and hub is not None and attachment is not None
+              and (not client.settled or control.get("active", lambda: False)())):
             # The connection went away while the agent was working. The turn carries on; its reply
             # is not spoken (nobody is there), and a replacement connection picks up its frames.
             detached = True
@@ -940,18 +950,21 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
         # aiohttp may cancel the request handler on disconnect before the pump returns.
         # Preserve the same running turn as on an ordinary socket close.
         detached = (not explicit_stop and hub is not None and attachment is not None
-                    and not client.settled and not driver.done())
+                    and (not client.settled or control.get("active", lambda: False)()) and not driver.done())
     except Exception:
         logger.exception("converse loop crashed")
     finally:
         diagnostics.close()
         if wake_word is not None:
             wake_word.close()
-        session.stop()
         if detached:
             relay.ws = None
-        if adopted is not None:
-            adopted.relay.ws = None
+            control["detached"] = True
+            session.stream.discard()
+            # Keep detector, playback guard and turn driver together for a replacement socket.
+            named_connection.session = None
+        else:
+            session.stop()
         pump.cancel()
         if not detached:
             driver.cancel()
@@ -974,6 +987,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                     finished.exception()  # retrieved: a crash here has nobody to report to
                 if hub.detached.get(attachment.conversation_id) is entry:
                     hub.detached.pop(attachment.conversation_id, None)
+                    session.stop()
             driver.add_done_callback(forget)
         else:
             with contextlib.suppress(Exception):

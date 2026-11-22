@@ -891,6 +891,12 @@ class ConverseSession:
             self.transcripts.put(QuietTick(round(self._quiet_seconds, 1)))
             self._next_quiet_at += self._quiet_interval
 
+    @_session_state
+    def set_quiet_interval(self, interval: float) -> None:
+        """Apply the replacement socket's requested quiet cadence without changing its reply."""
+        self._quiet_interval = float(interval)
+        self._reset_quiet()
+
     def _reset_quiet(self) -> None:
         self._quiet_held = False
         self._quiet_seconds = 0.0
@@ -1422,6 +1428,7 @@ async def drive_converse_turns(
         await send_json(_thinking_frame(d, turn))
     if control is not None:
         control["resume"] = resume
+        control["active"] = lambda: d.turn is not None or session._tail_active
 
     async def notify_tail_barge(turn_id):
         await send_json({"type": "interrupted", "turn_id": turn_id})
@@ -1480,7 +1487,7 @@ async def drive_converse_turns(
         while unheard:
             await speak_output(unheard.pop(0))
 
-    while not session.stopped:
+    while not session.stopped and not (control or {}).get("detached", False):
         if deferred_outputs and not session.capture_pending():
             item = deferred_outputs.popleft()
         else:
