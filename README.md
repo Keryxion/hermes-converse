@@ -99,7 +99,7 @@ turn limit; progress frames do not extend the server's 120-second default timeou
 They stop before terminal frames and on disconnect. See
 [specs/client.md](specs/client.md#handling-thinking) for the full contract.
 
-Client control frames: `{"stop": true}` ends the audio attachment (persisted conversation history remains), `{"commit": true}` forces the current
+Client control frames: `{"type": "endpointing", "commit": true}` forces the current
 utterance to endpoint, `{"type": "cancel", "turn_id": "..."}` cancels the current turn while
 keeping the socket, session and history alive, `{"type": "drained", "turn_id": "..."}` says the
 reply's last audio has left the speaker (or queued audio was discarded), ending the server's

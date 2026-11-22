@@ -40,6 +40,14 @@ class History:
             session_id = store.peek_session_id(self._session_key) if store is not None else None
             if not session_id:
                 return []
+            persistence_for_session = getattr(store, "_persistence_for_session_id", None)
+            if persistence_for_session is not None:
+                from persistence.conversation.messages import TranscriptRead, TranscriptView
+
+                persistence = persistence_for_session(session_id)
+                request = TranscriptRead(view=TranscriptView.DISPLAY, include_lineage=True)
+                return [row.as_wire_row() for row in persistence.messages.read_transcript(session_id, request)]
+            # Older Hermes versions expose the same display history through SessionDB.
             return list(store._db_for_session_id(session_id).get_messages(
                 session_id, include_compacted=True, include_ancestors=True))
         except Exception:

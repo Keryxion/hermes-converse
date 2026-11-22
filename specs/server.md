@@ -107,7 +107,9 @@ discard that cancelled capture, and send `interrupted` then `turn_done` for the
 turn that was cut; a capture abandoned with no turn running sends nothing.
 Leave the socket and conversation usable. After a turn's `interrupted`, send
 nothing more for it but its `turn_done`, and start no other turn's frames
-before that. `stop` closes the attachment.
+before that. Until 2026-12-20, also accept the bare `{"stop": true}` frame that
+older clients send: stop the turn as for an untargeted `cancel`, then close the
+socket. The client spec no longer has it; a client closes the socket instead.
 
 `heard` says the device detected a wake word during a turn. It is neither
 cancellation nor barge-in: log it with the session, the turn, and the wake
@@ -228,14 +230,16 @@ pause ends the capture only at `endpoint_max_silence_ms`. This applies with or
 without Smart Turn, so "Hey Arya … set a timer" is one request while a continuous
 "Hey Arya, set a timer" endpoints normally.
 
-Explicit `commit` ends the capture at once with the audio already received,
-bypassing Smart Turn and the wake pause. The utterance limit still applies.
+An `endpointing` frame's `"commit": true` ends the capture at once with the
+audio already received, bypassing Smart Turn and the wake pause. The utterance
+limit still applies. Until 2026-12-20, also accept the bare `{"commit": true}`
+frame that older clients send, with the same meaning; the client spec no longer
+has it.
 
-An `endpointing` frame's `on` turns endpointing off or on until the device
-changes it; each connection starts with it on. While it is off only `commit`
-ends the utterance; neither silence nor Smart Turn endpoints it. The frame's
-`"commit": true` is the same as `{"commit": true}`, and an `on` sent with it
-applies where the commit marker is reached in the audio. Onset detection,
+The frame's `on` turns endpointing off or on until the device changes it; each
+connection starts with it on. While it is off only `commit` ends the utterance;
+neither silence nor Smart Turn endpoints it. An `on` sent with `commit` applies
+where the commit marker is reached in the audio. Onset detection,
 barge-in, and the wake pause are unchanged.
 
 The utterance limit (60 s) is a memory backstop, not an endpoint. It must never
@@ -499,7 +503,7 @@ and API-key authentication stay on the API server.
 | Final reply | `send` marked `notify`; speaks only what the stream did not carry |
 | Turn settled | `on_processing_complete` |
 | Barge-in | the continuation goes to `handle_message` while the run is going; the run is not interrupted |
-| `cancel`, `stop` | `interrupt_session_activity`, then wait for the turn to settle |
+| `cancel` | `interrupt_session_activity`, then wait for the turn to settle |
 | Tool and reasoning progress | `pre_tool_call` and `post_api_request` plugin hooks |
 | `command` from the client | the gateway command named in `name`, with `args`, after stopping any turn in flight; its reply is not spoken and goes back to the client in a `command` frame |
 | Model selection | the gateway `/model` command, sent only when the choice differs from the session's; its confirmation is not spoken |

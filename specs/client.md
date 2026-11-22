@@ -47,7 +47,7 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 
 ```json
 {"type": "start", "key": "<API_SERVER_KEY>", "input_rate": 16000,
- "output_rate": 24000, "quiet_interval": 0, "assistant_name": "Arya", "device_name": "Den Echo"}
+ "output_rate": 24000, "quiet_interval": 1, "assistant_name": "Arya", "device_name": "Den Echo"}
 ```
 
 | field | what it does |
@@ -184,13 +184,11 @@ All are JSON text frames:
 
 | frame | meaning |
 |---|---|
-| `{"stop": true}` | Stops live work and closes the socket. The device's conversation and its history are kept for reconnection. |
-| `{"commit": true}` | Ends the current utterance now, with the audio already sent (runs a turn on it). |
 | `{"type": "cancel", "turn_id": "..."}` | Cancels the **current** turn — stops TTS and the agent — but keeps the socket, session, and history alive. |
 | `{"type": "wake", "claim_id": "...", "wake_word": "Hey Arya"}` | request an advisory wake decision while buffering the new activation locally; see section 8. |
 | `{"type": "heard", "wake_word": "Hey Arya"}` | A wake word was heard during a turn; see "A wake word heard during a turn" in section 4. |
 | `{"type": "wake_word_set", "phrase": "Hey Arya", "status": "ok"}` | The result of switching to the wake word the server sent; see section 8. |
-| `{"type": "endpointing", "on": false, "commit": true}` | Turns silence/Smart Turn endpointing off or on, and with `commit` ends the current utterance; both fields are optional. See "Push to talk" below. |
+| `{"type": "endpointing", "on": false, "commit": true}` | `on` turns silence/Smart Turn endpointing off or on. `"commit": true` ends the current utterance now, with the audio already sent (runs a turn on it). Both fields are optional. See "Push to talk" below. |
 | `{"type": "state", "turn_id": "...", "state": "listening"}` | The state the device now shows; see "The turn's state" in section 4. |
 | `{"type": "countdown", "countdown_id": "...", "ringing": true}` | A countdown is ringing, or with `ended` has ended; see section 10. |
 | `{"type": "commands"}` | Ask which commands the server runs; see "Commands" below. |
@@ -198,9 +196,13 @@ All are JSON text frames:
 | `{"type": "say", "text": "..."}` | Speaks the given text (trimmed, at most 400 characters) as a reply of its own: `thinking`, `speaking` + PCM, then `turn_done` with `next_action: "standby"`. No agent turn runs, nothing is added to the conversation, and no `transcript` frame is sent for it. For fixed device prompts such as a spoken help reminder. Empty or non-string text is ignored. |
 | `{"type": "approval_response", "approval_id": "...", "choice": "once"}` | Answer a pending approval from a screen with one of its `choices`; see "Approvals" in section 4. |
 
-**`cancel` vs `stop`:** `stop` tears down the session; `cancel` only kills the
-current turn. Use `cancel` when the user hits the action button and you want
-to keep the conversation going. Nothing heard is a `cancel`: neither the
+Every control frame has a `type`. To end the session, close the socket: the
+device's conversation and its history are kept for reconnection, and a turn
+still running finishes without being spoken ("Catching up", section 4). To stop
+that turn as well, send `cancel` before closing.
+
+`cancel` only kills the current turn; the socket and conversation carry on. Use
+it when the user hits the action button. Nothing heard is a `cancel`: neither the
 assistant's wake word nor the `cancel` wake word cancels a turn. A wake word
 heard during a turn is reported with `heard` (section 4, "A wake word heard
 during a turn").
@@ -213,9 +215,9 @@ a bad Opus packet.
 | Sent | Result |
 |---|---|
 | Text that is not JSON, JSON that is not an object, or an unknown `type` | Ignored. |
-| `stop` or `commit` with a value other than `true` | Ignored. |
 | `cancel` whose `turn_id` is not the current turn's | Ignored. A `cancel` with no `turn_id`, or `null`, is untargeted. |
 | `endpointing` whose `on` is not a boolean | `on` is ignored; `"commit": true` still commits. |
+| `endpointing` whose `commit` is not `true` | No commit; a boolean `on` still applies. |
 | `countdown` with no string `countdown_id`, with one the server does not have, or with neither `"ringing": true` nor `"ended": true` | Ignored. |
 | `say` whose `text` is not a string or is empty after trimming | Ignored. |
 | `say` whose `text` is over 400 characters | The first 400 are spoken. |
@@ -250,7 +252,7 @@ endpointing on. The utterance cap still applies as a memory backstop.
 
 Quick taps and wake-word turns use normal endpointing. Send no PCM while the
 control is released, including while the reply plays, unless the turn's ending
-opens an activation ("Handling `turn_done.next_action`", section 4). Barge-in, `cancel`, `stop`, and
+opens an activation ("Handling `turn_done.next_action`", section 4). Barge-in, `cancel`, and
 every other frame keep their usual meaning, and `commit` with no utterance in progress is ignored.
 
 ### Commands
@@ -466,7 +468,7 @@ transcripts" below):
 A stale targeted cancel cannot stop a newer turn. An untargeted
 `{"type":"cancel"}` also abandons a capture in progress: the audio is dropped,
 and when no turn is running no frame answers it. The connection and
-conversation remain usable. `stop` closes the attachment instead.
+conversation remain usable.
 
 ### Frame order when a turn is cut
 
@@ -539,7 +541,8 @@ Unmuting lands in standby ("Handling `turn_done.next_action`"); never replay
 audio accumulated while muted.
 
 Muting while listening commits what was already said: stop microphone capture,
-send all audio already captured in order, then send `{"commit": true}` before
+send all audio already captured in order, then send
+`{"type":"endpointing","commit":true}` before
 stopping upstream audio. This ends the utterance without waiting for more
 silence. With Opus, finish the partial packet and flush encoder delay before
 `commit`. The server ignores a commit with nothing said. Backgrounding and
@@ -780,7 +783,11 @@ Muting is the same whoever asks: the device's own control, or `mute`. It ends
 the exchange, and nothing the server sends unmutes. `cancel` alone leaves the
 microphone as it is, including a `cancel` the device sends for a timeout of its
 own. A Stop control the person presses is `cancel` and then standby; only a
-control the person uses may add that.
+control the person uses may add that. A control that only stops listening, like
+ending dictation, is not a Stop control: it sends
+`{"type":"endpointing","commit":true}` if the person was speaking, then goes to
+standby, and a reply in progress plays on.
+Label it so it cannot be read as stopping the reply, such as "Stop listening".
 
 An activation that `listen` opens ends as any other does, `quiet` included; it
 has no time limit of its own.
@@ -926,8 +933,7 @@ turn running, was not answered: show it that way.
 
 A turn does not end because the connection dropped. If the person asked
 something and the app went away, the assistant still finishes, and the answer is
-there to catch up on. It is not spoken later. `{"stop": true}` and `cancel`
-still end a turn.
+there to catch up on. It is not spoken later. `cancel` still ends a turn.
 
 ### Reconnecting during a turn
 
@@ -982,9 +988,9 @@ second of silence, with the total so far:
 {"type": "quiet", "quiet_seconds": 3.0}
 ```
 
-Return to standby when `quiet_seconds` reaches your own threshold. The threshold
-is the device's: it is not sent to the server, and the server never ends an
-exchange for silence. `quiet_interval` is only how often the frames come.
+Return to standby when `quiet_seconds` reaches your threshold, 5 seconds by
+default. The threshold is the device's: it is not sent to the server, and the
+server never ends an exchange for silence. `quiet_interval` is only how often the frames come.
 
 The server counts silence in **received** audio (never wall-clock, so a
 held-open socket never accrues phantom quiet). Each listening phase counts from
@@ -992,10 +998,14 @@ zero: speech, a turn, and resuming upstream audio after stopping it all restart
 the count. Audio sent while a request is captured, transcribed or answered is
 not counted.
 
-Silence sent before you stopped streaming does not carry over. After manual
-Talk, ignore `quiet` until the person's first request (a new turn starts); the
-person pressed Talk to speak, so silence before they do is not a reason to stop
-listening. After that request, `quiet` returns to standby as usual. A `turn_done` with `next_action: "standby"` also returns to standby
+Silence sent before you stopped streaming does not carry over.
+
+Manual Talk is the special case. When the person opens listening with the Talk
+control or the device's action button, wait four times the threshold, 20
+seconds by default, for their first request (a new turn starts): they pressed
+it to speak, and get extra time to compose their thoughts. After that request,
+`quiet` returns to standby at the usual threshold. A wake word gets no extra
+time. A `turn_done` with `next_action: "standby"` also returns to standby
 ("Handling `turn_done.next_action`", section 4).
 
 ## 6. Typical flow
@@ -1101,7 +1111,7 @@ Other devices may start independent activations while that conversation runs.
 A denial neither closes the socket nor cancels a turn. A device may still stream
 audio after a denial; the server accepts and processes it normally, including
 STT, agent execution, and TTS. Duplicate answers remain possible when clients
-do not follow the recommendation. Use the existing `cancel` or `stop` controls
+do not follow the recommendation. Use `cancel`, or close the socket,
 when cancellation or session termination is actually wanted.
 
 ### Wake request and decision frames
@@ -1194,7 +1204,7 @@ Explicit saved server values such as `0.25` require a configuration update to
 |---|---|
 | Matching `wake_grant` before the deadline | Flush buffered audio once, oldest first, then live PCM without dropping, duplicating, or reordering samples. Stream continuously through the activation, including thinking and playback. |
 | Matching `wake_deny` before the deadline | Discard the activation buffer and resume local wake detection; do not stream it. |
-| No matching decision within 1000 ms | Assume loss, discard the activation buffer, and resume local wake detection. No cancel or stop frame is needed. |
+| No matching decision within 1000 ms | Assume loss, discard the activation buffer, and resume local wake detection. No frame is needed. |
 | Late decision or decision for another `claim_id` | Ignore it; never release an abandoned buffer or reactivate a completed claim. |
 
 Allocate enough buffer for the full one-second wait plus detector pre-roll,
