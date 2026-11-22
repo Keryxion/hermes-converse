@@ -20,7 +20,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - run: pip install ./hermes-agent pytest pytest-asyncio numpy av
+      - run: pip install -e ./hermes-agent pytest pytest-asyncio numpy av
       - run: python -m pytest
         env:
           HERMES_AGENT_ROOT: ${{ github.workspace }}/hermes-agent
