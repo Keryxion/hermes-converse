@@ -17,10 +17,10 @@ jobs:
         with:
           repository: NousResearch/hermes-agent
           path: hermes-agent
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-      - run: pip install -e "./hermes-agent[all,voice]" pytest pytest-asyncio numpy av
-      - run: python -m pytest
+      - run: |
+          cd hermes-agent
+          source ./activate --test-extras all,voice
+          cd ..
+          python -m pytest
         env:
           HERMES_AGENT_ROOT: ${{ github.workspace }}/hermes-agent
