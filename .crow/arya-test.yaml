@@ -7,13 +7,15 @@ depends_on:
   - alpha
 labels:
   backend: docker
-  platform: linux/amd64
+  platform: linux/arm64
 steps:
   - name: live-penny-free
     image: python:3.13-slim
     environment:
       ARYA_API_KEY: { from_secret: arya_penny_api_key }
       ARYA_TEST_BUNDLE: { from_secret: arya_test_source }
+      # Lets the suite post its report as a comment on the deployed pull request.
+      GITHUB_TOKEN: { from_secret: arya_report_github_token }
       ARYA_URL: wss://penny.z13.org/v1/audio/converse
       ARYA_SPEC_FILE: ${CI_WORKSPACE}/specs/client.md
     commands:
