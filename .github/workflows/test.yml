@@ -17,6 +17,7 @@ jobs:
         with:
           repository: NousResearch/hermes-agent
           path: hermes-agent
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq libopus0
       - run: |
           cd hermes-agent
           source ./activate --test-extras all,voice
