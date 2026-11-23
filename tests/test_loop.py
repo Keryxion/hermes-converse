@@ -1481,7 +1481,7 @@ def _pace_driver(sent, *, turn_timeout=0.0, rate=8000):
 
 
 def _pace_turn():
-    return types.SimpleNamespace(pcm_q=asyncio.Queue(), tts_stop=threading.Event(), meta={}, pcm_chunks=0,
+    return types.SimpleNamespace(pcm_q=asyncio.Queue(), tts_stop=threading.Event(), meta={}, pcm_chunks=0, skipping=False,
                                  ns={}, timed_out=False, result={}, state=None)
 
 
