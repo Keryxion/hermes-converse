@@ -441,3 +441,18 @@ async def test_approved_reasoning_command_waits_for_its_own_turn(monkeypatch, de
         assert fake.turns[0]["status"] == "completed" and not fake.stopped
     finally:
         await _close(harness, ws)
+
+
+async def test_tail_cancel_drops_new_without_requiring_disconnect(monkeypatch, device_env):
+    fake, harness, ws, request, frames, _ = await _turn_calling(
+        monkeypatch, device_env, "reset", "once",
+        settings={"playback_tail_timeout_seconds": .3})
+    try:
+        await ws.send_json({"type": "cancel", "turn_id": frames[-1]["turn_id"]})
+        # Keep the connection alive beyond the tail fallback: disconnecting here masks the bug.
+        await asyncio.sleep(.6)
+        assert fake.commands == []
+        assert not ws.closed
+    finally:
+        await ws.close()
+        await harness.__aexit__(None, None, None)

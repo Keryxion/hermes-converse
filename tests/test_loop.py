@@ -730,7 +730,7 @@ def _turn_done_frame(sent):
     frame = next(f for f in sent if isinstance(f, dict) and f.get("type") == "turn_done")
     assert set(frame) in ({"type", "turn_id"}, {"type", "turn_id", "next_action"})
     if "next_action" in frame:
-        assert frame["next_action"] in ("standby", "mute")
+        assert frame["next_action"] in ("listen", "standby", "mute")
     return frame
 
 
@@ -1162,8 +1162,7 @@ async def test_accepted_barge_in_is_captured_in_every_phase(monkeypatch, phase):
     if phase == 'speaking':
         session.set_playing(True, tts_stop=stop)
     elif phase == 'tail':
-        session.end_turn()
-        session.begin_playback_tail('active', 5)
+        session.finish_turn('active', 5)
         session.on_tail_barge = lambda turn_id: interrupted.set()
     session.start()
     try:
@@ -1172,8 +1171,7 @@ async def test_accepted_barge_in_is_captured_in_every_phase(monkeypatch, phase):
         assert await _until(interrupted.is_set, 3)
         assert await session.transcripts.get_async(3) == 'continued request'
         assert len(calls) == 1
-        if phase != 'tail':
-            assert stop.is_set()
+        assert stop.is_set()
     finally:
         session.stop()
         await session._worker
@@ -1673,3 +1671,11 @@ def test_waiting_for_transcripts_and_the_playback_tail_holds_no_pool_thread():
         assert not any(s._tail_active for s in sessions)
 
     asyncio.run(main())
+
+
+def test_outbound_question_explicitly_opens_listening():
+    from hermes_converse.loop import ConversationOutput
+
+    session = _FakeConverseSession([ConversationOutput("Okay?", "approval", next_action="listen")])
+    sent = _run_driver(session, [], [])
+    assert _turn_done_frame(sent)["next_action"] == "listen"
