@@ -1413,7 +1413,7 @@ async def drive_converse_turns(
         turn = d.turn
         if turn is None:
             return
-        text = speech.strip_markdown("".join(turn.shown)).strip()
+        text = "".join(turn.shown)
         if transcripts and text:
             await send_json({"type": "transcript", "role": "assistant", "turn_id": turn.turn_id,
                              "text": text, "replay": True})
@@ -1802,13 +1802,6 @@ async def _reply_sentences(d: _Driver, turn: _Turn) -> AsyncIterator[str]:
                     yield sentence
             continue
         idle_polls = 0
-        if d.gone():  # nobody is listening: the text is in the conversation, not spoken
-            if not isinstance(delta, Aside) and not turn.transient:
-                turn.shown.append(chunker.buf + (delta or ""))
-            chunker = speech.sentence_chunker()
-            if delta is None:
-                return
-            continue
         if isinstance(delta, Aside):
             for sentence in chunker.flush():
                 yield sentence
@@ -1829,21 +1822,26 @@ async def _produce_speech(d: _Driver, turn: _Turn) -> None:
     try:
         async for sentence in _reply_sentences(d, turn):
             cleaned = speech.strip_markdown(sentence)
+            shown = not (turn.transient or isinstance(sentence, Aside))
+            if turn.tts_stop.is_set():
+                return
+            if shown:
+                text = speech.display_text(sentence)
+                if not turn.shown:
+                    text = text.lstrip()
+                if text:
+                    turn.shown.append(text)
+                    if d.transcripts and not d.gone():
+                        turn.pcm_q.put_nowait({"type": "transcript", "role": "assistant",
+                                               "turn_id": turn.turn_id, "text": text})
             if not cleaned:
                 continue
-            shown = not (turn.transient or isinstance(sentence, Aside))
             turn.ns.setdefault("first_sentence", time.time_ns())
             for piece in split_text_for_tts_stream(cleaned, d.cap):
                 if turn.tts_stop.is_set():
                     return
                 if d.gone():
                     break
-                if shown:
-                    text = piece if not turn.shown else " " + piece
-                    turn.shown.append(text)
-                    if d.transcripts:
-                        turn.pcm_q.put_nowait({"type": "transcript", "role": "assistant",
-                                               "turn_id": turn.turn_id, "text": text})
                 turn.spoken_parts.append(piece)
                 chunks = await asyncio.to_thread(lambda text=piece: iter(d.synth.synth(text)))
                 while (chunk := await asyncio.to_thread(next, chunks, None)) is not None:

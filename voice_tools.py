@@ -136,7 +136,7 @@ def make_handlers(hub: Any) -> dict[str, Callable[..., Any]]:
             return _result("ok")
         turn.exclusive = True
         if isinstance(text, str) and text.strip() and not turn.stopped:
-            turn.on_delta("\n" + text + "\n")
+            turn.on_delta("\n\n" + text + "\n\n")
         return _result("ok")
 
     def play_tone(args: dict, **kw: Any) -> str:

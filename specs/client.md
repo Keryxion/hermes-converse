@@ -879,12 +879,21 @@ replayed. Where a `cancel` or an interruption lands decides which:
 Live and replay always agree: a client that saw no user `transcript` for a
 turn will not be sent one on catching up, and one it saw will be there.
 
-Assistant text is what the reply says aloud: the reply text with Markdown
-removed, or the text given to the assistant's speech tool. Live pieces stop
-where the reply was cut, so an interrupted or failed turn shows only the text
+Assistant text preserves the user-facing reply's Markdown, paragraphs, lists,
+URLs and links, or the text given to the assistant's speech tool. Speech alone
+normalizes formatting and omits URLs. Distinct assistant updates within a turn
+are separated by blank lines; concatenate live pieces verbatim by `turn_id`.
+Live pieces stop where the reply was cut, so an interrupted or failed turn shows only the text
 already sent for speech; keep the interruption or error visible. It is what was
 prepared for speech, not what the person heard. Reasoning, tool payloads,
 credentials, and internal errors are never sent.
+
+For example, a single turn can contain separate assistant updates and a list:
+
+```json
+{"type":"transcript","role":"assistant","turn_id":"turn-41","text":"Checking the result."}
+{"type":"transcript","role":"assistant","turn_id":"turn-41","text":"\n\nDone.\n\n- [Details](https://example.org/result)"}
+```
 
 ### Catching up
 
@@ -926,8 +935,8 @@ This is the one place a client learns the conversation was cleared, however it
 happened.
 
 A replayed assistant transcript is the whole reply in one frame: everything
-the reply says aloud, however much of it was played. A reply that finished
-while no device was connected was never spoken, and is replayed with the text
+selected for speech, with its formatting and links preserved, however much
+of it was played. A reply that finished while no device was connected was never spoken, and is replayed with the text
 it would have said. A reply that says nothing is not replayed. If the client
 already shows pieces for that `turn_id`, replace them with the replayed frame.
 

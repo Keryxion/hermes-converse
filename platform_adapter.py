@@ -74,6 +74,7 @@ class _VoiceTurn:
     stopped: bool = False
     outcome: Optional[ProcessingOutcome] = None
     final: Optional[str] = None
+    pending_boundary: bool = False
     streamed: str = ""  # the current model response's text already handed to TTS
     earlier: str = ""  # the last model response that carried text, once another has started
     exclusive: bool = False  # speak_this was called: only its text is spoken
@@ -440,6 +441,8 @@ class ConverseAdapter(BasePlatformAdapter):
             turn.progress_at = time.monotonic()
             if turn.streamed.strip():
                 turn.earlier = turn.streamed
+                if not (turn.stopped or turn.exclusive or turn.skip_stream):
+                    turn.pending_boundary = True
             turn.streamed = ""
             turn.skip_stream = False
 
@@ -454,6 +457,9 @@ class ConverseAdapter(BasePlatformAdapter):
             return
         turn.streamed += delta
         if not turn.skip_stream:
+            if turn.pending_boundary:
+                turn.on_delta("\n\n")
+                turn.pending_boundary = False
             turn.on_delta(delta)
 
     def on_tool_call(self, *, session_id=None, **_: Any) -> None:

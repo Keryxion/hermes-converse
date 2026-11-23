@@ -625,9 +625,11 @@ before any live frame. Keep no second copy.
 - Replay user and assistant messages only, as `transcript` frames with
   `replay: true`: no tool calls, tool results, reasoning, or system text.
 - An assistant message's `text` is what the turn says aloud, worked out from
-  Hermes's messages and not from what was synthesized: the reply text with
-  Markdown removed, or, for a turn that used `speak_this`, the text given to the
-  tool. It is the same whether the reply was played in full, cut short, or
+  Hermes's messages and not from what was synthesized: preserve Markdown,
+  paragraphs, lists and links; separate assistant updates with blank lines.
+  Apply speech normalization only to TTS. When `speak_this` is used, include
+  reply text before the first call and the tool's text, excluding later reply
+  text. It is the same whether the reply was played in full, cut short, or
   finished with nobody attached. A turn that says nothing, such as `[SILENT]`
   or `speak_this` with `""`, is not replayed.
 - A turn still running is replayed up to its user message only. Its reply so

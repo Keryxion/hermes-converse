@@ -125,9 +125,9 @@ class MessageIds:
         message that says *text*, else the latest one."""
         rows = await asyncio.get_running_loop().run_in_executor(None, self._client.history.rows)
         replies = [f for f in replay_frames(rows or [], None) if f["role"] == "assistant"]
-        said = " ".join(text.split())
+        said = " ".join(speech.strip_markdown(text).split())
         for frame in reversed(replies):
-            if " ".join(frame["text"].split()) == said:
+            if " ".join(speech.strip_markdown(frame["text"]).split()) == said:
                 return frame["message_id"]
         return replies[-1]["message_id"] if replies else None
 
@@ -138,10 +138,12 @@ class MessageIds:
 
 
 def _spoken_text(rows: list[dict[str, Any]]) -> str:
-    """What was submitted for speech in a turn's assistant messages: the text given to
-    ``speak_this`` when it was used, otherwise the reply text."""
-    tool_texts, used = [], False
+    """Display text selected by the turn's speech ownership, with assistant updates separated."""
+    texts, used = [], False
     for row in rows:
+        content = row.get("content")
+        if not used and isinstance(content, str) and not content.lstrip().startswith(INTERRUPT_NOTICE):
+            texts.append(content)
         for call in row.get("tool_calls") or []:
             function = call.get("function") or {}
             if function.get("name") != "speak_this":
@@ -152,11 +154,9 @@ def _spoken_text(rows: list[dict[str, Any]]) -> str:
             except (ValueError, AttributeError):
                 continue
             if isinstance(text, str):
-                tool_texts.append(text)
-    texts = tool_texts if used else [r["content"] for r in rows if isinstance(r.get("content"), str)
-                                     and not r["content"].lstrip().startswith(INTERRUPT_NOTICE)]
-    cleaned = [speech.strip_markdown(text).strip() for text in texts]
-    spoken = " ".join(text for text in cleaned if text)
+                texts.append(text)
+    cleaned = [speech.display_text(text).strip() for text in texts]
+    spoken = "\n\n".join(text for text in cleaned if text)
     return "" if spoken.upper() == SILENT else spoken
 
 

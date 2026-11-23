@@ -1679,3 +1679,110 @@ def test_outbound_question_explicitly_opens_listening():
     session = _FakeConverseSession([ConversationOutput("Okay?", "approval", next_action="listen")])
     sent = _run_driver(session, [], [])
     assert _turn_done_frame(sent)["next_action"] == "listen"
+
+
+def test_transcripts_preserve_structure_links_and_turn_ownership():
+    reply = ('First paragraph with [details](https://example.org/details).\n\n'
+             '- First item\n- Second item\n\nhttps://example.org/result')
+    frames = _run_driver(_FakeConverseSession(['one', 'two']), [], [reply, 'Separate reply.'],
+                         transcripts=True, message_ids=_Ids())
+    records = [f for f in frames if isinstance(f, dict) and f.get('role') == 'assistant']
+    turns = list(dict.fromkeys(f['turn_id'] for f in records))
+    assert len(turns) == 2
+    assert ''.join(f['text'] for f in records if f['turn_id'] == turns[0]) == reply
+    assert ''.join(f['text'] for f in records if f['turn_id'] == turns[1]) == 'Separate reply.'
+    audio = b''.join(f[1] for f in frames if isinstance(f, tuple) and f[0] == 'bytes').decode()
+    assert 'https://' not in audio and 'example.org' not in audio
+    assert 'details' in audio and 'First item' in audio
+
+
+@pytest.mark.parametrize('detached', [False, True])
+async def test_transcript_chunking_hides_split_reasoning_and_private_asides(detached):
+    from types import SimpleNamespace
+    from hermes_converse import loop as cl
+
+    turn = cl._Turn('question', 'turn-a', {})
+    for text in ['<thi', 'nking>secret.\n\n', '</thinking>', 'Visible.\n\n',
+                 cl.Aside('Permission?'), '- [Link](https://example.org).', None]:
+        turn.text_q.put(text)
+    driver = SimpleNamespace(gone=lambda: detached, transcripts=True, synth=_EchoSynth(),
+                             cap=4000, max_tts_chars=10000)
+    await cl._produce_speech(driver, turn)
+    assert ''.join(turn.shown) == 'Visible.\n\n- [Link](https://example.org).'
+    frames = []
+    while not turn.pcm_q.empty():
+        frame = turn.pcm_q.get_nowait()
+        if isinstance(frame, dict):
+            frames.append(frame)
+    assert ''.join(f['text'] for f in frames) == ('' if detached else ''.join(turn.shown))
+
+
+async def test_reconnect_replays_formatted_prefix_then_appends_without_duplicate_text():
+    session = _FakeConverseSession(['question'])
+    sent, control = [], {}
+    release = asyncio.Event()
+    prefix = 'First paragraph with https://example.org.\n\n'
+    suffix = '- Next item.'
+
+    async def run(text, on_delta, **kwargs):
+        on_delta(prefix)
+        await release.wait()
+        on_delta(suffix)
+        return prefix + suffix, None
+
+    async def send(frame):
+        sent.append(frame)
+
+    task = asyncio.create_task(drive_converse_turns(
+        session=session, synth=_EchoSynth(), cap=4000, loop=asyncio.get_running_loop(),
+        send_json=send, send_bytes=lambda data: asyncio.sleep(0), run_turn=run,
+        history=[], transcripts=True, message_ids=_Ids(), control=control))
+    try:
+        async with asyncio.timeout(5):
+            while not any(f.get('role') == 'assistant' for f in sent):
+                await asyncio.sleep(0.01)
+        await control['resume'](True)
+        replay = next(f for f in sent if f.get('replay'))
+        live_prefix = ''.join(f['text'] for f in sent if f.get('role') == 'assistant' and not f.get('replay'))
+        assert replay['text'] == live_prefix
+        assert prefix.startswith(live_prefix) and 'https://example.org' in live_prefix
+        release.set()
+        await asyncio.wait_for(task, 5)
+        records = [f for f in sent if f.get('role') == 'assistant' and not f.get('replay')]
+        assert ''.join(f['text'] for f in records) == prefix + suffix
+        assert len({f['turn_id'] for f in records + [replay]}) == 1
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_interruption_does_not_publish_the_next_sentence_or_affect_the_next_turn():
+    from types import SimpleNamespace
+    from hermes_converse import loop as cl
+
+    first = cl._Turn('first', 'interrupted-turn', {})
+    first.text_q.put('First sentence long enough.\n\nNever display this next sentence.')
+    first.text_q.put(None)
+
+    class InterruptSynth:
+        def synth(self, text):
+            first.tts_stop.set()
+            yield b'audio'
+
+    driver = SimpleNamespace(gone=lambda: False, transcripts=True, synth=InterruptSynth(),
+                             cap=4000, max_tts_chars=10000)
+    await cl._produce_speech(driver, first)
+    assert 'Never display' not in ''.join(first.shown)
+    assert ''.join(first.shown).strip() == 'First sentence long enough.'
+    second = cl._Turn('second', 'new-turn', {})
+    second.text_q.put('A separate **reply** with https://example.org.')
+    second.text_q.put(None)
+    driver.synth = _EchoSynth()
+    await cl._produce_speech(driver, second)
+    records = []
+    while not second.pcm_q.empty():
+        frame = second.pcm_q.get_nowait()
+        if isinstance(frame, dict):
+            records.append(frame)
+    assert {f['turn_id'] for f in records} == {'new-turn'}
+    assert ''.join(f['text'] for f in records) == 'A separate **reply** with https://example.org.'

@@ -180,7 +180,7 @@ async def test_final_speaks_only_what_the_stream_missed(rig):
     rig.adapter.set_message_handler(handler)
     spoken = []
     await turns.run_turn(text="door?", on_delta=spoken.append)
-    assert spoken == ["Checking. ", "The door ", "is locked."]
+    assert spoken == ["Checking. ", "\n\n", "The door ", "is locked."]
 
 
 async def test_model_call_starting_before_the_final_send_does_not_repeat_the_reply(rig):

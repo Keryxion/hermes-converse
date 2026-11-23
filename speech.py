@@ -114,8 +114,34 @@ def text_to_speech(text: str) -> Any:
 def sentence_chunker() -> Any:
     """The incremental sentence cutter every Hermes voice surface uses on LLM deltas."""
     from tools.tts_streaming import SentenceChunker
+    from agent.think_scrubber import StreamingThinkScrubber
 
-    return SentenceChunker()
+    class TranscriptChunker(SentenceChunker):
+        # Keep the shared sentence boundaries, but retain whitespace for display.
+        def __init__(self):
+            super().__init__()
+            self.scrubber = StreamingThinkScrubber()
+
+        def feed(self, delta):
+            return super().feed(self.scrubber.feed(delta))
+
+        def flush(self):
+            tail, self.buf = display_text(self.buf), ""
+            return [tail] if tail else []
+
+    return TranscriptChunker()
+
+
+def display_text(text: str) -> str:
+    """Hide non-user-facing blocks without normalizing Markdown, links or whitespace."""
+    from agent.think_scrubber import THINK_TAG_NAMES
+    from tools.tts_text_normalize import strip_nonspoken_blocks
+
+    names = "|".join(re.escape(name) for name in THINK_TAG_NAMES)
+    text = re.sub(rf"<({names})[\s>].*?</\1>", "", text, flags=re.S | re.I)
+    text = re.sub(rf"<(?:{names})(?=[\s>]|$).*", "", text, flags=re.S | re.I)
+    text = strip_nonspoken_blocks(text)
+    return "" if text.strip().upper() == "[SILENT]" else text
 
 
 def sentence_boundary_re() -> Any:

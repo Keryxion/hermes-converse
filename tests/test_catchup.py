@@ -50,7 +50,7 @@ def test_persistence_history_provides_user_message_ids_for_live_and_replay():
 def test_replay_is_user_and_assistant_text_for_speech():
     frames = replay_frames(ROWS, None)
     assert [(f["message_id"], f["role"], f["text"]) for f in frames] == [
-        ("1", "user", "What is on today?"), ("2", "assistant", "Two things today."),
+        ("1", "user", "What is on today?"), ("2", "assistant", "Two things **today**."),
         ("3", "user", "Remind me"), ("6", "assistant", "Done, Sam."), ("7", "user", "Anything else?")]
     assert all(f["replay"] and f["type"] == "transcript" for f in frames)
     assert frames[1]["turn_id"] == "t1"
@@ -163,3 +163,20 @@ def test_a_turn_is_never_given_another_turns_message():
         settled.set()
         return await ids.user_message("t2", settled)
     assert asyncio.run(look()) is None
+
+
+def test_replay_preserves_updates_links_and_speech_ownership_without_hidden_material():
+    rows = [row(1, 'user', 'Check it', platform_message_id='turn-a'),
+            row(2, 'assistant', '<thinking>secret</thinking>Checking.\n\n- First item'),
+            row(3, 'tool', 'private tool result'),
+            row(4, 'assistant', 'Done: [details](https://example.org).\n\nhttps://example.org/result'),
+            row(5, 'user', 'Speak', platform_message_id='turn-b'),
+            row(6, 'assistant', 'Before speech.', tool_calls=speak('Read [this](https://example.org).')),
+            row(7, 'assistant', 'private wrap-up'),
+            row(8, 'user', 'Silent', platform_message_id='turn-c'),
+            row(9, 'assistant', None, tool_calls=speak('')),
+            row(10, 'assistant', 'unsaid reply')]
+    frames = replay_frames(rows, None)
+    assert [(f['turn_id'], f['text']) for f in frames if f['role'] == 'assistant'] == [
+        ('turn-a', 'Checking.\n\n- First item\n\nDone: [details](https://example.org).\n\nhttps://example.org/result'),
+        ('turn-b', 'Before speech.\n\nRead [this](https://example.org).')]
