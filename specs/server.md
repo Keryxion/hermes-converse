@@ -510,6 +510,19 @@ same kind of session a Telegram or Slack chat has. The plugin registers the plat
 it needs no credentials and is enabled with the plugin. The WebSocket route, its URL,
 and API-key authentication stay on the API server.
 
+The device's gateway channel and routing identity persist independently of both
+its Hermes session and the WebSocket. The socket is an attachable transport, not
+the channel or the session. A channel or session change does not itself close
+the socket; it also stays open while no turn is active. Ending or cancelling a
+turn does not close it. A socket
+disconnect detaches the transport without ending the channel, session, or a
+running turn. Reattach a replacement transport to the same channel. This does
+not imply that output generated without an attached device was delivered.
+Verify an idle socket, turn completion and cancellation, channel change, session replacement by
+command and elsewhere, and disconnect/reconnect during a turn. Check that the
+channel identity survives, the socket stays open across session and turn changes,
+and reconnect neither repeats a request nor claims unheard output was delivered.
+
 | Voice event | Gateway interface |
 |---|---|
 | Endpointed utterance | `handle_message` with a text `MessageEvent`; the voice prompt is its `channel_prompt` |
@@ -584,10 +597,12 @@ filter by the slash-access policy; the gateway applies it when a command runs. A
 a `command` frame whose `name` is not one of Hermes's commands or aliases with
 `unknown_command` instead of sending it.
 
-After a command that starts a new conversation (`new`, or any alias of it), send the answer and
-then close the socket with `4410 conversation_changed`. Do not move the live
-socket to the new conversation: the device reconnects and attaches to it in the
-ordinary way. The conversation keeps the title
+After a command that starts a new conversation (`new`, or any alias of it), send
+the answer and keep the socket attached to the device's channel as the channel
+switches to the new session. Send `ready` with `new_session: true`, followed by
+the new conversation's replay before live frames, so the client clears its old
+view. Apply the same notification when the session changes elsewhere while the
+socket is attached. The conversation keeps the title
 `<assistant_name>: <device_name>`.
 
 ## Catching up
@@ -640,6 +655,9 @@ before any live frame. Keep no second copy.
   conversation and true when it is not. True is how a client learns its conversation
   was replaced, whatever replaced it: a `command` frame, the Hermes web UI, or a
   deleted conversation.
+- On an attached socket, send `ready` with `new_session: true` on a session
+  change even when `start` had no `after`; replay only if transcripts were
+  requested, before live frames for the new session.
 - Include messages that compaction has folded away when Hermes still has them.
 
 ### A turn running at reconnect
@@ -873,10 +891,9 @@ A command that starts a new conversation (`new`, or any alias of it) returns
 `{"result":"Approved. The new conversation starts when this reply has played."}`
 after approval. This acknowledges deferral, not execution. Wait until the
 calling turn's final reply has played (the device's `state` leaves `speaking`
-for that reply, or its playback tail ends), then submit the command and close
-the socket with `4410 conversation_changed` after its reply, as after the
-frame. Close only if Hermes actually changed the session; a refusal or a failed
-command leaves the socket open. Playback of the approval question or another
+for that reply, or its playback tail ends), then submit the command and notify
+the client of an actual session change as after the frame. A refusal or failed
+command does not change the session. Playback of the approval question or another
 turn does not trigger it.
 If the socket disconnects or the turn is cancelled or interrupted before the
 final reply has played, drop the deferred command.

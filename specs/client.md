@@ -11,6 +11,12 @@ Each Arya has a name and uses an existing Hermes conversation, titled
 which handles voice activity detection, endpointing, speech-to-text, and the
 agent turn, then streams reply audio back. Conversation history persists across
 turns and reconnects; closing the socket does not end the Hermes conversation.
+The device's gateway channel and routing identity persist independently of the
+Hermes session and the WebSocket. The socket is an attachable transport, not the
+channel or session: keep it open across channel changes, session replacement,
+turn completion, and cancellation. It can receive channel events with no active turn. A drop
+detaches the transport; it does not itself end the channel, session, or a
+running turn, and does not establish that any output was delivered.
 If the conversation is deleted in Hermes, the next turn reuses a compatible
 conversation with the same title or starts a fresh one, on the open socket or
 after reconnecting. The device name and routing identity stay the same;
@@ -175,7 +181,6 @@ may already have happened.
 | `4409 attachment_replaced` | Another connection with the same names replaced this one. Stop sending on it. |
 | `4404 conversation_unavailable` | The conversation could not be opened. Show the failure rather than claiming restored context. It says nothing about audio. |
 | `4503 audio_unavailable` | `start` was valid, but the server cannot set up the requested `audio_format`, for example Opus on a server without its codec. Reconnect with `pcm16`, which every server provides. |
-| `4410 conversation_changed` | The device's conversation is a different one now, for example after the `new` command. Reconnect at once; `ready` then says whether the cursor still applies ("Catching up", section 4). |
 | `conversation_busy` error before `ready` | Earlier work is still stopping. Retry later. |
 
 ## 3. Client control frames (send anytime)
@@ -196,7 +201,7 @@ All are JSON text frames:
 | `{"type": "say", "text": "..."}` | Speaks the given text (trimmed, at most 400 characters) as a reply of its own: `thinking`, `speaking` + PCM, then `turn_done` with `next_action: "standby"`. No agent turn runs, nothing is added to the conversation, and no `transcript` frame is sent for it. For fixed device prompts such as a spoken help reminder. Empty or non-string text is ignored. |
 | `{"type": "approval_response", "approval_id": "...", "choice": "once"}` | Answer a pending approval from a screen with one of its `choices`; see "Approvals" in section 4. |
 
-Every control frame has a `type`. To end the session, close the socket: the
+Every control frame has a `type`. To detach, close the socket: the
 device's conversation and its history are kept for reconnection, and a turn
 still running finishes without being spoken ("Catching up", section 4). To stop
 that turn as well, send `cancel` before closing.
@@ -312,13 +317,13 @@ keep a command from a device, it is still listed, and running it brings Hermes's
 refusal back in `reply`. The list can change when the server's
 Hermes is updated; ask again after each `ready` rather than storing it.
 
-A command that starts a new conversation, `new` or its alias `reset`, needs nothing special from the
-app. After the command changes the conversation and the server answers, it closes the connection with
-`4410 conversation_changed`. The app reconnects as it would after any drop, and
-`ready` comes back with `new_session: true`, which is where it clears its view
-("Catching up", section 4). The earlier conversation is not deleted; it stays
-in Hermes's history. Other commands, such as `title`, leave the connection
-open.
+A command that starts a new conversation, `new` or its alias `reset`, keeps the
+socket open. After the command answer, the server sends `ready` with
+`new_session: true`, then the new conversation's replay before live frames. Clear
+the old view on that `ready` ("Catching up", section 4). The same applies when
+the session changes elsewhere while connected. The earlier conversation is not
+deleted; it stays in Hermes's history. Other commands, such as `title`, leave
+the connection open too.
 
 A command that did not run is answered with `error` in place of `reply`, and
 nothing changes:
@@ -911,7 +916,9 @@ since then as ordinary `transcript` frames marked `replay`:
 Omit `after` the first time; the server then sends the most recent 20. Keep the
 last `message_id` shown and send it on every connect, so nothing is shown twice.
 
-When `start` carries `after`, `ready` carries `new_session`:
+When `start` carries `after`, `ready` carries `new_session`. The server also
+sends `ready` with `new_session: true` on an attached socket when its channel
+changes sessions, even if `start` did not carry `after`:
 
 ```json
 {"type":"ready","session_id":"socket-10","recipient_id":"device-7","transcripts":true,"new_session":true}
