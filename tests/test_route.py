@@ -278,10 +278,12 @@ async def test_session_snapshots_guidance_but_refreshes_commands(monkeypatch, tm
 
         ws = await client.ws_connect("/v1/audio/converse")
         await ws.send_str(_start_msg(key=API_KEY))
-        assert (await ws.receive_json())["type"] == "ready"
+        reconnected = await ws.receive_json()
+        assert reconnected["type"] == "ready"
         assert await speak(ws) == voice_system_prompt(
             "Use short answers.", ASSISTANT_NAME, device_name=DEVICE_NAME,
-            recipient_id=ready["recipient_id"], commands=commands)
+            recipient_id=ready["recipient_id"], commands=commands,
+            current_model=reconnected["current_model"])
         await _end(ws)
 
 
