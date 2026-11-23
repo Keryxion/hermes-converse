@@ -879,6 +879,9 @@ credentials, and internal errors are never sent.
 
 ### Catching up
 
+Arya iOS and macOS local persistence requirements are in
+[client_storage.md](client_storage.md); they do not apply to other clients.
+
 A client on every device, including iOS, macOS, ESP32 and Echo, persists the
 last `turn_id` it displayed in this conversation and sends it as `after` with
 `transcripts: true` on reconnect. The client owns presentation; it may notify
