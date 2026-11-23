@@ -518,10 +518,16 @@ turn does not close it. A socket
 disconnect detaches the transport without ending the channel, session, or a
 running turn. Reattach a replacement transport to the same channel. This does
 not imply that output generated without an attached device was delivered.
+An absent or disconnected device WebSocket must not surface `not_attached` or
+an equivalent transport-disconnected channel failure to Hermes. Channel acceptance
+is not confirmation of device delivery or playback, and does not guarantee that
+missed output is persisted or queued. Device-directed tools retain their explicit
+results specified below; those results are not channel transport failures.
 Verify an idle socket, turn completion and cancellation, channel change, session replacement by
 command and elsewhere, and disconnect/reconnect during a turn. Check that the
 channel identity survives, the socket stays open across session and turn changes,
-and reconnect neither repeats a request nor claims unheard output was delivered.
+absence and disconnection do not produce a transport-disconnected channel failure
+to Hermes, and reconnect neither repeats a request nor claims unheard output was delivered.
 
 | Voice event | Gateway interface |
 |---|---|
@@ -550,7 +556,8 @@ background process completion, runs as an ordinary turn. Its final reply reaches
 |---|---|
 | Device attached and idle | Spoken once. |
 | Device capturing or replying | Spoken after the current exchange. |
-| No device attached, or the reply expired after 60 s | `send` reports failure; nothing is queued for a later connection. |
+| No device attached | `send` accepts without a transport-disconnected channel failure; this does not confirm delivery, and nothing is queued for a later connection. |
+| Reply expired after 60 s | `send` reports failure; nothing is queued for a later connection. |
 | `speak_this` with `""`, or an empty or `[SILENT]` reply | No speech. |
 | Voice turn interrupted | Its late reply is discarded. |
 | Stream delta arriving after the final | Discarded, so nothing is spoken twice. |

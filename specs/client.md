@@ -17,6 +17,10 @@ channel or session: keep it open across channel changes, session replacement,
 turn completion, and cancellation. It can receive channel events with no active turn. A drop
 detaches the transport; it does not itself end the channel, session, or a
 running turn, and does not establish that any output was delivered.
+An absent or disconnected device WebSocket must not surface `not_attached` or
+an equivalent transport-disconnected channel failure to Hermes. Acceptance by
+the channel is not confirmation that the device received or played output; a
+reconnect does not by itself guarantee delivery of missed output.
 If the conversation is deleted in Hermes, the next turn reuses a compatible
 conversation with the same title or starts a fresh one, on the open socket or
 after reconnecting. The device name and routing identity stay the same;
