@@ -48,7 +48,8 @@ turn with a different format. Repeat the audio acceptance scenarios with Opus.
 ## Voice lifecycle
 
 The server receives microphone PCM continuously throughout a granted activation,
-including capture, transcription, thinking, speech output, and speaker drain.
+including capture, transcription, thinking, speech output, and speaker drain,
+when the client chooses to send it for barge-in (client spec, section 4).
 An open socket alone is not an activation. Keep incoming audio processing
 independent of agent generation and outgoing TTS.
 
@@ -533,8 +534,8 @@ and API-key authentication stay on the API server.
 | Barge-in | the continuation goes to `handle_message` while the run is going; the run is not interrupted |
 | `cancel` | `interrupt_session_activity`, then wait for the turn to settle |
 | Tool and reasoning progress | `pre_tool_call` and `post_api_request` plugin hooks |
-| `command` from the client | the gateway command named in `name`, with `args`, after stopping any turn in flight; its reply is not spoken and goes back to the client in a `command` frame |
-| Model selection | the gateway `/model` command, sent only when the choice differs from the session's; its confirmation is not spoken |
+| `command` from the client | the gateway command named in `name`, with `args`, stopping a turn in flight only for canonical `new`; its reply is not spoken and goes back to the client in a `command` frame |
+| Model selection | the authorized gateway `/model` command; read the resulting session route and reasoning level into `current_model` |
 
 The chat is the device's conversation: chat name
 `<assistant_name>: <device_name>`, user `recipient_id`, user name `device_name`.
@@ -579,6 +580,17 @@ as it would a chat user's command. Return its
 reply in a `command` frame without speaking it. There is no list of allowed
 commands: a device holding the API key can run what a chat user can, including
 commands that change approvals.
+
+For model and reasoning commands with arguments, serialize the change behind submitted
+voice work and ahead of its next submission. Dispatch Hermes's session-scoped
+`/reasoning` through normal command authorization. Read back the session override
+before confirming a picker write. Advertise exact supported efforts from Hermes's
+OpenRouter or Nous catalog, intersected with its command parser, or the gateway's
+model-specific Codex wire levels. Missing metadata
+or an unknown route yields unknown support with the levels Hermes's `/reasoning`
+command parser accepts, which are unconfirmed for the model; an explicit negative
+yields unsupported with no levels. Supply the same levels to the voice agent on each
+turn. When unknown support carries no levels, the agent says there is no confirmed list.
 
 Answer a `commands` frame with Hermes's command registry as its Telegram
 command menu lists it: each command that runs outside a terminal, with its
@@ -804,7 +816,7 @@ carries no `next_action`, the device is not muted, and the hold ends.
 The agent calls `no_barge_in` for a reply that should not be cut off by sound
 at the microphone: the person said the assistant keeps interrupting itself, or
 its replies keep being cut with nothing meant for it heard. The device does
-nothing different: it keeps streaming and reporting `heard`.
+nothing different: sending barge-in audio remains optional; it keeps reporting `heard`.
 
 The hold belongs to the turn that called the tool. It starts at the call,
 whether or not audio has been sent, and ends when that turn's playback has
@@ -884,6 +896,7 @@ turn does not trigger it.
 If the socket disconnects or the turn is cancelled or interrupted before the
 final reply has played, drop the deferred command.
 
+Model and reasoning changes approved by the voice tool run before the following voice turn.
 Other commands are submitted while the turn is running, without first stopping
 it. Hermes's mid-run command policy applies: approval does not override a busy
 refusal. For example, `compress` can return a busy reply instead of compressing

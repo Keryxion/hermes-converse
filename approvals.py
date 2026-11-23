@@ -222,7 +222,7 @@ class Approvals:
             turn.on_delta(Aside(text + "\n"))  # the waiting turn says it; it is not part of the reply
         else:
             self._hub.publish(p.chat_id, text, f"approval:{uuid.uuid4().hex}", expires_at=time.time() + SPEECH_TTL,
-                              transient=True)  # a question, not a message of the conversation
+                              transient=True, next_action="listen")  # the idle device must capture the answer
 
     @staticmethod
     def _send(attachment: Any, frame: dict) -> None:

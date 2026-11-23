@@ -17,67 +17,6 @@ def test_default_and_provider_choice():
     assert parse_model_selection({'model': ' beta ', 'provider': ' litellm '}) == ('beta', 'litellm')
 
 
-async def test_switch_does_not_interrupt_current_run_and_reset_restores_default(monkeypatch):
-    from hermes_converse import route as route_module
-    from tests.test_route import API_KEY, Harness, _FakeStreamer, _patch_speech, _collect_turn
-    from tests.support.fake_hermes import FakeHermes
-    import numpy as np
-
-    fake = FakeHermes(API_KEY, deltas=('Four.',), hang=True)
-    _patch_speech(monkeypatch, _FakeStreamer([np.zeros(240, np.int16).tobytes()]))
-    created = []
-    original = route_module._resolve_session
-
-    def capture_session(*args):
-        result = original(*args)
-        created.append(result[-1])
-        return result
-
-    monkeypatch.setattr(route_module, '_resolve_session', capture_session)
-    async with Harness(fake, {'voice_model': 'agent', 'voice_provider': 'litellm'}) as client:
-        ws = await client.ws_connect('/v1/audio/converse')
-        await ws.send_json({'type': 'start', 'key': API_KEY,
-                            'assistant_name': 'Arya', 'device_name': 'Office Mac'})
-        assert (await ws.receive_json())['type'] == 'ready'
-        session = created[0]
-        session.transcripts.put('first question')
-        while (await ws.receive_json())['type'] != 'thinking':
-            pass
-        # thinking can precede gateway admission by one event-loop tick.
-        import asyncio
-        for _ in range(100):
-            if fake.turns:
-                break
-            await asyncio.sleep(.01)
-        assert fake.turns[0]['model'] == 'agent'
-        await ws.send_json({'type': 'set_model', 'request_id': 'bad-choice', 'model': []})
-        assert await ws.receive_json() == {'type': 'model_error', 'request_id': 'bad-choice',
-                                          'error': 'bad_model_selection'}
-        await ws.send_json({'type': 'set_model', 'model': 'beta'})
-        assert await ws.receive_json() == {'type': 'model_error', 'error': 'bad_request_id'}
-        await ws.send_json({'type': 'set_model', 'request_id': 'choose-beta', 'model': 'beta', 'provider': 'litellm'})
-        changed = await ws.receive_json()
-        assert changed == {'type': 'model_changed', 'request_id': 'choose-beta', 'model': 'beta',
-                           'provider': 'litellm', 'uses_default': False, 'applies_to': 'next_turn'}
-        assert fake.stopped == [], 'changing a model must not cancel the current turn'
-        assert len(fake.turns) == 1 and fake.turns[0]['model'] == 'agent'
-        await ws.send_json({'type': 'cancel'})
-        await _collect_turn(ws)
-        fake.hang = False
-        session.transcripts.put('second question')
-        await _collect_turn(ws)
-        bodies = fake.turns
-        assert bodies[-1]['model'] == 'beta' and bodies[-1]['provider'] == 'litellm'
-        await ws.send_json({'type': 'set_model', 'request_id': 'reset', 'model': None, 'provider': None})
-        reset = await ws.receive_json()
-        assert reset['uses_default'] and reset['model'] == 'agent'
-        session.transcripts.put('third question')
-        await _collect_turn(ws)
-        assert fake.turns[-1]['model'] == 'agent'
-        assert len({turn['chat_id'] for turn in fake.turns}) == 1
-        await ws.close()
-
-
 @pytest.mark.parametrize('unavailable', [False, True])
 @pytest.mark.parametrize('models', [None, False, True, 'true', 1])
 async def test_ready_catalog_is_opt_in(monkeypatch, tmp_path, unavailable, models):
@@ -118,7 +57,7 @@ async def test_ready_catalog_is_opt_in(monkeypatch, tmp_path, unavailable, model
                 'model': 'agent', 'provider': 'litellm',
                 'providers': [{'slug': 'litellm', 'name': 'LiteLLM', 'models': ['agent', 'beta']}]})
             assert queries == [{'include_unconfigured': 'false', 'refresh': 'false'}]
-        await ws.send_json({'type': 'set_model', 'request_id': 'pick', 'model': 'beta', 'provider': 'litellm'})
-        assert (await ws.receive_json())['type'] == 'model_changed'
+        await ws.send_json({'type': 'command', 'name': 'model', 'args': ['beta', '--provider', 'litellm', '--session']})
+        assert (await ws.receive_json())['current_model']['model'] == 'beta'
         assert len(queries) == (1 if models is True else 0)
         await ws.close()

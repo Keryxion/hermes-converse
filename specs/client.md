@@ -226,7 +226,6 @@ a bad Opus packet.
 | `client_diagnostics` the server did not ask for, or sent after its deadline | Ignored. |
 | `wake` without a nonempty string `claim_id` and `wake_word` | `{"type":"error","error":"bad_wake"}` (section 8). |
 | `command` with a bad `name` or `args` | `command` with `error` ("Commands" below). |
-| `set_model` with a bad `request_id`, `model`, or `provider` | `model_error` (section 11). |
 | A malformed, non-mono, or non-20-ms Opus packet | `4400 bad_audio` |
 
 ### Push to talk
@@ -275,8 +274,10 @@ one per argument. Omit it for no arguments, the same as `[]`:
 {"type":"command","name":"compress","args":["here","3"]}
 ```
 
-The server ends any turn in flight, runs the command for the device's
-conversation, and answers with the same frame plus the command's own reply:
+Only `new` and its aliases (including `reset`) interrupt the active turn before dispatch.
+Other commands preserve capture and playback. A `stop` command during a run returns `busy`.
+Model and reasoning changes wait for the current gateway run to finish and apply before
+the next voice submission (section 11). The reply uses the same frame plus the command's own text:
 
 ```json
 {"type":"command","name":"new","reply":"Started a new conversation."}
@@ -359,8 +360,7 @@ Countdowns are unaffected by a command.
 | `countdown`, `countdown_cancel` | Start, extend, or cancel a countdown that ends with a tone (section 10). |
 | `set_wake_word` | Switch to this wake phrase and its models, then answer with `wake_word_set` (section 8). |
 
-These are the only server frames, apart from `model_changed` and `model_error`
-(section 11). Turn liveness is the repeated `thinking` frame; there is no
+The `current_model` frame reports the session selection (section 11). Turn liveness is the repeated `thinking` frame; there is no
 separate keep-alive frame. Ignore a frame type you do not recognize.
 
 Reply PCM arrives at about playback speed: the first audio is sent immediately,
@@ -403,6 +403,12 @@ being configured. Answer on the socket that received the request; do not send
 unsolicited snapshots or carry a pending response to a replacement connection.
 
 ### Microphone streaming and barge-in
+
+Sending microphone audio for barge-in during thinking, playback, and speaker
+drain is optional throughout this spec. The client chooses per turn (push to
+talk) or for the whole client (half duplex, recommended without beamforming).
+No silence packets are needed when it sends no audio. Keep local wake detection
+running and report detections with `heard`.
 
 Wake-word detection is **client-side**. Before a wake activation, keep the
 microphone local; an open socket and `ready` do not start upstream audio.
@@ -536,10 +542,7 @@ Speech after `turn_done`, while the reply is still playing:
 ← {"type":"turn_done","turn_id":"A"}
 ```
 
-Do not use an `agentTurn`, thinking, or playback flag to suppress PCM during
-an activation. Play incoming PCM and send microphone PCM concurrently.
 Local echo cancellation may clean the signal, but must preserve user speech.
-Do not replace microphone audio with synthetic silence during playback.
 Unmuting lands in standby ("Handling `turn_done.next_action`"); never replay
 audio accumulated while muted.
 
@@ -777,7 +780,7 @@ ending is applied:
 | `turn_done`, `standby` | Standby. | Stay in standby. | Stay muted. |
 | `turn_done`, `mute` | Mute. | Mute. | Stay muted. |
 | `error`, then `turn_done` | Stay listening. | Stay in standby. | Stay muted. |
-| `interrupted`, then `turn_done`, after this device's `cancel` or `command` | Stay listening. | Stay in standby. | Stay muted. |
+| `interrupted`, then `turn_done`, after this device's `cancel` or new-session command | Stay listening. | Stay in standby. | Stay muted. |
 | `interrupted`, then `turn_done`, with neither from this device: the person spoke | Stay listening; the continuation follows. | Listen; the continuation follows. | Stay muted. |
 
 Apply `mute` on receipt: the reply keeps playing with the microphone already
@@ -1398,7 +1401,7 @@ A client requests the model catalog by setting `models: true` in `start`:
 
 Only Boolean `models: true` includes `model_catalog` in `ready`. If `models` is
 omitted or false, skip the lookup and omit the catalog. This does not affect
-audio or the ability to select a model with `set_model`.
+audio or model selection through a `command` frame.
 
 With `models: true`, the response includes:
 
@@ -1416,39 +1419,38 @@ The server reuses its inventory API internally. If lookup fails or exceeds eight
 seconds, `model_catalog` contains `{"providers":[]}` and voice remains available.
 A new connection receives a new catalog only if its `start` requests one.
 
-On the existing authenticated socket, send:
+Every `ready` includes `current_model`. To refresh it, send `{"type":"current_model"}`.
+The response has the same object:
 
 ```json
-{"type":"set_model","request_id":"model-7","model":"beta","provider":"litellm"}
+{"type":"current_model","current_model":{"model":"beta","provider":"openrouter","reasoning_level":"high","reasoning_override":"high","reasoning_support":"supported","reasoning_levels":["low","high"],"pending":false}}
 ```
 
-`request_id` is 1–80 ASCII letters, digits, underscores or hyphens. `model` is a
-nonempty string of at most 256 characters; optional `provider` is a nonempty
-string of at most 80 characters. Neither accepts control characters. Send both
-as `null` to restore this connection's configured `voice_model` / `voice_provider`
-defaults (which can themselves defer to the server's normal model selection).
-
-The server stores the selection for subsequent user turns on this socket and
-acknowledges it without cancelling an in-flight run or changing its TTS/audio:
+Change the model, effort, or both with an ordinary command:
 
 ```json
-{"type":"model_changed","request_id":"model-7","model":"beta","provider":"litellm","uses_default":false,"applies_to":"next_turn"}
+{"type":"command","name":"model","args":["beta","--provider","openrouter","--session"]}
+{"type":"command","name":"reasoning","args":["high"]}
+{"type":"command","name":"model","args":["beta","--provider","openrouter","--reasoning","high","--session"]}
 ```
 
-Each new turn snapshots the current selection at submission. Already-submitted
-turns retain their model. Selection changes preserve the conversation, wake
-activation, microphone stream, current phase, and queued playback. They do not
-create a new voice turn or run another wake election. Outbound supplied-text
-announcements have no LLM selection to change.
+Send `["reset"]` to either command to restore its default. For a model, this
+restores the configured voice default if present, otherwise the gateway default.
+The server replies with `type:"command"`, the name and arguments, Hermes's
+reply text or an error, and the confirmed `current_model`. A refusal can arrive
+as reply text. Display the returned selection, including after a reconnect.
 
-`model_changed` confirms the stored request, not that an upstream provider has
-successfully executed it. Model/provider access and execution still use the
-conversation's normal execution and its error reporting. No global configuration
-or another device's selection is modified. A client may persist the confirmed
-preference per server and resend it after `ready` on reconnect.
+A write waits for the current run and takes effect before the next submission.
+Speech can finish playing. While it waits, reads report the confirmed values with
+`pending:true`. A competing write receives `error:"change_pending"`. On connection
+replacement a queued, undispatched change is dropped. A dispatched change settles
+before the replacement receives its snapshot.
 
-Invalid selection data returns `{"type":"model_error","request_id":"model-7","error":"bad_model_selection"}`
-and keeps the previous choice. An invalid/missing request ID returns
-`model_error` with `error: "bad_request_id"` without echoing untrusted ID data.
-These errors do not end the voice connection. A picker keeps its previous
-confirmed choice on rejection or acknowledgement timeout and exposes a retry.
+`reasoning_override:null` follows the default. `reasoning_level:null` means the
+effective level is unknown. Offer the advertised `reasoning_levels` whenever the list is non-empty and
+support is not `unsupported`. `unsupported` identifies a route that explicitly lacks reasoning
+controls. `unknown` means Hermes has no confirmed levels for the model; a non-empty
+list then holds the levels the gateway accepts, not confirmed for this model. Offer
+them, marked "Not confirmed for this model", and allow reset. `unknown` with an
+empty list means there is nothing to offer.
+Model and provider can be null when their identity is unknown.

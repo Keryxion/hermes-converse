@@ -65,12 +65,13 @@ def test_custom_prose_and_generated_context():
     assert voice_system_prompt(guidance, "Arya").endswith("\n\n" + guidance)
     device = 'Den "Echo"'
     prompt = voice_system_prompt(guidance, device_name=device, recipient_id="opaque", commands=[])
-    prose, identity, catalog = prompt.split("\n\n")
+    prose, identity, reasoning, catalog = prompt.split("\n\n")
     assert prose == guidance
     labels, _ = json.JSONDecoder().raw_decode(identity.removeprefix("Voice identity supplied by the server: "))
     assert "Cadence's request tool" in identity
     assert labels == {
         "device_name": device, "assistant_name": "", "conversation_name": device, "recipient_id": "opaque"}
+    assert "not confirmed for this model" in reasoning and "no confirmed list" in reasoning
     assert catalog == "Gateway command catalog: []"
 
 
