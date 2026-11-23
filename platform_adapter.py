@@ -338,7 +338,9 @@ class ConverseAdapter(BasePlatformAdapter):
                 and command.started and not command.done.is_set()):
             command.reply = content
             return SendResult(success=True, message_id=uuid.uuid4().hex)
-        if self._active.get(chat_id) in self._abandoned:
+        # A reply names the message it answers: Hermes can start the next queued event before
+        # the earlier run's final send, so the chat's active message is only a fallback.
+        if (reply_to or self._active.get(chat_id)) in self._abandoned:
             return SendResult(success=True, message_id=uuid.uuid4().hex)  # nobody is waiting for it
         turn = self._turns.get(chat_id)
         if (turn is not None and turn.started and turn.outcome is None

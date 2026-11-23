@@ -78,7 +78,9 @@ class DeviceStore:
         with self._lock:
             db = self._connection()
             with db:
-                db.execute('INSERT OR IGNORE INTO devices VALUES (?, ?)', (device_name, str(uuid.uuid4())))
+                # Named columns: a branch deployed to the same host may have added columns since.
+                db.execute('INSERT OR IGNORE INTO devices (device_name, recipient_id) VALUES (?, ?)',
+                           (device_name, str(uuid.uuid4())))
                 recipient = db.execute('SELECT recipient_id FROM devices WHERE device_name=?', (device_name,)).fetchone()[0]
                 db.execute('INSERT OR IGNORE INTO conversations (recipient_id, assistant_name, title) '
                            'VALUES (?, ?, ?)', (recipient, assistant_name, f'{assistant_name}: {device_name}'))

@@ -32,7 +32,8 @@ async def test_voice_reply_survives_real_gateway_admission(
     from gateway.run import GatewayRunner
     from gateway.session_authority import initialize_session_authority
     from gateway.session_results import execution_result
-    from hermes_state_runtime import list_session_admissions
+    from gateway.session_authority import admission_row
+    from gateway.session_persistence import authority_persistence
     from hermes_converse.conversation import ConversationHub
     from hermes_converse.platform_adapter import ConverseAdapter, GatewayTurns
 
@@ -89,8 +90,8 @@ async def test_voice_reply_survives_real_gateway_admission(
     monkeypatch.setattr(runner, "_handle_message_with_agent", agent)
 
     def admissions():
-        return [row for sid in authority.sessions for row in
-                list_session_admissions(authority.db, session_id=sid, pending_only=False)]
+        return [admission_row(row) for sid in authority.sessions for row in
+                authority_persistence(authority).admissions.list(session_id=sid, pending_only=False)]
 
     task = None
     spoken = []
