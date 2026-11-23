@@ -404,6 +404,12 @@ unsolicited snapshots or carry a pending response to a replacement connection.
 
 ### Microphone streaming and barge-in
 
+Sending microphone audio for barge-in during thinking, playback, and speaker
+drain is optional throughout this spec. The client chooses per turn (push to
+talk) or for the whole client (half duplex, recommended without beamforming).
+No silence packets are needed when it sends no audio. Keep local wake detection
+running and report detections with `heard`.
+
 Wake-word detection is **client-side**. Before a wake activation, keep the
 microphone local; an open socket and `ready` do not start upstream audio.
 On detection, send `wake` and buffer all microphone audio while waiting up
@@ -533,10 +539,7 @@ Speech after `turn_done`, while the reply is still playing:
 ← {"type":"turn_done","turn_id":"A"}
 ```
 
-Do not use an `agentTurn`, thinking, or playback flag to suppress PCM during
-an activation. Play incoming PCM and send microphone PCM concurrently.
 Local echo cancellation may clean the signal, but must preserve user speech.
-Do not replace microphone audio with synthetic silence during playback.
 Unmuting lands in standby ("Handling `turn_done.next_action`"); never replay
 audio accumulated while muted.
 

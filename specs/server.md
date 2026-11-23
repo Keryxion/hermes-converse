@@ -48,7 +48,8 @@ turn with a different format. Repeat the audio acceptance scenarios with Opus.
 ## Voice lifecycle
 
 The server receives microphone PCM continuously throughout a granted activation,
-including capture, transcription, thinking, speech output, and speaker drain.
+including capture, transcription, thinking, speech output, and speaker drain,
+when the client chooses to send it for barge-in (client spec, section 4).
 An open socket alone is not an activation. Keep incoming audio processing
 independent of agent generation and outgoing TTS.
 
@@ -800,7 +801,7 @@ carries no `next_action`, the device is not muted, and the hold ends.
 The agent calls `no_barge_in` for a reply that should not be cut off by sound
 at the microphone: the person said the assistant keeps interrupting itself, or
 its replies keep being cut with nothing meant for it heard. The device does
-nothing different: it keeps streaming and reporting `heard`.
+nothing different: sending barge-in audio remains optional; it keeps reporting `heard`.
 
 The hold belongs to the turn that called the tool. It starts at the call,
 whether or not audio has been sent, and ends when that turn's playback has
