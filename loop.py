@@ -1310,8 +1310,19 @@ class _Driver:
     turn: Any = None  # the turn in flight
 
     def gone(self) -> bool:
-        """Nobody is listening: the session ended and no replacement connection has taken the turn."""
-        return self.session.stopped and not (self.present is not None and self.present())
+        """Nobody is listening: no connection is attached to the turn. A detached turn keeps its
+        session for the replacement connection, so a running session is not proof of a listener."""
+        if self.present is not None:
+            return not self.present()
+        return self.session.stopped
+
+
+class _Piece:
+    """Marks where one piece of reply text starts in ``pcm_q``; its audio follows it."""
+    __slots__ = ("epoch", "frame")
+
+    def __init__(self, epoch: int, frame: Optional[dict]):
+        self.epoch, self.frame = epoch, frame
 
 
 class _Turn:
@@ -1341,6 +1352,11 @@ class _Turn:
         self.released = False  # speech barged in: the run goes on for the person's words to reach
         self.unheard: Optional[str] = None  # a finished reply cut before any of it played
         self.settled = asyncio.Event()  # the agent run has ended: Hermes has stored what it will
+        # A reconnect replays the reply so far as text and starts a new epoch: text received
+        # before it is never spoken after it (client contract, "Reconnecting during a turn").
+        self.speech_epoch = 0
+        self.replayed_deltas = 0  # deltas received before the last reconnect
+        self.skipping = False  # the driver is dropping audio of a piece from an earlier epoch
         self.shown: list[str] = []  # the reply's text so far: pieces sent, and text nobody was there for
         self.respeak = False  # a new connection took the turn: its next audio follows a new `speaking`
 
@@ -1419,7 +1435,10 @@ async def drive_converse_turns(
         turn = d.turn
         if turn is None:
             return
-        text = speech.strip_markdown("".join(turn.shown)).strip()
+        text = "" if turn.transient else speech.strip_markdown("".join(turn.reply_parts)).strip()
+        # Text so far is in the snapshot: none of it is spoken after this (contract, section 4).
+        turn.shown = [text] if text else []
+        turn.replayed_deltas, turn.speech_epoch, turn.skipping = len(turn.reply_parts), turn.speech_epoch + 1, True
         if transcripts and text:
             await send_json({"type": "transcript", "role": "assistant", "turn_id": turn.turn_id,
                              "text": text, "replay": True})
@@ -1794,10 +1813,15 @@ async def _reply_sentences(d: _Driver, turn: _Turn) -> AsyncIterator[str]:
     without a new delta (at once if it already ends a sentence), unless it is an open <think>."""
     chunker = speech.sentence_chunker()
     idle_polls = 0
+    epoch, taken = turn.speech_epoch, 0
     while not turn.tts_stop.is_set():
         try:
             delta = await turn.text_q.get_async(IDLE_POLL_SECONDS)
         except queue.Empty:
+            delta = queue.Empty
+        if epoch != turn.speech_epoch:  # a reconnect replayed what is buffered: it is not spoken
+            chunker, epoch = speech.sentence_chunker(), turn.speech_epoch
+        if delta is queue.Empty:
             idle_polls += 1
             if d.gone():
                 continue
@@ -1809,6 +1833,10 @@ async def _reply_sentences(d: _Driver, turn: _Turn) -> AsyncIterator[str]:
                     yield sentence
             continue
         idle_polls = 0
+        if isinstance(delta, str):
+            taken += 1
+            if taken <= turn.replayed_deltas:  # received before the reconnect: replayed, not spoken
+                continue
         if d.gone():  # nobody is listening: the text is in the conversation, not spoken
             if not isinstance(delta, Aside) and not turn.transient:
                 turn.shown.append(chunker.buf + (delta or ""))
@@ -1835,6 +1863,7 @@ async def _produce_speech(d: _Driver, turn: _Turn) -> None:
     spoken_chars = 0
     try:
         async for sentence in _reply_sentences(d, turn):
+            epoch = turn.speech_epoch  # a reconnect after this replays the sentence instead
             cleaned = speech.strip_markdown(sentence)
             if not cleaned:
                 continue
@@ -1843,20 +1872,20 @@ async def _produce_speech(d: _Driver, turn: _Turn) -> None:
             for piece in split_text_for_tts_stream(cleaned, d.cap):
                 if turn.tts_stop.is_set():
                     return
-                if d.gone():
+                if d.gone() or epoch != turn.speech_epoch:
                     break
+                frame = None
                 if shown:
                     text = piece if not turn.shown else " " + piece
                     turn.shown.append(text)
-                    if d.transcripts:
-                        turn.pcm_q.put_nowait({"type": "transcript", "role": "assistant",
-                                               "turn_id": turn.turn_id, "text": text})
+                    frame = {"type": "transcript", "role": "assistant", "turn_id": turn.turn_id, "text": text}
+                turn.pcm_q.put_nowait(_Piece(epoch, frame))
                 turn.spoken_parts.append(piece)
                 chunks = await asyncio.to_thread(lambda text=piece: iter(d.synth.synth(text)))
                 while (chunk := await asyncio.to_thread(next, chunks, None)) is not None:
                     if turn.tts_stop.is_set():
                         return
-                    if d.gone():
+                    if d.gone() or epoch != turn.speech_epoch:
                         break
                     turn.ns.setdefault("first_pcm", time.time_ns())
                     turn.pcm_q.put_nowait(chunk)
@@ -1908,8 +1937,13 @@ async def _stream_reply(d: _Driver, turn: _Turn, turn_task: asyncio.Future) -> N
         if chunk is None or turn.tts_stop.is_set():
             break
         await _flush_user_transcript(turn)
-        if isinstance(chunk, dict):  # a transcript frame, sent in order ahead of the PCM it speaks
-            await d.send_json(chunk)
+        if isinstance(chunk, _Piece):  # its transcript goes out in order ahead of the PCM it speaks
+            # The contract: after a reconnect, audio starts with text prepared after it.
+            turn.skipping = chunk.epoch != turn.speech_epoch
+            if not turn.skipping and chunk.frame is not None and d.transcripts:
+                await d.send_json(chunk.frame)
+            continue
+        if turn.skipping:
             continue
         if speaking and turn.respeak:
             turn.respeak = False
