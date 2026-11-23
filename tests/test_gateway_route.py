@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from hermes_converse.named import DeviceStore
 from tests.test_arbitrate_integration import _patch
 from tests.test_route import API_KEY, Harness, _collect_turn, _speech_then_silence_pcm, _start_msg
@@ -184,4 +186,58 @@ async def test_say_sends_no_transcript(tmp_path, monkeypatch):
         frames, pcm = await _collect_turn(ws)
         assert pcm and [f["type"] for f in frames if f["type"] == "transcript"] == []
         assert frames[-1]["next_action"] == "standby"
+        await ws.close()
+
+
+@pytest.mark.parametrize("fresh_piece", [False, True])
+async def test_reconnect_during_paced_reply_only_speaks_fresh_text(tmp_path, monkeypatch, fresh_piece):
+    """Real sockets replace a driver while it holds an old PCM chunk for pacing."""
+    from aiohttp import web
+    from hermes_converse import loop, speech
+
+    fake = _patch(monkeypatch)
+    fake.hang, fake.after_hang = True, ("Fresh.",) if fresh_piece else ()
+    old_first = b"\x11\x11" * 48000  # two seconds forces the next chunk to wait
+    old_pending, fresh = b"\x22\x22" * 240, b"\x33\x33" * 240
+
+    class Streamer:
+        sample_rate = 24000
+
+        def stream(self, text):
+            yield from [fresh] if "Fresh" in text else [old_first, old_pending]
+
+    monkeypatch.setattr(speech, "streaming_provider", lambda cfg: Streamer())
+    monkeypatch.setattr(loop, "MAX_AUDIO_LEAD_SECONDS", 0)
+    harness = Harness(fake, device_store=DeviceStore(tmp_path / "devices.db"))
+    async with harness as client:
+        ws, first = await _connect(client)
+        for chunk in _speech_then_silence_pcm():
+            await ws.send_bytes(chunk)
+        while True:
+            message = await ws.receive(timeout=3)
+            if message.type == web.WSMsgType.BINARY:
+                assert message.data == old_first
+                break
+        # The first PCM has filled the playback lead; the next old chunk is paced.
+        await asyncio.sleep(0.05)
+        replacement, ready = await _connect(client)
+        assert ready["recipient_id"] == first["recipient_id"]
+        replay = []
+        while not replay or replay[-1]["type"] != "thinking":
+            replay.append(await replacement.receive_json(timeout=3))
+        assert any(f.get("replay") and f.get("text") == "Hello." for f in replay)
+        assert any(f.get("state") == "thinking" for f in replay)
+        fake.hang = False
+        frames, pcm = await _collect_turn(replacement)
+        assert pcm == ([fresh] if fresh_piece else [])
+        fresh_index = len(frames)
+        if fresh_piece:
+            fresh_index = next(i for i, f in enumerate(frames)
+                               if f["type"] == "transcript" and f.get("text", "").endswith("Fresh."))
+        assert not any(f["type"] == "speaking" or f.get("state") == "speaking"
+                       for f in frames[:fresh_index])
+        assert sum(f["type"] == "speaking" for f in frames) == fresh_piece
+        assert frames[-1]["type"] == "turn_done"
+        assert len(fake.turns) == 1 and fake.turns[0]["status"] == "completed"
+        await replacement.close()
         await ws.close()
