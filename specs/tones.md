@@ -28,6 +28,8 @@ in [animations.md](animations.md).
 - While muted, the listening and listening-ended tones do not play. Confirm,
   error, and approval still play.
 - A tone never delays audio processing, triggers a wake, or causes an
-  interruption. If a tone cannot play, the device carries on silently.
+  interruption. Half-duplex clients may suppress microphone input while a tone
+  plays, as defined in client.md. If a tone cannot play, the device carries on
+  silently.
 
 A device without a tone generator plays an equivalent short recorded sound.
