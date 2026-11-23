@@ -614,6 +614,19 @@ socket is attached. The conversation keeps the title
 
 ## Catching up
 
+Every client, including iOS, macOS, ESP32 and Echo, tracks a last turn ID to
+identify missed turns and owns its catch-up presentation. Do not automatically
+speak the full backlog; a notification or another device-appropriate indication
+is possible. Exact presentation and Echo's indication capability remain open.
+
+The existing wire cursor `start.after` is a transcript `message_id`, not a
+`turn_id`. Multiple messages can belong to a turn, and not every turn has a
+replayable message. Do not interpret a turn ID as a message ID. A compatible
+mapping or versioned turn-cursor protocol, including persistence, ordering,
+unavailable cursors and migration for existing clients, remains to be specified
+with the clients. The current transcript replay contract does not guarantee
+complete missed-turn detection, particularly when transcripts are not requested.
+
 Give every user `transcript` frame, and the closing assistant frame of each
 turn, a `message_id`: Hermes's message id for that message, as an opaque string.
 Hermes stores a message only once it is whole, which is why the ID follows the
@@ -659,9 +672,9 @@ before any live frame. Keep no second copy.
   conversation, replay the most recent 20.
 - When `start` carried `after`, say in `ready` whether it still applies:
   `new_session` is false when `after` is a message of the current
-  conversation and true when it is not. True is how a client learns its conversation
-  was replaced, whatever replaced it: a `command` frame, the Hermes web UI, or a
-  deleted conversation.
+  conversation and true when it is not. True can indicate a replacement by a
+  `command` frame or the Hermes web UI, a deleted conversation, or an
+  unavailable cursor; it does not distinguish these cases.
 - On an attached socket, send `ready` with `new_session: true` on a session
   change even when `start` had no `after`; replay only if transcripts were
   requested, before live frames for the new session.

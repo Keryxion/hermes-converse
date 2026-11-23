@@ -897,9 +897,24 @@ credentials, and internal errors are never sent.
 
 ### Catching up
 
-A client that was away, for example an app returning to the foreground or
-relaunched, is caught up when it connects. Send the `message_id` of the last transcript
-it has shown as `after` in `start`:
+A client on every device, including iOS, macOS, ESP32 and Echo, tracks its last
+turn ID as a catch-up cursor so it can identify turns missed while away. The
+client owns how it presents catch-up: it may use a notification or another
+device-appropriate indication. It must not automatically speak the full backlog.
+Exact presentation is open, as is what indication an Echo can support.
+
+This turn cursor is distinct from the existing transcript `message_id` cursor
+below. A turn can have multiple messages, and not every turn necessarily has a
+replayable message. Do not put a `turn_id` in `after` or assume the IDs are
+interchangeable. A compatible mapping or a versioned turn-cursor protocol,
+including persistence, ordering, unavailable cursors and migration of existing
+clients, remains to be specified jointly with the server. Until then the
+existing message replay does not guarantee complete missed-turn detection,
+especially for clients that do not request transcripts.
+
+For the existing transcript replay, a client returning to the foreground or
+relaunching sends the `message_id` of the last transcript it has shown as
+`after` in `start`:
 
 ```json
 {"type":"start","key":"<API_SERVER_KEY>","input_rate":16000,"output_rate":24000,
@@ -918,7 +933,8 @@ since then as ordinary `transcript` frames marked `replay`:
 ```
 
 Omit `after` the first time; the server then sends the most recent 20. Keep the
-last `message_id` shown and send it on every connect, so nothing is shown twice.
+last `message_id` shown and send it on every connect. Replay is capped at the
+most recent 100 messages, so it does not guarantee a complete backlog.
 
 When `start` carries `after`, `ready` carries `new_session`. The server also
 sends `ready` with `new_session: true` on an attached socket when its channel
@@ -930,11 +946,11 @@ changes sessions, even if `start` did not carry `after`:
 
 | `new_session` | Meaning | What to do |
 |---|---|---|
-| `false` | The cursor is a message of the device's conversation. | Append the replayed transcripts. |
-| `true` | The conversation is a different one now: a new one was started, from this app or anywhere else, or the old one is gone. | Clear the conversation view and forget the cursor, then show what is replayed. A brand-new conversation replays nothing. |
+| `false` | The cursor is a message of the device's conversation. | Handle the replayed transcripts according to the client's catch-up presentation. |
+| `true` | The cursor is not a message of the device's current conversation; the conversation may have changed or the cursor may no longer be available. | Clear the old conversation view and cursors, then handle what is replayed. A brand-new conversation replays nothing. |
 
-This is the one place a client learns the conversation was cleared, however it
-happened.
+An attached client also learns of a session change from `ready` as described
+above; a rejected message cursor alone does not prove the conversation changed.
 
 A replayed assistant transcript is the whole reply in one frame: everything
 the reply says aloud, however much of it was played. A reply that finished
@@ -942,10 +958,10 @@ while no device was connected was never spoken, and is replayed with the text
 it would have said. A reply that says nothing is not replayed. If the client
 already shows pieces for that `turn_id`, replace them with the replayed frame.
 
-A `replay` transcript is only for display. It does not start a turn: do not arm
+A `replay` transcript is catch-up data for the client, not a live turn. Do not arm
 a timer, show thinking, play audio, resend the request, or open the microphone
 because of one. A user transcript with no assistant transcript after it, and no
-turn running, was not answered: show it that way.
+turn running, was not answered; a client presenting it should reflect that.
 
 A turn does not end because the connection dropped. If the person asked
 something and the app went away, the assistant still finishes, and the answer is
