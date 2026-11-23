@@ -174,12 +174,12 @@ async def test_other_socket_and_mismatched_ids_cannot_answer(connected):
     await other.send_str(_start_msg(device_name="Other Echo"))
     assert (await other.receive_json())["type"] == "ready"
     await other.send_json({**request, **SNAPSHOT, "build": "wrong client"})
-    await other.send_json({"type": "set_model"})
-    assert (await other.receive_json())["type"] == "model_error"
+    await other.send_json({"type": "current_model"})
+    assert (await other.receive_json())["type"] == "current_model"
     for request_id in ("unsolicited", [], None):
         await connected.ws.send_json({**request, "request_id": request_id, **SNAPSHOT})
-    await connected.ws.send_json({"type": "set_model"})
-    assert (await connected.ws.receive_json())["type"] == "model_error"
+    await connected.ws.send_json({"type": "current_model"})
+    assert (await connected.ws.receive_json())["type"] == "current_model"
     assert not task.done()
     await connected.ws.send_json({**request, **SNAPSHOT})
     assert await _result(task) == SNAPSHOT

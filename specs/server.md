@@ -518,8 +518,8 @@ and API-key authentication stay on the API server.
 | Barge-in | the continuation goes to `handle_message` while the run is going; the run is not interrupted |
 | `cancel` | `interrupt_session_activity`, then wait for the turn to settle |
 | Tool and reasoning progress | `pre_tool_call` and `post_api_request` plugin hooks |
-| `command` from the client | the gateway command named in `name`, with `args`, after stopping any turn in flight; its reply is not spoken and goes back to the client in a `command` frame |
-| Model selection | the gateway `/model` command, sent only when the choice differs from the session's; its confirmation is not spoken |
+| `command` from the client | the gateway command named in `name`, with `args`, stopping a turn in flight only for canonical `new`; its reply is not spoken and goes back to the client in a `command` frame |
+| Model selection | the authorized gateway `/model` command; read the resulting session route and reasoning level into `current_model` |
 
 The chat is the device's conversation: chat name
 `<assistant_name>: <device_name>`, user `recipient_id`, user name `device_name`.
@@ -564,6 +564,17 @@ as it would a chat user's command. Return its
 reply in a `command` frame without speaking it. There is no list of allowed
 commands: a device holding the API key can run what a chat user can, including
 commands that change approvals.
+
+For model and reasoning commands with arguments, serialize the change behind submitted
+voice work and ahead of its next submission. Dispatch Hermes's session-scoped
+`/reasoning` through normal command authorization. Read back the session override
+before confirming a picker write. Advertise exact supported efforts from Hermes's
+OpenRouter or Nous catalog, intersected with its command parser, or the gateway's
+model-specific Codex wire levels. Missing metadata
+or an unknown route yields unknown support with the levels Hermes's `/reasoning`
+command parser accepts, which are unconfirmed for the model; an explicit negative
+yields unsupported with no levels. Supply the same levels to the voice agent on each
+turn. When unknown support carries no levels, the agent says there is no confirmed list.
 
 Answer a `commands` frame with Hermes's command registry as its Telegram
 command menu lists it: each command that runs outside a terminal, with its
@@ -869,6 +880,7 @@ turn does not trigger it.
 If the socket disconnects or the turn is cancelled or interrupted before the
 final reply has played, drop the deferred command.
 
+Model and reasoning changes approved by the voice tool run before the following voice turn.
 Other commands are submitted while the turn is running, without first stopping
 it. Hermes's mid-run command policy applies: approval does not override a busy
 refusal. For example, `compress` can return a busy reply instead of compressing

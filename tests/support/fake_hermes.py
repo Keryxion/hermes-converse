@@ -129,9 +129,12 @@ class FakeHermes:
             self.store.ids[key] = uuid.uuid4().hex
         if event.get_command() == "model":
             self.commands.append(event.text)
-            args = event.get_command_args().split()
-            self.store.models[key] = None if args == ["reset"] else {
-                "model": args[0], **({"provider": args[2]} if len(args) > 2 else {})}
+            from hermes_cli.model_switch import parse_model_switch_args
+            selection = parse_model_switch_args(event.get_command_args())
+            if selection.errors:
+                return " ".join(selection.error_messages())
+            self.store.models[key] = None if selection.is_reset else {
+                "model": selection.target, "provider": selection.explicit_provider or None}
             return "Model switched."
         if event.get_command() in self.command_replies:
             self.commands.append(event.text)

@@ -427,3 +427,17 @@ async def test_tool_uses_the_real_gateway_command_policy(tmp_path, monkeypatch, 
     finally:
         await ws.close()
         await harness.__aexit__(None, None, None)
+
+
+async def test_approved_reasoning_command_waits_for_its_own_turn(monkeypatch, device_env):
+    fake, harness, ws, _, frames, _ = await _turn_calling(
+        monkeypatch, device_env, "reasoning", "once", args=["high"])
+    try:
+        if not any(frame["type"] == "command" for frame in frames):
+            frames.extend(await _frames_until(ws, "command"))
+        result = next(frame for frame in frames if frame["type"] == "command")
+        assert result["name"] == "reasoning" and result["args"] == ["high"]
+        assert fake.results == ["Approved. The setting will be applied before the next voice turn."]
+        assert fake.turns[0]["status"] == "completed" and not fake.stopped
+    finally:
+        await _close(harness, ws)

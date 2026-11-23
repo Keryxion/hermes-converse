@@ -185,34 +185,6 @@ class ConverseAdapter(BasePlatformAdapter):
         entry = await asyncio.to_thread(store.get_or_create_session, source, touch_activity=False)
         return entry.session_key
 
-    async def set_model(self, source: Any, session_key: str, model: Optional[str],
-                        provider: Optional[str]) -> None:
-        """Make the conversation use *model* (None = its default) by sending the gateway's own
-        ``/model`` command, the same way a chat user would. Its confirmation is not spoken."""
-        store = getattr(self, "_session_store", None)
-        current = (store.get_model_override(session_key) if store is not None else None) or {}
-        if (current.get("model") or None, current.get("provider") or None) == (model or None, provider or None):
-            return
-        text = "/model reset"
-        if model or provider:
-            text = "/model " + " ".join(part for part in (model, f"--provider {provider}" if provider else "") if part)
-        event = MessageEvent(text=text, message_type=MessageType.COMMAND, source=source,
-                             message_id=f"model-{uuid.uuid4().hex}")
-        command = _Command(event)
-        self._commands[source.chat_id] = command
-        try:
-            await self.handle_message(event)
-            if not event._gateway_accepted:
-                logger.warning("converse: the gateway did not accept %r", text)
-                return
-            await asyncio.wait_for(command.done.wait(), COMMAND_TIMEOUT)
-            logger.info("converse: %s -> %s", text, " ".join((command.reply or "").split())[:200])
-        except TimeoutError:
-            logger.warning("converse: %r did not finish in %.0fs", text, COMMAND_TIMEOUT)
-        finally:
-            if self._commands.get(source.chat_id) is command:
-                self._commands.pop(source.chat_id, None)
-
     async def run_command(self, source: Any, text: str, *, approved: bool = False) -> Optional[str]:
         """Run the gateway slash command *text* for the chat, as a chat user would. Its reply is
         returned, not spoken. None when no reply is available; an accepted queued command retains
@@ -329,7 +301,9 @@ class ConverseAdapter(BasePlatformAdapter):
             return
         turn = self._own(event)
         if turn is None:
-            self._server_turns.pop(chat_id, None)
+            server_turn = self._server_turns.pop(chat_id, None)
+            if server_turn is not None:
+                server_turn.done.set()
         else:
             self._complete_voice_turn(turn, outcome)
 
@@ -526,7 +500,6 @@ class GatewayTurns:
         self._settle_timeout = settle_timeout
         self._turn: Optional[_VoiceTurn] = None
         self._following: Optional[_VoiceTurn] = None  # the earlier run the turn in flight follows
-        self._model: Optional[tuple[Optional[str], Optional[str]]] = None
 
     @property
     def history(self) -> History:
@@ -573,8 +546,7 @@ class GatewayTurns:
         return self._turn is None or self._turn.done.is_set()
 
     async def run_turn(self, *, text: str, on_delta: Callable[[str], None],
-                       instructions: Optional[str] = None, model: Optional[str] = None,
-                       provider: Optional[str] = None, turn_id: Optional[str] = None) -> TurnResult:
+                       instructions: Optional[str] = None, turn_id: Optional[str] = None) -> TurnResult:
         adapter = self._adapter
         # The client's turn id is the message's platform id, so replay names the turn as live did.
         turn_id = turn_id or uuid.uuid4().hex
@@ -584,9 +556,6 @@ class GatewayTurns:
             # A transcript is speech, never a gateway command.
             allow_gateway_control=False)
         turn = _VoiceTurn(event, on_delta, self._session_key)
-        if self._model != (model, provider):  # the first turn also clears a stale earlier choice
-            await adapter.set_model(self._source, self._session_key, model, provider)
-            self._model = (model, provider)
         earlier, self._turn = self._run(), turn
         self._following = None
         if earlier is not None and not earlier.done.is_set():
@@ -660,6 +629,59 @@ class GatewayTurns:
             turn.on_delta = lambda _text: None
             turn.released.set()
 
+    async def wait_for_voice_turn(self) -> None:
+        for turn in (self._adapter._server_turns.get(self._chat_id), self._following, self._turn):
+            if turn is not None:
+                await turn.done.wait()
+
+    def configured_route(self):
+        """Profile defaults for voice clients that did not request the model inventory."""
+        runner = getattr(self._adapter._message_handler, "__self__", None)
+        if not hasattr(runner, "config_path"):
+            return {}
+        from gateway.run import _load_gateway_config
+        cfg = _load_gateway_config(config_path=runner.config_path).get("model")
+        if isinstance(cfg, dict):
+            return {"model": cfg.get("default") or cfg.get("model"), "provider": cfg.get("provider")}
+        return {}
+
+    def model_override(self):
+        runner = getattr(self._adapter._message_handler, "__self__", None)
+        live = getattr(runner, "_session_model_overrides", {}) or {}
+        return live.get(self._session_key) or self._adapter._session_store.get_model_override(self._session_key) or {}
+
+    async def apply_voice_default(self, model, provider):
+        if model and not await asyncio.to_thread(self.model_override):
+            args = f"{model} --provider {provider}" if provider else model
+            await self.run_command(f"/model {args} --session", stop=False)
+
+    def current_model(self, default_route):
+        from .reasoning import capability, gateway_levels, level
+
+        override = self.model_override()
+        if override.get("model"):
+            model, provider = override["model"], override.get("provider")
+        else:
+            try:
+                defaults = self.configured_route()
+            except Exception:
+                logger.debug("converse: profile model unavailable", exc_info=True)
+                defaults = {}
+            model = defaults.get("model") or default_route[0]
+            provider = defaults.get("provider")
+            if not provider and model == default_route[0]:
+                provider = default_route[1]
+        runner = getattr(self._adapter._message_handler, "__self__", None)
+        resolve = getattr(runner, "_resolve_session_reasoning_config", None)
+        peek = getattr(runner, "_peek_session_state", None)
+        support, levels = capability(model, provider) if resolve and peek else ("unknown", gateway_levels())
+        state = peek(self._session_key) if peek else None
+        preference = level(state.conversation.reasoning_override) if state else None
+        effective = level(resolve(source=self._source, session_key=self._session_key, model=model or "")) if resolve else None
+        return {"model": model, "provider": provider, "reasoning_support": support, "reasoning_levels": levels,
+                "reasoning_override": preference, "reasoning_level": effective,
+                "pending": False}
+
     def commands(self) -> list[dict[str, Any]]:
         """The gateway commands this device may name in a ``command`` frame."""
         return command_catalog.catalog()
@@ -676,7 +698,6 @@ class GatewayTurns:
         """Run a command, stopping the turn first unless called from its own voice tool."""
         if stop:
             await self.stop()
-        self._model = None  # a command such as /new may drop the model override; the next turn sets it again
         return await self._adapter.run_command(self._source, text, approved=approved)
 
     async def stop(self) -> None:
