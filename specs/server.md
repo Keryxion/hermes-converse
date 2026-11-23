@@ -299,8 +299,8 @@ text. Counters reset at each turn's start.
 Send opt-in user and assistant `transcript` frames as defined in
 [the client spec](client.md), for both voice replies and outbound output. Send
 each piece of reply text when it is submitted for speech, before the PCM that
-speaks it, and never hold PCM back for it. After the last piece, send a closing frame with empty
-text and the message's `message_id`. Distinguish generated text,
+speaks it, and never hold PCM back for it. After the last piece of a completed stored reply, send a closing frame with empty
+text and the turn's `turn_id`; message IDs remain internal. Distinguish generated text,
 PCM sent, and client playback drain. `turn_done`
 means sending finished. The client's `state` leaving `speaking` means playback
 finished or was discarded; it cannot prove the user heard the response. An interruption records that a reply
@@ -614,84 +614,62 @@ socket is attached. The conversation keeps the title
 
 ## Catching up
 
-Every client, including iOS, macOS, ESP32 and Echo, tracks a last turn ID to
-identify missed turns and owns its catch-up presentation. Do not automatically
-speak the full backlog; a notification or another device-appropriate indication
-is possible. Exact presentation and Echo's indication capability remain open.
+Create a durable turn parent with a stable unique `turn_id` in conversation
+order before beginning each inbound or proactive conversational turn, including
+work started while no client is attached. The identity survives reconnect,
+restart, interruption and completion. Associate zero or any number of stored
+message rows with that parent as they are stored, including user, assistant and
+internal rows; never derive the parent from a message ID or assume one message
+per turn. Persist the turn parent and its conversation order durably, including
+turns with no message rows. Message IDs remain internal and are not sent to
+clients. This contract requires no migration or backward compatibility; do not
+delete existing data.
+Unassociated existing rows remain intact and are not guessed into turns or
+replayed as if their association were known.
 
-The existing wire cursor `start.after` is a transcript `message_id`, not a
-`turn_id`. Multiple messages can belong to a turn, and not every turn has a
-replayable message. Do not interpret a turn ID as a message ID. A compatible
-mapping or versioned turn-cursor protocol, including persistence, ordering,
-unavailable cursors and migration for existing clients, remains to be specified
-with the clients. The current transcript replay contract does not guarantee
-complete missed-turn detection, particularly when transcripts are not requested.
+Every client tracks its last displayed turn ID and owns its catch-up presentation.
+Do not automatically speak the backlog. With `transcripts: true`, `start.after`
+is that turn ID, not a message ID. Immediately after `ready` and before live
+frames, replay the entire anchor turn inclusively and then subsequent turns in
+durable conversation order. Within each turn, send associated replayable user
+and assistant messages in stored order as `transcript` frames with the same
+`turn_id` and `replay: true`; never send internal message IDs, tool calls, tool
+results, reasoning or system text. The client replaces/deduplicates the anchor
+and appends later turns in order. The replay is not evidence of delivery.
 
-Give every user `transcript` frame, and the closing assistant frame of each
-turn, a `message_id`: Hermes's message id for that message, as an opaque string.
-Hermes stores a message only once it is whole, which is why the ID follows the
-text instead of travelling with it: the user frame is sent after the agent turn
-starts, and the assistant's ID comes in a closing frame with empty text.
+Without `after`, replay the most recent 20 turns. With a valid anchor, replay it
+and all subsequent turns, oldest first, without splitting a turn. Turns without
+replayable transcripts send no transcript frame. Include associated messages
+folded away by compaction when Hermes still has them.
 
-Never send a user `transcript` without its `message_id`. Send it when Hermes
-has stored the message, with the stored message's words, which include any
-earlier request carried into it. Look the message up by the turn's own
-`turn_id`, which is its platform message id, never by whichever turn is
-running. When a turn is cancelled or interrupted around the handover, settle
-the turn first, then look: send the frame before `interrupted` if the message
-is there, and no frame if it is not. If Hermes's messages cannot be read, send
-no user `transcript`.
+When `start` has `after`, set `ready.new_session` false for an available turn
+in the current conversation; otherwise set it true and send no replay for that
+request. An unavailable anchor need not mean the conversation changed. On an
+attached socket, send `ready` with `new_session: true` for an actual session
+change even without `after`, followed by initial replay only if requested.
 
-Words that arrive while a run is going are stored differently: Hermes puts the
-message's origin, a line of JSON that carries its id, ahead of the words, gives
-the row no platform message id, and wraps a redirected run's copy in its steer
-marker. Read the id from the origin, and send and replay the words alone. With
-Hermes's `privacy.redact_pii` the origin's id is hashed, so such a message is
-not found and has no transcript.
-
-Text that is not a Hermes message gets no `transcript` frame of either kind:
-`say`, and the spoken approval summary. A server-started reply is a Hermes
-message and closes with its `message_id` like any other.
-
-When a client connects with `transcripts: true`, replay what it missed from
-Hermes's own messages for the device's conversation, right after `ready` and
-before any live frame. Keep no second copy.
-
-- Replay user and assistant messages only, as `transcript` frames with
-  `replay: true`: no tool calls, tool results, reasoning, or system text.
-- An assistant message's `text` is what the turn says aloud, worked out from
-  Hermes's messages and not from what was synthesized: the reply text with
-  Markdown removed, or, for a turn that used `speak_this`, the text given to the
-  tool. It is the same whether the reply was played in full, cut short, or
-  finished with nobody attached. A turn that says nothing, such as `[SILENT]`
-  or `speak_this` with `""`, is not replayed.
-- A turn still running is replayed up to its user message only. Its reply so
-  far goes in one more frame, as below.
-- With `after`, replay every such message after it, up to the most recent 100.
-  Without `after`, or when `after` is not a message of the current
-  conversation, replay the most recent 20.
-- When `start` carried `after`, say in `ready` whether it still applies:
-  `new_session` is false when `after` is a message of the current
-  conversation and true when it is not. True can indicate a replacement by a
-  `command` frame or the Hermes web UI, a deleted conversation, or an
-  unavailable cursor; it does not distinguish these cases.
-- On an attached socket, send `ready` with `new_session: true` on a session
-  change even when `start` had no `after`; replay only if transcripts were
-  requested, before live frames for the new session.
-- Include messages that compaction has folded away when Hermes still has them.
+Send a user transcript only after its associated message is stored; if storage
+races cancellation or interruption, settle the handover first and send it before
+`interrupted` only if stored. If messages cannot be read, do not invent text.
+Send no transcript for `say` or spoken approval summaries. Assistant replay
+contains the text prepared for speech, with Markdown removed or from
+`speak_this`, not proof of synthesis, playback, or delivery. Silent output has
+no assistant transcript. An incomplete, cancelled or failed turn retains its
+parent and whatever rows actually exist; do not invent a reply or attribute
+unassociated data. Never delete real data to satisfy this contract.
 
 ### A turn running at reconnect
 
-A replacement connection takes over the running turn. After the replay, send
-one assistant `transcript` with `replay: true` and no `message_id` holding the
-turn's text so far, by the same rule as replayed text and including what was
-generated while nobody was attached; then `state` with the turn's current
-state and a `thinking` frame at once, with the turn's counters as they stand;
-then any pending `approval_request`. Text pieces sent afterwards continue from
-the end of that frame, so the pieces a client appends to it add up to the text
-a later replay gives. Audio resumes with the first text generated after the
-reconnect, behind a new `speaking`; do not synthesize what was generated while
-nobody was attached, and do not resend audio.
+Replay its associated stored messages under its existing turn ID. With transcripts
+enabled, if reply text is still being generated, send one `replay: true`
+assistant snapshot of the current text so far, including text generated while
+unattached; the client replaces any previously displayed partial reply rather
+than duplicating it. Do not duplicate an already replayed stored reply in that
+snapshot. Then send current `state`, `thinking` with current counters and any
+pending `approval_request`, followed by remaining live pieces and terminal
+frames. Subsequent pieces append to the snapshot. Audio resumes only with text
+generated after reconnect behind a new `speaking`; never synthesize or resend
+audio for text generated while unattached.
 
 ### Nobody attached
 
@@ -707,14 +685,17 @@ that is expected:
 - Nothing is queued to be spoken later.
 - A pending approval is held, as described under Approvals.
 
-Verify: a reply that finished while the device was away is replayed as a
-transcript and never spoken; no speech is synthesized for it; connecting twice
-with the same `after` replays the same frames; connecting with the newest `message_id`
-replays none; a turn cancelled after its message was stored replays a user transcript with no
-reply, and one cancelled before that replays nothing; no user `transcript` is
-ever sent without a `message_id`; `say` sends no `transcript`; a
-reconnect during a turn receives the replay and then the rest of the turn live;
-a replayed frame never starts a turn on the client.
+Verify: inbound and proactive turns receive durable IDs before work and retain
+them across reconnect and restart; zero, one and multiple stored rows associate
+with one turn. Reconnect at a partially displayed anchor and replace it with
+the entire stored turn, then append subsequent turns in order without duplicates;
+repeat the same cursor, test the initial 20-turn bound and replay beyond 100
+subsequent turns without splitting turns, and reject an unavailable or foreign
+anchor with no replay. Test incomplete and
+interrupted turns, an active reply snapshot followed by live pieces, unassociated
+rows left untouched, silent turns, and no client-visible message IDs. Replay does
+not start a turn, prove delivery or cause backlog speech; disconnected output is
+not synthesized for later playback. `say` sends no transcript.
 
 ## Client diagnostics
 
