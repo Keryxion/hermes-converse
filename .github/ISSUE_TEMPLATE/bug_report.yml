@@ -1,0 +1,132 @@
+name: Bug report
+description: Something is broken or behaving unexpectedly in Hermes Converse
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. Describe what you observed and provide enough detail for someone else to reproduce it.
+
+        **Privacy:** Logs, config, diagnostics, and voice transcripts can contain API keys, tokens, personal names, file paths, or private conversations. Review and redact sensitive data before posting. Share only the relevant excerpt.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Pre-submission checklist
+      options:
+        - label: I have searched existing open and closed issues for this problem.
+          required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the client action, voice interaction, or server operation that failed. Include any error message.
+      placeholder: When I do X, Y happens instead of Z.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should have happened instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Give numbered steps someone else can follow. Note whether the problem happens every time or intermittently.
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: input
+    id: converse-version
+    attributes:
+      label: Hermes Converse version or commit
+      description: Give the installed plugin version or the commit SHA you are running. If unknown, say so.
+      placeholder: e.g. 0.1.0 or a commit SHA
+    validations:
+      required: true
+
+  - type: input
+    id: hermes-version
+    attributes:
+      label: Hermes Agent version or commit
+      description: Give the Hermes Agent version or commit used by the server. If unknown, say so.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: client
+    attributes:
+      label: Client involved
+      multiple: true
+      description: Select the affected clients. Include client versions or commits in Additional context when available.
+      options:
+        - Arya Echo
+        - Arya ESP32
+        - Arya iOS
+        - Arya macOS
+        - Browser / custom WebSocket client
+        - Other
+        - No client involved / unsure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Server deployment
+      options:
+        - Local Hermes gateway
+        - Docker / container
+        - Remote / self-hosted Hermes gateway
+        - Other / unsure
+
+  - type: input
+    id: os
+    attributes:
+      label: Server operating system and Python version
+      description: Include architecture if relevant. Use python --version for the interpreter version.
+      placeholder: e.g. Ubuntu, x86_64, Python 3.12
+
+  - type: input
+    id: providers
+    attributes:
+      label: Providers involved
+      description: Name the STT, TTS, and model providers involved, if relevant. Do not include credentials.
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Relevant logs or diagnostics
+      description: Paste relevant errors, WebSocket frames, or output from hermes converse doctor. Redact keys, tokens, identifying file paths, and private voice transcripts.
+      render: shell
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant config (if applicable)
+      description: Paste only the relevant plugin, STT, TTS, or API server settings. Remove secrets and personal data.
+      render: yaml
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Include client versions, related issues, recent changes, or observations that may help reproduce the problem.
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy checklist
+      options:
+        - label: I have reviewed my submission and removed secrets and private data.
+          required: true
