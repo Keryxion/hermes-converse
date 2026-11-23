@@ -1679,3 +1679,28 @@ def test_outbound_question_explicitly_opens_listening():
     session = _FakeConverseSession([ConversationOutput("Okay?", "approval", next_action="listen")])
     sent = _run_driver(session, [], [])
     assert _turn_done_frame(sent)["next_action"] == "listen"
+
+
+def test_reconnect_during_pacing_drops_audio_already_taken_from_queue(monkeypatch):
+    monkeypatch.setattr(cl, "MAX_AUDIO_LEAD_SECONDS", 0)
+
+    async def main():
+        sent = []
+        d, turn = _pace_driver(sent), _pace_turn()
+        turn.speech_epoch = 0
+        turn.pcm_q.put_nowait(_chunk(0.1))
+        turn.pcm_q.put_nowait(_chunk(0.1))
+        turn.pcm_q.put_nowait(None)
+        real_sleep = asyncio.sleep
+
+        async def reconnect_while_pacing(seconds):
+            # resume() changes these while the streamer holds its second old chunk.
+            turn.speech_epoch += 1
+            turn.skipping = True
+            await real_sleep(seconds)
+
+        monkeypatch.setattr(cl.asyncio, "sleep", reconnect_while_pacing)
+        await cl._stream_reply(d, turn, d.loop.create_future())
+        return sent
+
+    assert len(asyncio.run(main())) == 1
