@@ -100,7 +100,7 @@ only on a matching grant. Send the buffered audio first, in capture order,
 then live mono audio at `input_rate` without a gap or duplication.
 For PCM16, send little-endian samples; 30 ms blocks are ideal (e.g. 480 samples
 at 16 kHz). For Opus, use the 20 ms packets defined below. Keep streaming throughout
-the granted activation, subject to the client's duplex choice (section 4).
+the granted activation, including thinking and playback (sections 4 and 8).
 A client that does not use wake detection may start streaming after `ready`.
 
 The server replies with `ready`:
@@ -149,12 +149,10 @@ header. Configure each encoder with libopus `OPUS_APPLICATION_VOIP`, a target
 bitrate of 24000 bit/s, DTX off, and complexity 5. Packet sizes vary; bitrate
 is a target, not a packet length.
 
-Feed captured samples to the encoder without changing their level. While
-microphone transport is enabled, encode and send every 20 ms of captured audio,
-silence included. Half-duplex playback pauses transport as defined in section 4;
-send no audio packets during that pause. While streaming, do not omit packets:
-each advances the received audio timeline by 20 ms, so endpointing and `quiet`
-keep working. This is why DTX stays off: some
+Feed captured samples to the encoder without changing their level. Keep encoding
+and sending every 20 ms of captured audio during an activation, silence
+included. Do not omit packets: each advances the received audio timeline by
+20 ms, so endpointing and `quiet` keep working. This is why DTX stays off: some
 encoders, such as Chromium's WebCodecs, drop DTX frames instead of sending
 them. Flush wake pre-roll in capture order as Opus packets before live audio.
 
@@ -406,36 +404,19 @@ unsolicited snapshots or carry a pending response to a replacement connection.
 
 ### Microphone streaming and barge-in
 
+Sending microphone audio for barge-in during thinking, playback, and speaker
+drain is optional throughout this spec. The client chooses per turn (push to
+talk) or for the whole client (half duplex, recommended without beamforming).
+No silence packets are needed when it sends no audio. Keep local wake detection
+running and report detections with `heard`.
+
 Wake-word detection is **client-side**. Before a wake activation, keep the
 microphone local; an open socket and `ready` do not start upstream audio.
 On detection, send `wake` and buffer all microphone audio while waiting up
 to **1000 ms** for the matching decision. Retain the detector's available
 pre-roll and every sample during the wait so the start of the utterance is
 not lost. On a grant, send that buffer once, in capture order, then stream
-live PCM for the rest of the activation. Include silence.
-
-#### Duplex choice
-
-The client chooses full duplex or half duplex; no server negotiation is needed.
-Half duplex is recommended when beamforming is unavailable, but the choice is
-up to the client, including whether to offer it as a user setting.
-
-- **Full duplex:** stream real microphone PCM continuously, including during
-  reply playback and speaker drain, so the server can accept speech barge-in.
-- **Half duplex:** stop sending microphone audio while the speaker plays a
-  reply, a local cue, or an alarm, including any short echo-settling interval
-  afterwards. The server needs no audio packets during playback; send no
-  synthetic silence. Resume live input promptly when playback ends and the
-  activation or outbound monitoring still calls for it. Do not buffer and replay
-  audio from the pause. Speech barge-in is unavailable while input is paused.
-  Local Stop controls remain available;
-  wake detections, when available, are still reported with `heard` as below.
-
-Thinking alone never suppresses microphone input. Once a spoken approval
-question has drained, half duplex listens for the answer normally. Suppressing
-input for playback does not mute the device, end its activation, or change its
-voice state. The continuous-streaming and concurrent-playback requirements
-below are subject to this duplex choice, for both PCM16 and Opus.
+live PCM continuously for the rest of the activation. Include silence.
 
 | client state or event | microphone transport and server use |
 |---|---|
@@ -444,7 +425,7 @@ below are subject to this duplex choice, for both PCM16 and Opus.
 | Matching `wake_grant` | Flush buffered PCM in order, then continue with live PCM. Server VAD/endpointer captures the request for transcription. |
 | Matching `wake_deny` or timeout | Discard the activation buffer and resume local wake detection; do not stream this activation. |
 | `transcript` / `thinking` after request endpoint | Keep sending live PCM. Accepted speech interrupts the old reply and becomes a continuation in the same conversation. |
-| `speaking` and queued speaker playback | Full duplex keeps sending live PCM for server echo rejection and speech barge-in. Half duplex may suppress input as above. |
+| `speaking` and queued speaker playback | Keep sending live PCM. The server rejects speaker echo and captures accepted user interruptions as continuations. |
 | Turn ended and playback drained, activation still open | Keep streaming; server may capture the next user utterance normally. |
 | Activation ends / returns to wake detection | Stop upstream PCM and resume local wake detection; keep the socket available for outbound conversation events. |
 | Explicit user mute or closed session | Stop sending PCM; server-side barge-in is unavailable. |
@@ -455,7 +436,7 @@ interrupts the old reply, preserves the new utterance, and transcribes it as a
 continuation in the same conversation. The original request remains context.
 Do not require another wake word or make the user repeat the interruption.
 Playback echo rejection remains the server's responsibility; clients should
-provide clean microphone audio, subject to the duplex choice above. Send it at the
+provide clean microphone audio without suppressing user speech. Send it at the
 level it was captured: no automatic gain control and no fixed digital gain on
 the upstream path. Echo cancellation, lossless format conversion and analog
 preamp settings are allowed; a wake word engine that needs another level changes
@@ -558,11 +539,7 @@ Speech after `turn_done`, while the reply is still playing:
 ← {"type":"turn_done","turn_id":"A"}
 ```
 
-Thinking alone must not suppress PCM during an activation. In full duplex,
-play incoming PCM and send microphone PCM concurrently.
 Local echo cancellation may clean the signal, but must preserve user speech.
-Half duplex pauses microphone transmission during playback; it does not send
-synthetic silence in place of microphone audio.
 Unmuting lands in standby ("Handling `turn_done.next_action`"); never replay
 audio accumulated while muted.
 
@@ -578,10 +555,10 @@ On `interrupted`, stop and discard queued reply audio for that turn, then report
 the state you move to. `turn_done` means the server finished sending, not that
 playback drained. Leaving `speaking` says playback finished or was discarded,
 not that a person heard the reply.
-In full duplex, keep streaming until the reply's audio has drained, so the person
-can still interrupt it. Report the state for the old turn's playback only; it
-must not discard a continuation. A bounded playback-tail timeout handles a
-missing report.
+Keep streaming until the reply's audio has drained, so the person can still
+interrupt it. Report the state for the old turn's playback only; it must not
+discard a continuation. A bounded playback-tail timeout handles a missing
+report.
 
 ### A wake word heard during a turn
 
@@ -675,9 +652,8 @@ speaking/playback state. Do not treat them as new turns or restart playback.
 Ignore late frames for completed/cancelled turns and stale IDs. An unfamiliar ID
 may start a server-originated turn as described in section 9.
 
-During an active activation, keep sending microphone PCM, subject to the duplex
-choice above, so the server can accept a continuation. UI state and microphone
-transport are independent.
+During an active activation, keep sending microphone PCM so the server can
+accept a continuation. UI state and microphone transport are independent.
 
 Arm an inactivity timer on the initial `thinking` if `transcript` has not already
 armed it. Refresh it on repeated frames for the active turn. Allow more than five
@@ -783,10 +759,9 @@ the one to move to:
 | Standby | No PCM, except to let the person interrupt a reply, as below. The wake word or Talk opens an activation. | The wake word, Talk, or `listen`. |
 | Muted | No PCM, and no wake word. Talk does nothing. | Only the person, with the device's mute control. Unmuting always lands in standby. |
 
-A device in standby enables microphone transport while a reply plays, for
-interruption only (section 9), subject to its duplex choice, and stops when the
-ending is applied. The exception is a turn made by holding Talk: after release
-it sends no PCM during the reply. While Talk is
+A device in standby streams while a reply plays, for interruption only
+(section 9), and stops when the ending is applied. The exception is a turn made
+by holding Talk: after release it sends no PCM during the reply. While Talk is
 held, the button governs the microphone, over everything but `mute`; an ending
 that arrives then is applied on release.
 
@@ -1047,9 +1022,8 @@ time. A `turn_done` with `next_action: "standby"` also returns to standby
    endpoints the user request, then emits `thinking` (followed by the user `transcript` if enabled).
    The user may pause after the wake word, or mid-request, for up to
    `endpoint_max_silence_ms` (default 3 s) without the request being split.
-4. Keep sending live PCM during thinking. During reply playback and speaker
-   drain, follow the duplex choice in section 4. The server captures accepted
-   speech interruptions as continuations.
+4. Keep sending live PCM during thinking, `speaking` + reply PCM, and queued
+   playback. The server captures accepted interruptions as continuations.
 5. Receive `turn_done`; when the speaker has drained or the audio was discarded, report the new `state`.
 6. If the activation remains open, keep streaming for a follow-up request.
    Otherwise stop upstream audio and return to local wake detection.
@@ -1233,7 +1207,7 @@ Explicit saved server values such as `0.25` require a configuration update to
 
 | outcome | client action |
 |---|---|
-| Matching `wake_grant` before the deadline | Flush buffered audio once, oldest first, then live PCM without dropping, duplicating, or reordering samples. Stream through the activation, subject to the duplex choice in section 4. |
+| Matching `wake_grant` before the deadline | Flush buffered audio once, oldest first, then live PCM without dropping, duplicating, or reordering samples. Stream continuously through the activation, including thinking and playback. |
 | Matching `wake_deny` before the deadline | Discard the activation buffer and resume local wake detection; do not stream it. |
 | No matching decision within 1000 ms | Assume loss, discard the activation buffer, and resume local wake detection. No frame is needed. |
 | Late decision or decision for another `claim_id` | Ignore it; never release an abandoned buffer or reactivate a completed claim. |
@@ -1272,8 +1246,7 @@ idle-originated turn, the server requests `next_action: "standby"`, or
 `listen` when it wants an answer; do not open a user activation merely because
 the server spoke. For a targeted outbound turn while idle, temporarily enable
 microphone streaming for interruption/control detection when `thinking` or
-`speaking` arrives, subject to explicit user mute and the duplex choice in
-section 4. This requires no local
+`speaking` arrives, subject to explicit user mute. This requires no local
 wake or arbitration. After the turn and playback drain, stop that temporary
 stream and restore local wake detection unless an activation is now open.
 
