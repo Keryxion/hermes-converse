@@ -50,7 +50,9 @@ turn with a different format. Repeat the audio acceptance scenarios with Opus.
 The server receives microphone PCM continuously throughout a granted activation,
 including capture, transcription, thinking, speech output, and speaker drain,
 subject to the client's duplex choice in the client spec. A half-duplex client
-may pause microphone transport or substitute silence during local playback.
+keeps sending audio frames with microphone samples replaced by zeros during
+local playback and any short echo-settling interval, whenever microphone
+transport is enabled.
 An open socket alone is not an activation. Keep incoming audio processing
 independent of agent generation and outgoing TTS.
 

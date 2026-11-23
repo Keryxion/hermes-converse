@@ -151,10 +151,10 @@ is a target, not a packet length.
 
 Feed captured samples to the encoder without changing their level. Keep encoding
 and sending every 20 ms of captured audio during an activation, silence
-included whenever microphone transport is enabled. Half-duplex playback may
-pause transport or substitute silence as defined in section 4. Otherwise, do
-not omit packets: each advances the received audio timeline by
-20 ms, so endpointing and `quiet` keep working. This is why DTX stays off: some
+included whenever microphone transport is enabled. Half-duplex playback
+substitutes silence as defined in section 4, encoded through the same encoder
+without resetting it. Do not omit packets: each advances the received audio
+timeline by 20 ms, so endpointing and `quiet` keep working. This is why DTX stays off: some
 encoders, such as Chromium's WebCodecs, drop DTX frames instead of sending
 them. Flush wake pre-roll in capture order as Opus packets before live audio.
 
@@ -422,10 +422,12 @@ up to the client, including whether to offer it as a user setting.
 
 - **Full duplex:** stream real microphone PCM continuously, including during
   reply playback and speaker drain, so the server can accept speech barge-in.
-- **Half duplex:** while the speaker plays a reply, a local cue, or an alarm,
-  the client may pause microphone transport or send digital silence instead.
-  A short echo-settling interval after playback is allowed. Resume live input
-  promptly afterwards when the activation or outbound monitoring still calls
+- **Half duplex:** when microphone transport is enabled, replace microphone
+  samples with zeros while the speaker plays a reply, a local cue, or an alarm.
+  Keep sending audio frames at the negotiated rate and cadence. With Opus,
+  encode those zeros normally with DTX off. Keep the stream running through
+  any short echo-settling interval after playback. Resume live input promptly
+  afterwards when the activation or outbound monitoring still calls
   for it; do not replay audio from the suppressed interval. Speech barge-in is
   unavailable while input is suppressed. Local Stop controls remain available;
   wake detections, when available, are still reported with `heard` as below.
