@@ -121,8 +121,10 @@ async def test_voice_reply_survives_real_gateway_admission(
               f"starts={starts!r} completions={completions!r}")
         if busy:
             assert replay is not turns._turn.event, "the test did not exercise durable replay"
-            assert any(row["payload"]["text"] == replay.text and row["status"] == "terminal"
-                       for row in admissions()), "the gateway did not finish the queued input"
+            # Durable replay runs in the gateway, beyond the adapter's background task.
+            # Wait for its bookkeeping too before inspecting the terminal admission.
+            await _until(lambda: any(row["payload"]["text"] == replay.text and row["status"] == "terminal"
+                                     for row in admissions()))
         expected = [reply] if reply and reply != "[SILENT]" and not cancelled else []
         assert spoken == expected, "gateway answered, but the voice callback received no reply"
         if not cancelled:
