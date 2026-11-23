@@ -107,7 +107,10 @@ class SpeechDetector:
             if gate is not None and reference and len(coupled) >= _ECHO_MIN_BLOCKS:
                 gate = max(gate, float(self._np.percentile(coupled, 90)) * reference * ECHO_MARGIN)
             voiced = voiced and gate is not None and level >= gate
-            if not voiced:
+            if not voiced or level < vad.PLAYBACK_MIN_TRIGGER:
+                # A block below the minimum playback energy gate cannot interrupt. Let it teach
+                # echo even if a silent playback lead-in made Silero's baseline too low;
+                # otherwise every later echo block is called voiced and learning freezes.
                 # The reference is playback alone. Speech over it must not raise the level its
                 # own next word has to beat.
                 self._echo.append(level)

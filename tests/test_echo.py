@@ -217,3 +217,74 @@ async def test_the_session_gives_the_detector_the_level_of_the_reply_it_sent():
         session.stop()
         await asyncio.wait_for(session._worker, 2)
     assert seen and all(playing and reference == pytest.approx(9000, rel=0.01) for playing, reference in seen)
+
+
+def synthetic_conditions(*, delay_ms, jitter_ms=0, clip=None, volume_step=False, interrupt=False):
+    """Offline stress case, not an acoustic model: independent 317/733 Hz near/far signals.
+
+    Use ReplyLevel's actual time window rather than handing the detector the microphone's
+    source level. Device volume changes affect only the returned waveform. The fake speech
+    classifier deliberately accepts echo and near-end speech alike.
+    """
+    d = detector()
+    reference = echo.ReplyLevel(np)
+    rng = np.random.default_rng(178)
+    rate, blocks = 16000, 240
+    t = np.arange(blocks * 480) / rate
+    # Sent PCM grows 11 dB after adaptation, falls, and pauses before speaking again.
+    envelope = np.repeat([4000] * 80 + [14000] * 50 + [4000] * 30
+                         + [0] * 30 + [8000] * 50, 480)
+    sent = np.round(np.sqrt(2) * envelope * np.sin(2 * np.pi * 317 * t)).astype(np.int16)
+    for i in range(blocks):
+        reference.sent(sent[i * 480:(i + 1) * 480].tobytes(), rate, 100 + i * .03)
+    first_onset = None
+    for i in range(blocks):
+        # Jitter selects a source block independently; clipping acts on the far-end path.
+        lag = delay_ms + (rng.uniform(-jitter_ms, jitter_ms) if jitter_ms else 0)
+        offset = i * 480 - round(max(0, lag) * rate / 1000)
+        indices = np.arange(offset, offset + 480)
+        far = np.zeros(480)
+        valid = (indices >= 0) & (indices < sent.size)
+        far[valid] = sent[indices[valid]] * (.6 if volume_step and i >= 100 else .25)
+        if clip is not None:
+            far = np.clip(far, -clip, clip)
+        # A near-end tone has independent frequency/phase, mixed in the sample domain.
+        near = (np.sqrt(2) * 6000 * np.sin(2 * np.pi * 733 * t[i * 480:(i + 1) * 480])
+                if interrupt and 110 <= i < 140 else np.zeros(480))
+        mic = np.clip(np.round(far + near), -32768, 32767).astype(np.int16)
+        ref = reference.at(100 + i * .03)
+        event = d.feed(mic, True, reference=ref)
+        if event and first_onset is None:
+            first_onset = i
+    return first_onset
+
+
+@pytest.mark.parametrize('delay_ms', [0, 90])
+@pytest.mark.parametrize('jitter_ms', [0, 90])
+@pytest.mark.parametrize('clip,volume_step', [(None, False), (1800, False), (1800, True)])
+def test_independent_voice_interrupts_delayed_or_clipped_echo(delay_ms, jitter_ms, clip, volume_step):
+    conditions = dict(delay_ms=delay_ms, jitter_ms=jitter_ms, clip=clip, volume_step=volume_step)
+    assert synthetic_conditions(**conditions) is None
+    onset = synthetic_conditions(**conditions, interrupt=True)
+    # The independent near-end signal begins at block 110; no echo onset may count as recall.
+    assert onset is not None and 110 <= onset < 140
+    assert (onset - 110 + 1) * 30 <= 500
+
+
+@pytest.mark.parametrize('delay_ms', [300, 900])
+def test_delayed_playback_does_not_poison_echo_coupling_with_startup_silence(delay_ms):
+    assert synthetic_conditions(delay_ms=delay_ms) is None
+
+@pytest.mark.parametrize('delay_ms', [0, 90])
+@pytest.mark.xfail(strict=True, reason="An unreported device-volume increase outruns learned echo coupling")
+def test_device_volume_step_does_not_interrupt_its_own_reply(delay_ms):
+    assert synthetic_conditions(delay_ms=delay_ms, volume_step=True) is None
+
+
+def test_startup_recovery_does_not_absorb_an_immediate_interruption():
+    d = detector()
+    for _ in range(30):
+        d.feed(pcm_block(0), True, reference=4000)
+    events = [d.feed(pcm_block(6000), True, reference=4000) for _ in range(45)]
+    assert 'playback' in events
+    assert all(coupling == 0 for coupling in d._coupling)
