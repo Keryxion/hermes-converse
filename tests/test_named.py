@@ -54,6 +54,24 @@ def test_store_keeps_device_identity_and_separate_assistant_conversations(tmp_pa
     reopened.close()
 
 
+
+def test_store_accepts_a_table_a_newer_branch_extended(tmp_path):
+    """An alpha deploy of another branch can add columns; this one must still open devices."""
+    import sqlite3
+    path = tmp_path/'devices.db'
+    db = sqlite3.connect(path)
+    db.executescript("""
+        CREATE TABLE devices (device_name TEXT PRIMARY KEY, recipient_id TEXT NOT NULL UNIQUE,
+                              settings TEXT NOT NULL DEFAULT '{}');
+        CREATE TABLE conversations (recipient_id TEXT NOT NULL, assistant_name TEXT NOT NULL,
+                                    title TEXT NOT NULL UNIQUE, session_id TEXT UNIQUE,
+                                    PRIMARY KEY(recipient_id, assistant_name));
+    """)
+    db.close()
+    store = DeviceStore(path)
+    assert store.reserve('Arya', 'Den Echo').recipient_id == store.reserve('Arya', 'Den Echo').recipient_id
+    store.close()
+
 @pytest.mark.asyncio
 async def test_names_select_the_conversation_without_exposing_it(tmp_path, monkeypatch):
     fake = _patch(monkeypatch)
