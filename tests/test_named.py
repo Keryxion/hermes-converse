@@ -147,9 +147,14 @@ async def test_replacement_keeps_the_turn_in_flight(tmp_path, monkeypatch):
         second, ready = await connect(client)
         assert ready['type'] == 'ready'
         assert [turn['status'] for turn in fake.turns] == ['running']  # the turn carries on
+        fake.after_hang = (' More.',)
         fake.hang = False
         frames, pcm = await _collect_turn(second)  # the rest of the turn arrives here
         assert [f['type'] for f in frames if f['type'] != 'transcript'][-1] == 'turn_done' and pcm
+        # Text prepared before the switch is only replayed; audio starts with text prepared after it.
+        said = [f for f in frames if f['type'] == 'transcript' and f['role'] == 'assistant' and f['text']]
+        assert [(f['text'], f.get('replay', False)) for f in said] == [('Hello.', True), (' More.', False)]
+        assert frames.index(said[1]) < [f['type'] for f in frames].index('speaking')
         await second.close()
 
 

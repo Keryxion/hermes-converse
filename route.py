@@ -912,10 +912,23 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
             gateway.approvals.on_stop(attachment.conversation_id)
         loop.create_task(client.stop())
 
+    # A replacement socket keeps this driver, but its turns are its own: each connection
+    # publishes its runner, and a turn ends with the after-turn hook of the runner it used.
+    control["turn"] = (_run_turn, _after_turn)
+
+    async def _run_current_turn(*args, **kwargs):
+        control["running"] = control["turn"]
+        return await control["running"][0](*args, **kwargs)
+
+    async def _after_current_turn() -> None:
+        running = control.pop("running", None)
+        if running is not None:
+            await running[1]()
+
     async def _drive_turns() -> None:
         await drive_converse_turns(
             session=session, synth=synth, cap=cap, loop=loop,
-            send_json=relay.send_json, send_bytes=relay.send_bytes, run_turn=_run_turn, history=history,
+            send_json=relay.send_json, send_bytes=relay.send_bytes, run_turn=_run_current_turn, history=history,
             message_ids=MessageIds(client) if hasattr(client, "history") else None,
             present=lambda: relay.attached,
             quiet_interval=quiet_interval, interrupt_turn=_interrupt_turn,
@@ -925,7 +938,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
             last_progress=lambda: client.last_progress,
             turn_timeout=settings.turn_timeout, tail_fallback=settings.tail_fallback,
             max_tts_chars=settings.max_tts_chars,
-            standby=lambda: client.standby, mute=lambda: client.mute, after_turn=_after_turn,
+            standby=lambda: client.standby, mute=lambda: client.mute, after_turn=_after_current_turn,
             control=control,
         )
 

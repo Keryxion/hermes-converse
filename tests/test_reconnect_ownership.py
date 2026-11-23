@@ -136,10 +136,11 @@ async def test_subsequent_turns_use_new_socket_model_codec_and_controls(monkeypa
             assert original._quiet_interval == .3
             await ws.send_json({'type': 'cancel'})
             await _collect_turn(ws)
-            await ws.send_json({'type': 'set_model', 'request_id': 'next', 'model': 'next-model'})
+            await ws.send_json({'type': 'command', 'name': 'model', 'args': ['next-model', '--session']})
             async with asyncio.timeout(5):
-                while (await ws.receive_json())['type'] != 'model_changed':
+                while (reply := await ws.receive_json())['type'] != 'command':
                     pass
+            assert reply['current_model']['model'] == 'next-model'
             fake.hang = False
             # Opus filters a DC step; use speech-shaped PCM through the real codec.
             pcm = np.concatenate([np.zeros(4800, dtype=np.int16),
