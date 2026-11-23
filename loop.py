@@ -1716,10 +1716,10 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
         getattr(session, "session_id", None), turn.turn_id, outcome, len(turn.result.get("reply") or ""),
         sum(len(p) for p in turn.spoken_parts), turn.pcm_chunks, next_action, action_source)
     # Ordinary completion preserves the device's interaction mode. An explicit output
-    # question can open listening; an ordinary reply never reopens a released PTT mic.
+    # question can open listening; an ordinary or replayed reply never reopens a released PTT mic.
     turn_done: dict[str, Any] = {"type": "turn_done", "turn_id": turn.turn_id}
     if next_action in ("standby", "mute") or (
-            turn.output is not None and turn.output.next_action == "listen"):
+            turn.output is not None and turn.output.next_action == "listen" and not turn.output.unheard):
         turn_done["next_action"] = next_action
     await d.send_json(turn_done)
     _finish_trace(tt, turn, reply, err=turn_err, barged=barged, next_action=next_action)
