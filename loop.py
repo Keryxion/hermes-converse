@@ -1948,6 +1948,8 @@ async def _stream_reply(d: _Driver, turn: _Turn, turn_task: asyncio.Future) -> N
         if speaking and turn.respeak:
             turn.respeak = False
             await _send_state(d, turn, "speaking")
+            if turn.skipping:  # resume() may have replayed this piece during the state send
+                continue
             await d.send_json({"type": "speaking", **turn.meta})
         if not speaking:
             turn.respeak = False
@@ -1956,6 +1958,9 @@ async def _stream_reply(d: _Driver, turn: _Turn, turn_task: asyncio.Future) -> N
                 d.session.set_playing(False)
                 break
             await _send_state(d, turn, "speaking")
+            if turn.skipping:  # resume() may have replayed this piece during the state send
+                d.session.set_playing(False)
+                continue
             await d.send_json({"type": "speaking", **turn.meta})
             speaking = True
         elif turn.state != "speaking":
