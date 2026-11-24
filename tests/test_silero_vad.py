@@ -125,11 +125,11 @@ def scripted(monkeypatch, probabilities):
 
 def test_onset_hysteresis_and_short_burst_rejection(monkeypatch):
     block = np.full(480, 150, np.int16)  # Soft speech can be below the energy trigger.
-    detector = scripted(monkeypatch, [0.42]*10 + [0.9]*3 + [0.1] + [0.9]*3 + [0.42]*6)
-    events = [detector.feed(block, False) for _ in range(23)]
-    assert events[:-1] == [None]*22
+    detector = scripted(monkeypatch, [0.42]*10 + [0.9]*3 + [0.1] + [0.9]*3 + [0.42]*3)
+    events = [detector.feed(block, False) for _ in range(20)]
+    assert events[:-1] == [None]*19
     assert events[-1] == 'generation'
-    assert detector._stream.calls == 23
+    assert detector._stream.calls == 20
     assert detector.quiet is False  # Does not advance recurrent state again.
 
 
@@ -408,3 +408,49 @@ def test_real_talk_past_the_cap_is_split_at_a_pause(real_model, name):
         assert len(samples) < 20 * 16000  # ended before the cap, at a pause
     heard = np.concatenate([samples for samples, _reason in captures])
     assert np.array_equal(heard[:len(audio)], audio)
+
+
+@pytest.mark.parametrize('speech_blocks', [6, 7, 8])  # 180–240 ms: below the interruption minimum
+@pytest.mark.parametrize('smart_turn', [False, True])
+async def test_short_affirmative_reaches_capture_and_endpoints(monkeypatch, speech_blocks, smart_turn):
+    # Isolate onset duration from model accuracy: Silero recognizes the whole short word.
+    # The session still runs onset, pre-roll, capture, endpointing and STT dispatch.
+    captured = []
+    def transcribe(path):
+        with wave.open(path, 'rb') as wav:
+            captured.append(np.frombuffer(wav.readframes(wav.getnframes()), np.int16).copy())
+        return 'yes'
+
+    session = ConverseSession(np, transcribe=transcribe)
+    session._detector._stream = ScriptedStream([0.1]*20 + [0.9]*speech_blocks + [0.1]*100)
+    class Complete:
+        calls = 0
+        def turn_complete_probability(self, audio):
+            self.calls += 1
+            return 0.9
+    if smart_turn:
+        session._turn_detector = Complete()
+    session.start()
+    try:
+        word = np.full(480*speech_blocks, 150, np.int16)  # below energy onset: model recognizes soft speech
+        session.stream.feed(np.concatenate([np.zeros(480*20, np.int16), word,
+                                            np.zeros(480*40, np.int16)]).tobytes())
+        assert await session.transcripts.get_async(1) == 'yes'
+        assert len(captured) == 1
+        assert np.count_nonzero(captured[0]) == word.size  # pre-roll keeps even the first phoneme
+        if smart_turn:
+            assert session._turn_detector.calls == 1
+    finally:
+        session.stop()
+        await asyncio.wait_for(session._worker, 2)
+
+
+@pytest.mark.parametrize('playing,interrupting', [(False, True), (True, False)])
+def test_short_speech_still_cannot_interrupt_a_reply(monkeypatch, playing, interrupting):
+    detector = scripted(monkeypatch, [0.1]*30 + [0.9]*8 + [0.1]*20)
+    for _ in range(30):
+        assert detector.feed(np.full(480, 50, np.int16), playing, interrupting=interrupting) is None
+    for _ in range(8):
+        assert detector.feed(np.full(480, 6000, np.int16), playing, interrupting=interrupting) is None
+    for _ in range(20):
+        assert detector.feed(np.full(480, 50, np.int16), playing, interrupting=interrupting) is None

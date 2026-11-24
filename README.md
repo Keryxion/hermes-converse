@@ -239,9 +239,11 @@ addressed to the assistant.
 
 Silero and Smart Turn work together: Silero finds candidate pauses; Smart Turn,
 when enabled, decides whether the person has finished their thought. Speech
-onset needs at least 250 ms above Silero's speech threshold (0.5, continuing down
-to 0.35). After `endpoint_silence_ms` of silence the utterance ends, unless Smart Turn
-judges it unfinished; then it keeps listening, rechecking each window, for up to
+onset while idle needs at least 180 ms above Silero's speech threshold (0.5,
+continuing down to 0.35), so short affirmative replies can start a capture.
+Interrupting an active turn still needs 250 ms and the sustained energy guard.
+After `endpoint_silence_ms` of silence the utterance ends, unless Smart Turn judges
+it unfinished; then it keeps listening, rechecking each window, for up to
 `endpoint_max_silence_ms`. After a wake word the first pause also waits up to
 `endpoint_max_silence_ms`, so "Hey Arya … set a timer" stays one request. One capture
 lasts at most 60 s; one that gets there ends at its last pause, and what followed
