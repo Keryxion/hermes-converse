@@ -41,6 +41,7 @@ from .catchup import History
 from . import command_catalog
 
 from .approvals import Approvals
+from .choices import Choices
 
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,7 @@ class TurnResult:
     status: str  # completed | interrupted | cancelled | failed
     turn_id: Optional[str]
     after_playback: Optional[Callable[[], Awaitable[None]]] = None
+    streamed: bool = False  # the model streamed reply text: the reply is not a Hermes notice
 
 
 @dataclass
@@ -75,6 +77,7 @@ class _VoiceTurn:
     outcome: Optional[ProcessingOutcome] = None
     final: Optional[str] = None
     streamed: str = ""  # the current model response's text already handed to TTS
+    model_text: bool = False  # the model streamed any reply text in this turn
     earlier: str = ""  # the last model response that carried text, once another has started
     exclusive: bool = False  # speak_this was called: only its text is spoken
     standby: bool = False  # the agent called standby
@@ -122,6 +125,7 @@ class ConverseAdapter(BasePlatformAdapter):
         self._abandoned: dict[str, _VoiceTurn] = {}
         self._session_chats: dict[str, str] = {}  # session_id -> chat_id
         self.approvals = Approvals(self)
+        self.choices = Choices(self)
 
     # ── lifecycle ──
     async def connect(self, *, is_reconnect: bool = False) -> bool:
@@ -450,6 +454,7 @@ class ConverseAdapter(BasePlatformAdapter):
         turn.progress_at = time.monotonic()  # reasoning counts as progress too
         if kind != "text" or not isinstance(delta, str) or not delta:
             return
+        turn.model_text = True
         if turn.stopped or turn.final is not None or turn.exclusive:
             return
         turn.streamed += delta
@@ -603,7 +608,8 @@ class GatewayTurns:
         if turn.stopped or not turn.done.is_set():
             return TurnResult(turn.final or "", None, "interrupted", turn_id)
         if turn.outcome is ProcessingOutcome.SUCCESS or turn.final:
-            return TurnResult(turn.final or "", None, "completed", turn_id, turn.after_playback)
+            return TurnResult(turn.final or "", None, "completed", turn_id, turn.after_playback,
+                              streamed=turn.model_text)
         if turn.outcome is ProcessingOutcome.CANCELLED:
             return TurnResult("", "agent run was cancelled", "cancelled", turn_id)
         return TurnResult("", "agent run failed", "failed", turn_id)

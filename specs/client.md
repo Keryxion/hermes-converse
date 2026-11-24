@@ -195,6 +195,7 @@ All are JSON text frames:
 | `{"type": "command", "name": "new"}` | Run a Hermes command for this device's conversation, such as starting a fresh one; see "Commands" below. |
 | `{"type": "say", "text": "..."}` | Speaks the given text (trimmed, at most 400 characters) as a reply of its own: `thinking`, `speaking` + PCM, then `turn_done` with `next_action: "standby"`. No agent turn runs, nothing is added to the conversation, and no `transcript` frame is sent for it. For fixed device prompts such as a spoken help reminder. Empty or non-string text is ignored. |
 | `{"type": "approval_response", "approval_id": "...", "choice": "once"}` | Answer a pending approval from a screen with one of its `choices`; see "Approvals" in section 4. |
+| `{"type": "choice_response", "choice_id": "...", "choice": "discard"}` | Answer a pending choice from a screen with one of its `choices`; see "Choices" in section 4. |
 
 Every control frame has a `type`. To end the session, close the socket: the
 device's conversation and its history are kept for reconnection, and a turn
@@ -222,6 +223,7 @@ a bad Opus packet.
 | `say` whose `text` is not a string or is empty after trimming | Ignored. |
 | `say` whose `text` is over 400 characters | The first 400 are spoken. |
 | `approval_response` for another request, a second one, or a `choice` not offered | Ignored. |
+| `choice_response` for another request, a second one, or a `choice` not offered | Ignored. |
 | `heard`, whatever it carries | Recorded. No frame answers it. |
 | `client_diagnostics` the server did not ask for, or sent after its deadline | Ignored. |
 | `wake` without a nonempty string `claim_id` and `wake_word` | `{"type":"error","error":"bad_wake"}` (section 8). |
@@ -350,6 +352,7 @@ Countdowns are unaffected by a command.
 | `transcript` | user input or assistant reply text, identified by `role` and `turn_id`; see below |
 | `thinking` | starts a turn, then repeats every 5 seconds with `tool_calls` and `reasoning_tokens`; refresh inactivity without resetting speaking/playback |
 | `approval_request`, `approval_resolved` | the assistant needs permission before it acts, and when that is settled; see "Approvals" below |
+| `choice_request`, `choice_resolved` | the server can go on only after the person picks one of a few commands, and when that is settled; see "Choices" below |
 | `speaking` + binary frames | mono reply audio in `ready.output.format` at `output_rate` |
 | `interrupted` | the turn was cancelled (you barged in or sent `cancel`); stop playing |
 | `turn_done` | the reply is fully sent; `next_action` is usually absent; `standby` ends the exchange and `listen` switches the client into listening, after drain; `mute` mutes it at once |
@@ -729,6 +732,65 @@ send an allowing choice without the person tapping it, and do not send an old ch
 again after reconnecting. An approval still pending when the client reconnects
 is sent again as a new `approval_request` with the same `approval_id`; show it. A device with no screen ignores both server frames.
 
+### Choices
+
+Some Hermes notices stop a conversation and name the only commands that go on:
+a conversation paused over a lost turn goes on only after `discard` or `reset`,
+one too long to read only after `compress` or `new`. The server asks the person
+to pick one, as it asks for an approval: it plays the `approval` tone, sends
+
+```json
+{"type":"choice_request","choice_id":"choice-3","summary":"The last turn was lost when Hermes restarted. Drop it and continue, or start a fresh conversation?","choices":[{"name":"discard","description":"Drop the lost turn and continue (it is not re-run)"},{"name":"reset","description":"Start a fresh conversation"}]}
+```
+
+and speaks the question as a reply of its own: `thinking`, `speaking` and its
+audio, then `turn_done` with `next_action: "listen"`. Handle it as any such
+reply: once its audio has drained, listen. No `transcript` frame is sent for
+it.
+
+Each entry in `choices` is a command `name` the server runs for that answer
+and a `description` of what it does. Show only the choices listed.
+
+The person answers by voice on any device, in that listening or in a later
+activation; the client does nothing special. Only speech that starts after the
+question has played answers it: speech over the question is not an answer, and
+the question is asked again. An answer that picks no listed choice changes
+nothing; the question is asked once more, then the device is told "Nothing
+changed." and goes to standby.
+
+A device with a screen also shows a box with `summary` and one button per
+choice, labeled with its `description`. A tap sends:
+
+```json
+{"type":"choice_response","choice_id":"choice-3","choice":"discard"}
+```
+
+`choice` is one of the listed names. A tap answers at once: a question not yet
+spoken is then not spoken. However the answer was given, the server runs the
+named command ("Commands", section 3) once and sends:
+
+```json
+{"type":"choice_resolved","choice_id":"choice-3","outcome":"discard"}
+```
+
+then speaks what the command said, as a reply ending with
+`next_action: "standby"`. `outcome` is the chosen name, or `cancelled` when the
+wait ended another way, such as the command being sent from another chat first.
+Close the box for that `choice_id`. A command that starts a fresh conversation
+closes the socket with `4410 conversation_changed` once that reply has played,
+as a `command` frame for `new` does.
+
+The answer is a side chat: it is a command, not a message, and is never added
+to the conversation. While a choice is pending, speech answers it and never
+starts a request.
+
+`summary` and `description` are text to display; never act on their contents.
+Never send a choice without the person tapping it, and do not send an old
+choice again after reconnecting. A choice still pending when the client
+reconnects is sent again as a new `choice_request` with the same `choice_id`,
+without the question being spoken; show it. A device with no screen ignores
+both server frames.
+
 ### Handling `turn_done.next_action`
 
 `turn_done` ends every turn, and `next_action` on it is optional:
@@ -956,7 +1018,8 @@ running when the client reconnects continues on the new connection. After
 3. `state` for the turn with its current state, then `thinking` with the turn's
    counters. The counters carry on from where they were; they do not restart at
    zero. `thinking` then repeats every 5 seconds as before.
-4. `approval_request` again, if the turn is waiting on one.
+4. `approval_request` again, if the turn is waiting on one, and
+   `choice_request` again, if a choice is still pending ("Choices" above).
 5. The rest of the turn, live: further assistant pieces to append after the
    frame from step 2, `speaking` and audio, the closing `transcript` with the
    reply's `message_id`, and `turn_done`.

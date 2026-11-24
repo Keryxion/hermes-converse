@@ -596,6 +596,12 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                                     settings.countdown_ring_timeout_seconds, loop)
     if attachment is not None and getattr(hub, "gateway", None) is not None:
         hub.gateway.approvals.attached(attachment)  # a request still pending asks again
+        attachment.reconnect = lambda: loop.create_task(_conversation_changed())
+        if hasattr(client, "_source"):
+            try:  # a pending choice is sent again; a paused conversation raises its choice
+                await hub.gateway.choices.attached(attachment, client._source, client._session_key)
+            except Exception:
+                logger.warning("converse: choice check on attach failed", exc_info=True)
     model_change = None
     dispatched = False
     pending_state = None
@@ -706,6 +712,10 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                         gateway = getattr(hub, "gateway", None)
                         if gateway is not None:
                             gateway.approvals.respond(attachment, frame)
+                    if frame.get("type") == "choice_response" and attachment is not None:
+                        gateway = getattr(hub, "gateway", None)
+                        if gateway is not None:
+                            gateway.choices.respond(attachment, frame)
                     if frame.get("type") == "cancel":
                         session.cancel(frame.get("turn_id"))
                     if frame.get("type") == "heard":
@@ -806,9 +816,13 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
             await ws.send_json(reply)
             if ("reply" in reply and command == "new"
                     and await asyncio.to_thread(client.session_id) != previous_session):
-                # The client reconnects and finds the fresh conversation with a normal start.
-                _mark_closed(ws, "server", 4410)
-                await ws.close(code=4410, message=b"conversation_changed")
+                await _conversation_changed()
+
+    async def _conversation_changed() -> None:
+        """The client reconnects and finds the fresh conversation with a normal start."""
+        if not ws.closed:
+            _mark_closed(ws, "server", 4410)
+            await ws.close(code=4410, message=b"conversation_changed")
 
     async def _command_tool(name: str, args: list[str], timeout: float) -> str:
         gateway = getattr(hub, "gateway", None)
@@ -894,6 +908,11 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
     async def _submit_turn(transcript, on_delta):
         nonlocal after_reply
         after_reply = None
+        choices = getattr(getattr(hub, "gateway", None), "choices", None)
+        if choices is not None and attachment is not None and hasattr(client, "_source"):
+            # A pending choice takes the speech; a paused conversation raises one. Neither is a request.
+            if await choices.before_request(attachment, client._source, client._session_key, transcript):
+                return "", None
         commands = await asyncio.to_thread(client.commands) if hasattr(client, "commands") else None
         state = await snapshot()
         result = await client.run_turn(
@@ -903,6 +922,10 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                 device_name=named_device.device_name, recipient_id=named_device.recipient_id, commands=commands,
                 current_model=state))
         after_reply = getattr(result, "after_playback", None)
+        if choices is not None and attachment is not None and hasattr(client, "_source") and not result.error:
+            # A Hermes notice that only commands get past is asked as a choice once it has played.
+            await choices.after_reply(attachment, client._source, client._session_key, result.reply,
+                                      streamed=getattr(result, "streamed", False))
         return result.reply, result.error
 
     def _interrupt_turn() -> None:

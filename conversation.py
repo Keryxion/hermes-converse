@@ -21,6 +21,7 @@ class Attachment:
     command: Optional[Callable[[str, list[str], float], Any]] = None
     diagnostics: Optional[Callable[[], Any]] = None
     wake_word: Optional[Callable[[Optional[str]], Any]] = None  # lists phrases, or switches to one
+    reconnect: Optional[Callable[[], Any]] = None  # closes the socket so the device finds a fresh conversation
 
 
 class ConversationHub:
@@ -57,7 +58,8 @@ class ConversationHub:
                 expires_at: float, next_action: Optional[str] = None, unheard: bool = False,
                 no_barge_in: bool = False,
                 after_playback: Optional[Callable[[], Awaitable[None]]] = None,
-                transient: bool = False) -> str:
+                transient: bool = False,
+                on_output: Optional[Callable[[ConversationOutput], None]] = None) -> str:
         with self._lock:
             item = self._attachments.get(conversation_id)
             if item is None or item.session.stopped:
@@ -80,5 +82,7 @@ class ConversationHub:
                     item.pending -= 1
             output.on_dequeue = consumed
             output.expires_at = expires_at
+            if on_output is not None:
+                on_output(output)  # the caller may expire it before it is spoken
             item.session.transcripts.put(output)
             return "accepted"

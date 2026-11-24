@@ -524,6 +524,8 @@ class ConverseSession:
         self.answer_hook: Optional[Callable[[str], bool]] = None
         # Set when captured speech was taken as the answer; the next question clears it.
         self.answer_taken = False
+        # Monotonic time the current (or last) capture's speech began.
+        self.capture_onset = 0.0
 
     def awaiting_answer(self) -> bool:
         """The turn is waiting on the person: an approval's question has played out and no answer
@@ -831,6 +833,7 @@ class ConverseSession:
                     if utterance is not None:
                         utterance.superseded = True
                 self._capturing = True
+                self.capture_onset = time.monotonic()
                 if self._managed:
                     self._pending_turn.set()
                 self._cancelled.clear()
@@ -1881,7 +1884,8 @@ async def _produce_speech(d: _Driver, turn: _Turn) -> None:
                     frame = {"type": "transcript", "role": "assistant", "turn_id": turn.turn_id, "text": text}
                 turn.pcm_q.put_nowait(_Piece(epoch, frame))
                 turn.spoken_parts.append(piece)
-                chunks = await asyncio.to_thread(lambda text=piece: iter(d.synth.synth(text)))
+                chunks = await asyncio.to_thread(
+                    lambda text=speech.speakable(piece): iter(d.synth.synth(text)))
                 while (chunk := await asyncio.to_thread(next, chunks, None)) is not None:
                     if turn.tts_stop.is_set():
                         return
