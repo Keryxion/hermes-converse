@@ -9,6 +9,7 @@ time, so a test that patches the core module — or patches this one — is hono
 
 from __future__ import annotations
 
+import html
 import logging
 import re
 from typing import Any, Iterable, Iterator, Optional
@@ -132,19 +133,22 @@ def strip_markdown(text: str) -> str:
     # the lost turn" in Hermes's paused-conversation notice. Slash commands are instructions the
     # person has to act on, so they ride through the cleaner as placeholders.
     commands: list[str] = []
+    prefix = "SLASHCOMMAND"
+    while prefix in html.unescape(text):
+        prefix += "X"
 
     def hold(match: "re.Match[str]") -> str:
         commands.append(match.group(0))
-        return f"SLASHCOMMAND{len(commands) - 1}X"
+        return f"{prefix}{len(commands) - 1}X"
 
     held = _SLASH_COMMAND_RE.sub(hold, text)
     cleaned = _drop_empty_brackets(_strip_markdown_for_tts(held))
-    return re.sub(r"SLASHCOMMAND(\d+)X", lambda m: commands[int(m.group(1))], cleaned)
+    return re.sub(re.escape(prefix) + r"(\d+)X", lambda m: commands[int(m.group(1))], cleaned)
 
 
 # "/discard", "/reset", "/hermes discard": one lowercase word after a slash that starts a word.
 # Not a path ("/usr/bin"), a URL ("https://x") or "and/or".
-_SLASH_COMMAND_RE = re.compile(r"(?<![\w/.:~-])/[a-z][a-z0-9_-]*(?![\w/.-]|\.\w)")
+_SLASH_COMMAND_RE = re.compile(r"(?<![\w/.:~-])/[a-z][a-z0-9_-]*(?![\w/-]|\.[\w.])")
 
 
 def speakable(text: str) -> str:

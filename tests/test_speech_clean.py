@@ -86,3 +86,41 @@ def test_slash_commands_are_voiced_but_paths_and_urls_are_not():
         "Send slash discard to drop it, or slash reset to start fresh.")
     for text in ("see https://example.com/a", "open /usr/bin/env", "yes and/or no", "100/200"):
         assert speakable(text) == text
+
+
+@pytest.mark.parametrize("text", [
+    "Literal SLASHCOMMAND0X",
+    "Literal SLASHCOMMAND0X and SLASHCOMMANDX0X; send /discard or /reset.",
+])
+def test_command_placeholders_do_not_collide_with_reply_text(text):
+    from hermes_converse import speech
+
+    assert speech.strip_markdown(text) == text
+
+
+def test_recovery_notice_keeps_commands_in_live_and_replay_transcripts():
+    from hermes_converse.catchup import replay_frames
+    from tests.test_loop import _FakeConverseSession, _Ids, _run_driver, _spoken_bytes
+
+    # Only the notice producer, cleaner and speech driver run: no live session,
+    # recovery command, action replay or unknown-turn resolution is involved.
+    notice = _hermes_pause_notice()
+    sent = _run_driver(_FakeConverseSession(["hello"]), [], [notice],
+                       transcripts=True, message_ids=_Ids())
+    live = [f["text"] for f in sent if isinstance(f, dict)
+            and f.get("type") == "transcript" and f.get("role") == "assistant"]
+    assert any("/discard" in text and "/reset" in text for text in live)
+    spoken = _spoken_bytes(sent).decode()
+    assert "slash discard" in spoken and "slash reset" in spoken
+    assert "it is not re-run" in spoken
+    frames = replay_frames([{"id": 1, "role": "assistant", "content": notice,
+                             "tool_calls": None, "platform_message_id": None}], None)
+    assert len(frames) == 1 and frames[0]["replay"]
+    assert "/discard" in frames[0]["text"] and "/reset" in frames[0]["text"]
+
+
+def test_encoded_literal_is_not_mistaken_for_a_command_placeholder():
+    from hermes_converse import speech
+
+    assert speech.strip_markdown("Literal SLASHCOMMAND&#48;X; send /discard.") == (
+        "Literal SLASHCOMMAND0X; send /discard.")
