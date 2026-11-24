@@ -182,6 +182,7 @@ class _Choice:
     device: Any = None  # the Attachment it was last sent to
     sent_to: Any = None  # the Attachment ``choice_request`` was last sent to
     heard_at: Optional[float] = None  # monotonic time the question finished playing to the person
+    asked: Any = None  # the question's ConversationOutput, while it may still be waiting to be spoken
     unclear: int = 0
     settled: bool = False
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -277,6 +278,8 @@ class Choices:
             self._settle(old, "cancelled")
         self._pending[choice.chat_id] = choice
         choice.tasks = [asyncio.ensure_future(self._watch(choice))]
+        logger.info("converse choice raised: chat=%s choice=%s family=%s choices=%s",
+                    choice.chat_id, choice.choice_id, choice.family.name, ",".join(choice.names))
         return choice
 
     async def before_request(self, attachment: Any, source: Any, session_key: str, text: str) -> bool:
@@ -349,9 +352,10 @@ class Choices:
             if not _c.settled and _c.device is not None and _c.device.session is _s:
                 _c.heard_at = time.monotonic()
 
+        _unask(choice)  # an earlier question not yet spoken is not spoken twice
         self._hub.publish(choice.chat_id, prefix + choice.question, f"choice:{uuid.uuid4().hex}",
                           expires_at=time.time() + SPEECH_TTL, transient=True, next_action="listen",
-                          after_playback=heard)
+                          after_playback=heard, on_output=lambda output, _c=choice: setattr(_c, "asked", output))
 
     def _say(self, choice: _Choice, text: str, *, after_playback=None) -> None:
         self._hub.publish(choice.chat_id, text, f"choice:{uuid.uuid4().hex}", expires_at=time.time() + SPEECH_TTL,
@@ -504,6 +508,9 @@ class Choices:
         if choice.settled:
             return
         choice.settled = True
+        logger.info("converse choice resolved: chat=%s choice=%s outcome=%s",
+                    choice.chat_id, choice.choice_id, outcome)
+        _unask(choice)  # answered on a screen before the question was spoken: it is not asked
         if self._pending.get(choice.chat_id) is choice:
             del self._pending[choice.chat_id]
         device = choice.device
@@ -514,6 +521,14 @@ class Choices:
         for task in choice.tasks:
             if task is not asyncio.current_task():
                 task.cancel()
+
+
+def _unask(choice: _Choice) -> None:
+    """Expire the choice's question if the device has not started speaking it; the driver skips an
+    expired output when it takes it from the queue. One already playing plays on."""
+    asked, choice.asked = choice.asked, None
+    if asked is not None:
+        asked.expires_at = 0.0
 
 
 def _owned(hook: Any, choice: _Choice) -> bool:

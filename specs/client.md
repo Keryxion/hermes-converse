@@ -765,8 +765,9 @@ choice, labeled with its `description`. A tap sends:
 {"type":"choice_response","choice_id":"choice-3","choice":"discard"}
 ```
 
-`choice` is one of the listed names. However the answer was given, the server
-runs the named command ("Commands", section 3) once and sends:
+`choice` is one of the listed names. A tap answers at once: a question not yet
+spoken is then not spoken. However the answer was given, the server runs the
+named command ("Commands", section 3) once and sends:
 
 ```json
 {"type":"choice_resolved","choice_id":"choice-3","outcome":"discard"}

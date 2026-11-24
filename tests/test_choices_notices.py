@@ -174,3 +174,33 @@ async def test_a_notice_choice_ends_when_the_conversation_changes_elsewhere(rig)
             break
     assert rig.frames[-1] == {"type": "choice_resolved", "choice_id": choice.choice_id, "outcome": "cancelled"}
     assert rig.ran == [] and rig.session.answer_hook is None
+
+
+async def test_a_tap_before_the_question_is_spoken_means_it_is_never_spoken(rig):
+    """A screen answers at once: the question still waiting in the device's queue is dropped, so the
+    device neither asks an answered question nor opens its microphone for it."""
+    import time
+
+    assert await rig.choices.after_reply(rig.attachment, None, "key", t("gateway.errors.context_overflow"),
+                                         streamed=False)
+    choice, question = rig.choices.pending("den"), rig.session.outputs[-1]
+    assert question.expires_at > time.time()
+    rig.choices.respond(rig.attachment, {"type": "choice_response", "choice_id": choice.choice_id, "choice": "new"})
+    for _ in range(100):
+        await asyncio.sleep(0.01)
+        if choice.settled and rig.session.outputs[-1] is not question:
+            break
+    assert rig.ran[0][0] == "/new" and rig.frames[-1]["outcome"] == "new"
+    assert question.expires_at <= time.time(), "the answered question would still be spoken"
+    assert rig.session.outputs[-1].text == "✨ Session reset! Starting fresh."
+
+
+async def test_asking_again_never_queues_two_questions(rig):
+    import time
+
+    assert await rig.choices.after_reply(rig.attachment, None, "key", t("gateway.errors.context_overflow"),
+                                         streamed=False)
+    first = rig.session.outputs[-1]
+    rig.choices._ask(rig.choices.pending("den"), rig.attachment)
+    assert first.expires_at <= time.time() and rig.session.outputs[-1].expires_at > time.time()
+    assert [f["type"] for f in rig.frames].count("choice_request") == 1
