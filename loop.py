@@ -1948,6 +1948,8 @@ async def _stream_reply(d: _Driver, turn: _Turn, turn_task: asyncio.Future) -> N
         if speaking and turn.respeak:
             turn.respeak = False
             await _send_state(d, turn, "speaking")
+            if turn.skipping:  # resume() may have replayed this piece during the state send
+                continue
             await d.send_json({"type": "speaking", **turn.meta})
         if not speaking:
             turn.respeak = False
@@ -1956,6 +1958,9 @@ async def _stream_reply(d: _Driver, turn: _Turn, turn_task: asyncio.Future) -> N
                 d.session.set_playing(False)
                 break
             await _send_state(d, turn, "speaking")
+            if turn.skipping:  # resume() may have replayed this piece during the state send
+                d.session.set_playing(False)
+                continue
             await d.send_json({"type": "speaking", **turn.meta})
             speaking = True
         elif turn.state != "speaking":
@@ -1971,10 +1976,16 @@ async def _stream_reply(d: _Driver, turn: _Turn, turn_task: asyncio.Future) -> N
                 deadline += d.loop.time() - paced  # waiting on playback is not a stalled run
             if turn.tts_stop.is_set():
                 break
+            # resume() can replace the speech epoch while this chunk waits for playback.
+            # It was already removed from the queue, so the next _Piece cannot fence it.
+            if turn.skipping:
+                continue
             play_end = max(play_end, d.loop.time()) + len(chunk) / 2 / rate
             d.session.playback_until = play_end - d.loop.time() + time.monotonic()
         else:
             d.session.playback_until = math.inf
+        if turn.skipping:  # a reconnect may also happen while sending the state frames above
+            continue
         turn.pcm_chunks += 1
         await d.send_bytes(chunk)
     turn.ns["pcm_done"] = time.time_ns()

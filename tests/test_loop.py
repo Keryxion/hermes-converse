@@ -1679,3 +1679,80 @@ def test_outbound_question_explicitly_opens_listening():
     session = _FakeConverseSession([ConversationOutput("Okay?", "approval", next_action="listen")])
     sent = _run_driver(session, [], [])
     assert _turn_done_frame(sent)["next_action"] == "listen"
+
+
+def test_reconnect_during_pacing_drops_audio_already_taken_from_queue(monkeypatch):
+    monkeypatch.setattr(cl, "MAX_AUDIO_LEAD_SECONDS", 0)
+
+    async def main():
+        sent = []
+        d, turn = _pace_driver(sent), _pace_turn()
+        turn.speech_epoch = 0
+        turn.pcm_q.put_nowait(_chunk(0.1))
+        turn.pcm_q.put_nowait(_chunk(0.1))
+        turn.pcm_q.put_nowait(None)
+        real_sleep = asyncio.sleep
+
+        async def reconnect_while_pacing(seconds):
+            # resume() changes these while the streamer holds its second old chunk.
+            turn.speech_epoch += 1
+            turn.skipping = True
+            await real_sleep(seconds)
+
+        monkeypatch.setattr(cl.asyncio, "sleep", reconnect_while_pacing)
+        await cl._stream_reply(d, turn, d.loop.create_future())
+        return sent
+
+    assert len(asyncio.run(main())) == 1
+
+
+@pytest.mark.parametrize("already_speaking", [False, True])
+@pytest.mark.parametrize("fresh_piece", [False, True])
+def test_reconnect_during_speaking_state_drops_stale_speaking_frame(monkeypatch, already_speaking, fresh_piece):
+    monkeypatch.setattr(cl, "MAX_AUDIO_LEAD_SECONDS", 1)
+
+    async def main():
+        sent, frames = [], []
+        d, turn = _pace_driver(sent), _pace_turn()
+        turn.speech_epoch, turn.respeak = 0, False
+        d.transcripts = True
+        playing = []
+        d.session.set_playing = lambda value, **kw: playing.append(value)
+        real_send_bytes = d.send_bytes
+        reconnect = not already_speaking
+
+        async def send_json(frame):
+            nonlocal reconnect
+            frames.append(frame)
+            if reconnect and frame.get("type") == "state" and frame.get("state") == "speaking":
+                reconnect = False
+                # resume() can run while the old socket's state send is suspended.
+                turn.speech_epoch += 1
+                turn.skipping, turn.respeak, turn.state = True, True, "thinking"
+                frames.append({"type": "replay"})
+                await asyncio.sleep(0)
+
+        async def send_bytes(chunk):
+            nonlocal reconnect
+            await real_send_bytes(chunk)
+            if already_speaking and len(sent) == 1:
+                turn.respeak, turn.state, reconnect = True, "thinking", True
+
+        d.send_json, d.send_bytes = send_json, send_bytes
+        if already_speaking:
+            turn.pcm_q.put_nowait(_chunk(0.1))
+        turn.pcm_q.put_nowait(_chunk(0.1))
+        # A fresh piece must still restore speaking and deliver its audio after the fence.
+        if fresh_piece:
+            turn.pcm_q.put_nowait(cl._Piece(1, {"type": "transcript", "text": "Fresh."}))
+            turn.pcm_q.put_nowait(_chunk(0.1))
+        turn.pcm_q.put_nowait(None)
+        await cl._stream_reply(d, turn, d.loop.create_future())
+        after_replay = frames[next(i for i, f in enumerate(frames) if f["type"] == "replay") + 1:]
+        if fresh_piece:
+            assert after_replay[0] == {"type": "transcript", "text": "Fresh."}
+        assert sum(frame["type"] == "speaking" for frame in after_replay) == fresh_piece
+        assert len(sent) == fresh_piece + already_speaking
+        assert playing[-1] is False
+
+    asyncio.run(main())
