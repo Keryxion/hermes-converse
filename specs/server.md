@@ -590,24 +590,53 @@ socket to the new conversation: the device reconnects and attaches to it in the
 ordinary way. The conversation keeps the title
 `<assistant_name>: <device_name>`.
 
-## Choices for a paused conversation
+## Choices
 
-When Hermes pauses a conversation over a lost turn — a restart left a turn
-unfinished — its notice names the only commands that go on, `discard` and
-`reset`. Raise that as a choice ("Choices" in `client.md`): speak the notice's
-question and send `choice_request` with one entry per named command, its
-`name` and a one-line `description` of what it does. Take the answer from the
-speech that follows the question, from the next activation while the choice is
-pending, or from a `choice_response`, and run it through the same path as a
-`command` frame — never as a message to the paused conversation. Settle it
-with `choice_resolved`: the chosen name when an answer runs, `cancelled` when
-the pause is resolved another way, such as a chat user sending the command
-first.
+A few Hermes notices stop a conversation and name the only commands that go
+on. Raise each as a choice ("Choices" in `client.md`), with only the commands
+listed here, and only those Hermes's command registry runs for a chat:
 
-The pause itself persists in Hermes, so keep the pending choice — its
-`choice_id`, summary, and entries — with the device route's settings, and when
-the device reconnects with the choice still pending, raise it again with the
-same `choice_id`.
+| Notice | How it is recognized | Choices |
+|---|---|---|
+| A turn lost in a restart pauses the conversation (`unknown_execution`) | an `unknown` admission in the route's conversation, read from the authority's `admissions.list` as Hermes's `/discard` reads it | `discard`, `reset` |
+| A queued message could not be re-authorized | the whole reply is Hermes's pause notice for it, which Hermes does not catalog | `reset` |
+| `gateway.errors.context_overflow` | the whole reply is the catalog template, `agent.i18n.t(key)` | `compress`, `new` |
+| `gateway.errors.history_unavailable` | the same | `reset` |
+| `gateway.shared.history_unreadable` | the same | `new` |
+| `gateway.errors.launch_credentials_unavailable` | the same | `new` |
+
+A notice quoted inside other text, a reply the model streamed, and any other
+command a notice mentions are never choices. Commands are run without
+arguments. Notices that leave the conversation usable, such as a failed reply
+offering `/retry`, are not choices: saying the request again goes on.
+
+Before a request goes to Hermes, read the route's conversation: a lost turn
+raises its choice and the request is not sent. While any choice is pending,
+speech answers it and is never sent as a request. The question is a transient
+reply with `next_action: "listen"`. Take speech as an answer only when it began
+at least 0.25 s after the device reported the question drained (its `state`
+left `speaking`, or the playback tail timed out); speech over the question is
+not an answer, and the question is asked again once it is not playing. Classify
+an answer with the approval answer call, with the choice's names, `neither`
+and `unclear` as the words.
+
+Before the chosen command runs, read again what raised the choice: the same
+lost turns, or for a notice the same Hermes session on the route. When it no
+longer holds, settle `cancelled` and run nothing. Run the command through
+`run_command`, the path of a `command` frame, never as a message; it settles
+once, with the chosen name. A lost turn is dropped by Hermes's `/discard`
+(`resolve_unknown`), never re-run, and the messages saved behind it then run;
+`reset` leaves the paused conversation and its saved messages as they are.
+Poll pending choices every 2 s and settle `cancelled` when what raised them no
+longer holds, as after another chat sends the command first.
+
+The pause persists in Hermes, so a lost turn's choice is read from it, not
+stored: its `choice_id` is derived from the conversation and its lost
+admissions, the same on every reconnect and after a restart. When a device
+attaches to a paused conversation, send `choice_request` without speaking; the
+next activation asks. Its choice stays pending until the pause ends. Any other
+choice is held in memory, is sent again on reconnect, and ends after two
+unclear answers, `neither`, or 5 minutes; Hermes's next notice raises it again.
 
 ## Catching up
 

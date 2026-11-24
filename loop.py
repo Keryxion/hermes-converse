@@ -524,6 +524,8 @@ class ConverseSession:
         self.answer_hook: Optional[Callable[[str], bool]] = None
         # Set when captured speech was taken as the answer; the next question clears it.
         self.answer_taken = False
+        # Monotonic time the current (or last) capture's speech began.
+        self.capture_onset = 0.0
 
     def awaiting_answer(self) -> bool:
         """The turn is waiting on the person: an approval's question has played out and no answer
@@ -831,6 +833,7 @@ class ConverseSession:
                     if utterance is not None:
                         utterance.superseded = True
                 self._capturing = True
+                self.capture_onset = time.monotonic()
                 if self._managed:
                     self._pending_turn.set()
                 self._cancelled.clear()

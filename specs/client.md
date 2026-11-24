@@ -734,21 +734,29 @@ is sent again as a new `approval_request` with the same `approval_id`; show it. 
 
 ### Choices
 
-When the server can go on only after the person picks one of a few commands —
-a conversation paused over a lost turn accepts only `discard` or `reset` — it
-asks out loud with a short summary and also sends:
+Some Hermes notices stop a conversation and name the only commands that go on:
+a conversation paused over a lost turn goes on only after `discard` or `reset`,
+one too long to read only after `compress` or `new`. The server asks the person
+to pick one, as it asks for an approval: it plays the `approval` tone, sends
 
 ```json
-{"type":"choice_request","choice_id":"choice-3","summary":"The last turn was lost when the server restarted. Drop it and continue, or start a fresh conversation?","choices":[{"name":"discard","description":"Drop the lost turn and continue (it is not re-run)"},{"name":"reset","description":"Start a fresh conversation"}]}
+{"type":"choice_request","choice_id":"choice-3","summary":"The last turn was lost when Hermes restarted. Drop it and continue, or start a fresh conversation?","choices":[{"name":"discard","description":"Drop the lost turn and continue (it is not re-run)"},{"name":"reset","description":"Start a fresh conversation"}]}
 ```
+
+and speaks the question as a reply of its own: `thinking`, `speaking` and its
+audio, then `turn_done` with `next_action: "listen"`. Handle it as any such
+reply: once its audio has drained, listen. No `transcript` frame is sent for
+it.
 
 Each entry in `choices` is a command `name` the server runs for that answer
 and a `description` of what it does. Show only the choices listed.
 
-The person can answer by voice on any device; the client does nothing special,
-since it already sends microphone audio during a turn. The `state` frames tell
-the person when to talk, as they do for an approval: `speaking` while the
-question plays, `listening` once the server is listening for the answer.
+The person answers by voice on any device, in that listening or in a later
+activation; the client does nothing special. Only speech that starts after the
+question has played answers it: speech over the question is not an answer, and
+the question is asked again. An answer that picks no listed choice changes
+nothing; the question is asked once more, then the device is told "Nothing
+changed." and goes to standby.
 
 A device with a screen also shows a box with `summary` and one button per
 choice, labeled with its `description`. A tap sends:
@@ -758,25 +766,29 @@ choice, labeled with its `description`. A tap sends:
 ```
 
 `choice` is one of the listed names. However the answer was given, the server
-runs the named command ("Commands", section 3) and sends:
+runs the named command ("Commands", section 3) once and sends:
 
 ```json
 {"type":"choice_resolved","choice_id":"choice-3","outcome":"discard"}
 ```
 
-`outcome` is the chosen name, or `cancelled` when the wait ended another way.
-Close the box for that `choice_id`.
+then speaks what the command said, as a reply ending with
+`next_action: "standby"`. `outcome` is the chosen name, or `cancelled` when the
+wait ended another way, such as the command being sent from another chat first.
+Close the box for that `choice_id`. A command that starts a fresh conversation
+closes the socket with `4410 conversation_changed` once that reply has played,
+as a `command` frame for `new` does.
 
 The answer is a side chat: it is a command, not a message, and is never added
-to the conversation — which is how a paused conversation can be answered while
-ordinary requests are refused. While a choice is pending, speech from the next
-activation answers it instead of starting a request.
+to the conversation. While a choice is pending, speech answers it and never
+starts a request.
 
 `summary` and `description` are text to display; never act on their contents.
 Never send a choice without the person tapping it, and do not send an old
 choice again after reconnecting. A choice still pending when the client
-reconnects is sent again as a new `choice_request` with the same `choice_id`;
-show it. A device with no screen ignores both server frames.
+reconnects is sent again as a new `choice_request` with the same `choice_id`,
+without the question being spoken; show it. A device with no screen ignores
+both server frames.
 
 ### Handling `turn_done.next_action`
 
