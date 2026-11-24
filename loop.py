@@ -341,8 +341,10 @@ class ConversationOutput:
     """A completed conversation response, not a synthetic user transcript."""
 
     def __init__(self, text: str, event_id: str, *, next_action: Optional[str] = None,
-                 unheard: bool = False, transient: bool = False, no_barge_in: bool = False) -> None:
+                 unheard: bool = False, transient: bool = False, no_barge_in: bool = False,
+                 tones: tuple[str, ...] = ()) -> None:
         self.text, self.event_id, self.next_action = text, event_id, next_action
+        self.tones = tones  # played before the text
         self.transient = transient  # not a message of the conversation (`say`): no transcript frames
         self.no_barge_in = no_barge_in  # the turn that wrote it called the tool
         self.unheard = unheard  # a reply barge-in cut before any of it played: spoken before the next request
@@ -354,6 +356,44 @@ class ConversationOutput:
 class Aside(str):
     """Text a turn says that is not part of its reply (an approval question): spoken whole, and
     never sent as a transcript."""
+
+
+# tones.md: (Hz, ms) notes; 0 Hz is a rest.
+TONE_NOTES = {
+    "confirm": ((1047, 70),),
+    "error": ((262, 70), (0, 70), (262, 70)),
+    "approval": ((523, 70), (659, 70), (784, 70)),
+}
+TONE_GAIN = 0.1  # quiet next to speech: information, not an event
+TONE_RAMP_MS = 8  # ramped edges, so a note does not click
+
+
+class Tone(Aside):
+    """A tone at this point of a turn's reply: rendered into the reply audio, so it plays in order
+    with the speech around it. Its text is empty, so it adds nothing to the reply's text; it is
+    truthy so it passes the empty-delta filters."""
+
+    def __new__(cls, name: str) -> "Tone":
+        tone = super().__new__(cls, "")
+        tone.name = name
+        return tone
+
+    def __bool__(self) -> bool:
+        return True
+
+
+def tone_pcm(name: str, rate: int) -> bytes:
+    """The named tone as int16 mono PCM at *rate*."""
+    from array import array
+
+    out = array("h")
+    ramp = max(1, rate * TONE_RAMP_MS // 1000)
+    for hz, ms in TONE_NOTES[name]:
+        n = rate * ms // 1000
+        for i in range(n):
+            edge = min(1.0, min(i, n - 1 - i) / ramp)
+            out.append(round(32767 * TONE_GAIN * edge * math.sin(2 * math.pi * hz * i / rate)) if hz else 0)
+    return out.tobytes()
 
 
 class QuietTick:
@@ -1613,6 +1653,8 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
         turn_task = asyncio.ensure_future(cancelled_reply())
     elif turn.output is not None:
         async def prepared_reply():
+            for name in turn.output.tones:
+                turn.on_delta(Tone(name))
             turn.on_delta(turn.output.text)
             turn.result["reply"] = turn.output.text
             turn.ns["agent_end"] = time.time_ns()
@@ -1864,6 +1906,13 @@ async def _produce_speech(d: _Driver, turn: _Turn) -> None:
     try:
         async for sentence in _reply_sentences(d, turn):
             epoch = turn.speech_epoch  # a reconnect after this replays the sentence instead
+            if isinstance(sentence, Tone):
+                if turn.tts_stop.is_set():
+                    return
+                if not d.gone():
+                    turn.pcm_q.put_nowait(_Piece(epoch, None))
+                    turn.pcm_q.put_nowait(tone_pcm(sentence.name, d.synth.sample_rate))
+                continue
             cleaned = speech.strip_markdown(sentence)
             if not cleaned:
                 continue

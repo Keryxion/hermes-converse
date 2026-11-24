@@ -114,7 +114,7 @@ async def test_an_approved_command_runs_in_the_turn_and_returns_its_reply(monkey
         summary = f"Arya wants to run a command for you: {description}, here, 3. Okay?"
         assert request["summary"] == summary and request["command"] == "/compress here 3"
         assert request["choices"] == ["once", "deny"]
-        assert {"type": "tone", "tone": "approval"} in frames
+        assert not [f for f in frames if f.get("type") == "tone"]  # the tone is in the reply audio
         assert " ".join(streamer.requests).startswith(summary + " Say yes or no.")  # the question is spoken
         assert {"type": "approval_resolved", "approval_id": request["approval_id"], "outcome": "approved"} in frames
         assert fake.results == ["Compressed."]  # the reply is the tool result, not speech
