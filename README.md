@@ -137,8 +137,8 @@ plugin such as Cadence and play as ordinary server-started turns.
 
 ### Announcements from Home Assistant
 
-The Arya Devices integration for Home Assistant speaks a message on Arya devices, after a chime
-and with no agent turn. Add it under Settings → Devices & services and enter the Hermes server's
+The [Arya Devices](https://github.com/Keryxion/arya-homeassistant) integration for Home Assistant speaks a message on Arya devices, after a chime
+and with no agent turn. Install it with HACS, add it under Settings → Devices & services, and enter the Hermes server's
 address and API key. There is nothing to write in `configuration.yaml`.
 
 - Each Arya device becomes a Home Assistant device, named by its `device_name`, with one notify
