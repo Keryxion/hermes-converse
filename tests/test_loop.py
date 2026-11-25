@@ -747,6 +747,14 @@ def test_a_tone_plays_in_the_reply_audio_between_the_speech_around_it():
     assert "tone" not in _types(sent)
 
 
+def test_a_tone_with_no_turn_running_plays_on_its_own():
+    # play_tone between turns publishes an output with no text, only the tone.
+    tone_only = cl.ConversationOutput("", "tone:1", transient=True, tones=("confirm",))
+    sent = _run_driver(_FakeConverseSession([tone_only]), [], [])
+    assert _spoken_bytes(sent) == tone_pcm("confirm", 24000)
+    assert "tone" not in _types(sent)
+
+
 def test_tone_notes_are_ramped_and_timed():
     error = array("h", tone_pcm("error", 16000))
     assert len(error) == 3 * 1120  # three 70 ms slots: note, rest, note
