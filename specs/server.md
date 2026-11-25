@@ -760,6 +760,11 @@ tone, `approval`, is rendered by the server itself just before it speaks an
 approval question. With no turn of the device's running, the tone is a
 transient output of its own, queued behind whatever the device has to say.
 
+Send a tone joined to the first audio of the speech after it, not ahead of it:
+sent alone, it plays out while that speech is still being synthesized and the
+device's buffer runs dry. A tone with no speech after it goes out when the
+reply's text ends.
+
 ### `standby`
 
 The agent calls `standby` when the person has said they are done, for example

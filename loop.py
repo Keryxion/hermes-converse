@@ -364,8 +364,9 @@ TONE_NOTES = {
     "error": ((262, 70), (0, 70), (262, 70)),
     "approval": ((523, 70), (659, 70), (784, 70)),
 }
-TONE_GAIN = 0.1  # quiet next to speech: information, not an event
-TONE_RAMP_MS = 8  # ramped edges, so a note does not click
+# The level and edges arya-ios played these tones with.
+TONE_GAIN = 0.125  # quiet next to speech: information, not an event
+TONE_ATTACK_MS, TONE_RELEASE_MS = 8, 12  # ramped edges, so a note does not click
 
 
 class Tone(Aside):
@@ -387,11 +388,11 @@ def tone_pcm(name: str, rate: int) -> bytes:
     from array import array
 
     out = array("h")
-    ramp = max(1, rate * TONE_RAMP_MS // 1000)
+    attack, release = rate * TONE_ATTACK_MS / 1000, rate * TONE_RELEASE_MS / 1000
     for hz, ms in TONE_NOTES[name]:
         n = rate * ms // 1000
         for i in range(n):
-            edge = min(1.0, min(i, n - 1 - i) / ramp)
+            edge = min(1.0, i / attack, (n - 1 - i) / release)
             out.append(round(32767 * TONE_GAIN * edge * math.sin(2 * math.pi * hz * i / rate)) if hz else 0)
     return out.tobytes()
 
@@ -1903,15 +1904,14 @@ async def _produce_speech(d: _Driver, turn: _Turn) -> None:
     """The reply's TTS task: synthesize each sentence as it lands, so playback overlaps generation.
     Each chunk is a short blocking call; no thread is held between chunks."""
     spoken_chars = 0
+    # A tone waits for the speech after it and goes out joined to its first audio. Sent on its own
+    # it would play out while that speech is still being synthesized: a gap, and a client underrun.
+    tone = b""
     try:
         async for sentence in _reply_sentences(d, turn):
             epoch = turn.speech_epoch  # a reconnect after this replays the sentence instead
             if isinstance(sentence, Tone):
-                if turn.tts_stop.is_set():
-                    return
-                if not d.gone():
-                    turn.pcm_q.put_nowait(_Piece(epoch, None))
-                    turn.pcm_q.put_nowait(tone_pcm(sentence.name, d.synth.sample_rate))
+                tone += tone_pcm(sentence.name, d.synth.sample_rate)
                 continue
             cleaned = speech.strip_markdown(sentence)
             if not cleaned or cleaned.strip().upper() == "[SILENT]":  # Hermes's say-nothing reply
@@ -1937,11 +1937,15 @@ async def _produce_speech(d: _Driver, turn: _Turn) -> None:
                     if d.gone() or epoch != turn.speech_epoch:
                         break
                     turn.ns.setdefault("first_pcm", time.time_ns())
-                    turn.pcm_q.put_nowait(chunk)
+                    turn.pcm_q.put_nowait(tone + chunk)
+                    tone = b""
             spoken_chars += len(cleaned)
             if spoken_chars >= d.max_tts_chars:
                 logger.debug("converse: TTS output capped at %d chars", spoken_chars)
                 break
+        if tone and not turn.tts_stop.is_set() and not d.gone():  # no speech followed it
+            turn.pcm_q.put_nowait(_Piece(turn.speech_epoch, None))
+            turn.pcm_q.put_nowait(tone)
     except Exception as exc:
         logger.warning("converse synthesis failed: %s", exc, exc_info=True)
     finally:

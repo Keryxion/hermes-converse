@@ -762,6 +762,13 @@ def test_tone_notes_are_ramped_and_timed():
     assert max(error) <= round(32767 * TONE_GAIN)
 
 
+def test_a_tone_is_sent_joined_to_the_speech_after_it():
+    # Alone, it would play out before the speech after it is synthesized: a client underrun.
+    sent = _run_driver(_FakeConverseSession(["delete it"]), [], [[Tone("approval"), "Delete the file?"]])
+    assert [f[1] for f in sent if isinstance(f, tuple) and f[0] == "bytes"] == [
+        tone_pcm("approval", 24000) + b"Delete the file?"]
+
+
 def test_driver_barge_in_interrupts_the_in_flight_turn():
     class _BargingSession(_FakeConverseSession):
         def set_playing(self, value, *, tts_stop=None):
