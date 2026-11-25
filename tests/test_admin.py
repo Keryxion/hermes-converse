@@ -60,10 +60,10 @@ async def test_devices_are_listed_and_every_change_reaches_every_admin(monkeypat
         for ws in (first, second):
             assert await _json(ws) == {"type": "device", **_entry("Den")}
 
-        await kitchen.send_json({"type": "mute", "on": True})
-        await kitchen.send_json({"type": "volume", "level": 0.4})
-        await kitchen.send_json({"type": "volume", "level": 4})  # out of range: ignored
-        await kitchen.send_json({"type": "volume", "level": 0.4})  # unchanged: no frame
+        await kitchen.send_json({"type": "controls", "muted": True})  # a device with no volume
+        await kitchen.send_json({"type": "controls", "muted": True, "volume": 0.4})
+        await kitchen.send_json({"type": "controls", "muted": True, "volume": 4})  # out of range: ignored
+        await kitchen.send_json({"type": "controls", "muted": True, "volume": 0.4})  # unchanged: no frame
         for ws in (first, second):
             assert await _json(ws) == {"type": "device", **_entry("Kitchen", muted=True)}
             assert await _json(ws) == {"type": "device", **_entry("Kitchen", muted=True, volume=0.4)}
@@ -139,11 +139,9 @@ async def test_set_sends_the_frames_and_answers_with_the_devices_report(monkeypa
         admin, _ = await _admin(client)
         await admin.send_json({"type": "set", "request_id": "1", "device_name": "Kitchen",
                                "muted": True, "volume": 0.4})
-        assert json.loads((await _recv(kitchen)).data) == {"type": "mute", "on": True}
-        assert json.loads((await _recv(kitchen)).data) == {"type": "volume", "level": 0.4}
-        await kitchen.send_json({"type": "mute", "on": True})
-        await kitchen.send_json({"type": "volume", "level": 0.35})  # the device decides
-        frames = [await _json(admin) for _ in range(3)]
+        assert json.loads((await _recv(kitchen)).data) == {"type": "controls", "muted": True, "volume": 0.4}
+        await kitchen.send_json({"type": "controls", "muted": True, "volume": 0.35})  # the device decides
+        frames = [await _json(admin) for _ in range(2)]
         assert {"type": "result", "request_id": "1", "device": _entry("Kitchen", muted=True, volume=0.35)} in frames
         assert {"type": "device", **_entry("Kitchen", muted=True, volume=0.35)} in frames
 

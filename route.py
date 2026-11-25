@@ -32,9 +32,9 @@ Protocol:
            ``{"type":"wake","claim_id":"...","wake_word":"...", ...}`` requests an
            advisory wake recommendation; see ``specs/client.md``. Accepted interruptions are captured as continuations.
            ``{"type":"wake_word_set","phrase":"...","status":"ok"}`` the result of a wake-word switch.
-           ``{"type":"mute","on":...}`` / ``{"type":"volume","level":...}`` the device's mute and volume.
+           ``{"type":"controls","muted":...,"volume":...}`` the device's mute and volume.
   server → ``ready`` (rates, ``session_id``, ``wake_word``, clock-skew timestamps), ``set_wake_word``,
-           ``mute`` / ``volume`` (set the device's),
+           ``controls`` (set the device's mute and volume),
            ``transcript``, ``thinking``,
            ``speaking`` + binary PCM, ``interrupted``, ``turn_done`` (``next_action``), ``quiet``, ``error``.
 """
@@ -718,7 +718,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                         gateway = getattr(hub, "gateway", None)
                         if gateway is not None:
                             gateway.approvals.respond(attachment, frame)
-                    if frame.get("type") in ("mute", "volume"):
+                    if frame.get("type") == "controls":
                         report(frame)  # the device's own mute and volume, for admin connections
                     if frame.get("type") == "cancel":
                         session.cancel(frame.get("turn_id"))

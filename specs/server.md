@@ -628,21 +628,21 @@ every attached device but the caller's and returns their count.
 
 ## Mute and volume
 
-A device owns its microphone mute and playback volume and reports them in `mute`
-and `volume` frames (client spec, section 12). Keep the last report of each for
+A device owns its microphone mute and playback volume and reports them in a
+`controls` frame (client spec, section 12). Keep the last report of each for
 as long as the device stays attached, in memory only. Admin connections are
 given them as `muted` and `volume`; each is `null` for a device that is not
 attached or has not reported it.
 
-For a `set` request, send the device a `mute` or `volume` frame for each field
-given, wait for its report of each or 2 s, whichever comes first, and answer
+For a `set` request, send the device one `controls` frame with the fields
+given, wait for its `controls` report or 2 s, whichever comes first, and answer
 with the device's entry.
 
 The `mute` tool and `next_action: "mute"` are unchanged: the agent can mute a
 device and cannot unmute one.
 
 Verify: a device's reports reach admin connections and become `null` when it
-detaches; setting each sends its frame and answers with the device's report; a
+detaches; a `set` sends one `controls` frame and answers with the device's report; a
 device that does not answer is answered after 2 s with its last report; an
 unattached device gives `not_attached` and an unknown one `unknown_device`; a
 device that sends no `volume` lists `null`.

@@ -194,7 +194,7 @@ All are JSON text frames:
 | `{"type": "commands"}` | Ask which commands the server runs; see "Commands" below. |
 | `{"type": "command", "name": "new"}` | Run a Hermes command for this device's conversation, such as starting a fresh one; see "Commands" below. |
 | `{"type": "say", "text": "..."}` | Speaks the given text (trimmed, at most 400 characters) as a reply of its own: `thinking`, `speaking` + PCM, then `turn_done` with `next_action: "standby"`. No agent turn runs, nothing is added to the conversation, and no `transcript` frame is sent for it. For fixed device prompts such as a spoken help reminder. Empty or non-string text is ignored. |
-| `{"type": "mute", "on": true}`, `{"type": "volume", "level": 0.4}` | The device's microphone mute and playback volume, after `ready` and whenever either changes; see section 12. |
+| `{"type": "controls", "muted": false, "volume": 0.4}` | The device's microphone mute and playback volume, after `ready` and whenever either changes; see section 12. |
 | `{"type": "approval_response", "approval_id": "...", "choice": "once"}` | Answer a pending approval from a screen with one of its `choices`; see "Approvals" in section 4. |
 
 Every control frame has a `type`. To end the session, close the socket: the
@@ -358,7 +358,7 @@ Countdowns are unaffected by a command.
 | `error` | the turn failed (spoken-safe text) |
 | `client_diagnostics` | Request a fresh version, build, and diagnostic snapshot; answer on this socket with the same `request_id`, as below. |
 | `countdown`, `countdown_cancel` | Start, extend, or cancel a countdown that ends with a tone (section 10). |
-| `mute`, `volume` | Set the device's microphone mute or playback volume, then report it (section 12). |
+| `controls` | Set the device's microphone mute, its playback volume, or both, then report them (section 12). |
 | `set_wake_word` | Switch to this wake phrase and its models, then answer with `wake_word_set` (section 8). |
 
 The `current_model` frame reports the session selection (section 11). Turn liveness is the repeated `thinking` frame; there is no
@@ -760,7 +760,7 @@ the one to move to:
 |---|---|---|
 | Listening | An activation is open; PCM streams to the server. | `quiet` (section 5), `standby`, `mute`, or the device's own controls. |
 | Standby | No PCM, except to let the person interrupt a reply, as below. The wake word or Talk opens an activation. | The wake word, Talk, or `listen`. |
-| Muted | No PCM, and no wake word. Talk does nothing. | The person, with the device's mute control, or a `mute` frame with `on: false` (section 12). Unmuting always lands in standby. |
+| Muted | No PCM, and no wake word. Talk does nothing. | The person, with the device's mute control, or a `controls` frame with `muted: false` (section 12). Unmuting always lands in standby. |
 
 A device in standby streams while a reply plays, for interruption only
 (section 9), and stops when the ending is applied. The exception is a turn made
@@ -788,8 +788,8 @@ off. Apply every other row once the turn's audio has drained or been discarded.
 Then report the state you are in.
 
 Muting is the same whoever asks: the device's own control, `mute` on a
-`turn_done`, or a `mute` frame (section 12). It ends the exchange. Nothing a
-turn sends unmutes; only a `mute` frame with `on: false` does. `cancel` alone leaves the
+`turn_done`, or a `controls` frame (section 12). It ends the exchange. Nothing a
+turn sends unmutes; only a `controls` frame with `muted: false` does. `cancel` alone leaves the
 microphone as it is, including a `cancel` the device sends for a timeout of its
 own. A Stop control the person presses is `cancel` and then standby; only a
 control the person uses may add that. A control that only stops listening, like
@@ -1469,30 +1469,34 @@ The device owns its microphone mute and its playback volume. It reports both to
 the server, and the server can set either, for example when Home Assistant asks
 it to over an admin connection ([admin spec](admin.md)).
 
-Report each after every `ready`, and again whenever it changes, whatever
+Report both after every `ready`, and again whenever either changes, whatever
 changed it:
 
 ```json
-{"type": "mute", "on": false}
-{"type": "volume", "level": 0.4}
+{"type": "controls", "muted": false, "volume": 0.4}
 ```
 
 | field | what it is |
 |---|---|
-| `on` | Boolean: whether the device is muted (section 4). |
-| `level` | Number from 0 to 1: the volume of everything the device plays, which is replies, tones, and countdown sounds, on the scale the device's own volume controls use. 0 is silent and 1 is its loudest. |
+| `muted` | Boolean: whether the device is muted (section 4). |
+| `volume` | Number from 0 to 1: the volume of everything the device plays, which is replies, tones, and countdown sounds, on the scale the device's own volume controls use. 0 is silent and 1 is its loudest. |
 
-The server sets one by sending the same frame. Apply it, then send your own
-frame with the value you now have, even when nothing changed. A request the
-device cannot apply, such as unmuting past a hardware switch, is answered with
-the unchanged value.
+The server sets them by sending the same frame with only the fields to change:
 
-- `mute` with `on: true` mutes exactly as the device's own control does.
-  `on: false` unmutes into standby.
+```json
+{"type": "controls", "muted": true}
+```
+
+Apply it, then send your own frame with the values you now have, even when
+nothing changed. A request the device cannot apply, such as unmuting past a
+hardware switch, is answered with the unchanged value.
+
+- `muted: true` mutes exactly as the device's own control does. `muted: false`
+  unmutes into standby.
 - `volume` takes effect at once, including on audio that is playing.
 - Neither plays a tone or changes a turn.
-- Ignore a `mute` whose `on` is not a Boolean and a `volume` whose `level` is
-  not a number from 0 to 1.
+- Ignore a `muted` that is not a Boolean and a `volume` that is not a number
+  from 0 to 1; apply the other field.
 
-A device with no volume of its own to set sends no `volume` frame and ignores
-the server's.
+A device with no volume of its own to set sends no `volume` and ignores the
+server's.

@@ -40,16 +40,17 @@ class _Attached:
     ws: Any
     muted: Optional[bool] = None
     volume: Optional[float] = None
-    waiters: dict[str, list[asyncio.Future]] = field(default_factory=lambda: {"muted": [], "volume": []})
+    waiters: list[asyncio.Future] = field(default_factory=list)  # `set` requests awaiting its next report
 
 
-def _report(frame: dict) -> Optional[tuple[str, Any]]:
-    """A device's ``mute`` or ``volume`` frame as (field, value); None when it is malformed."""
-    if frame.get("type") == "mute" and isinstance(frame.get("on"), bool):
-        return "muted", frame["on"]
-    if frame.get("type") == "volume" and _is_level(frame.get("level")):
-        return "volume", frame["level"]
-    return None
+def _report(frame: dict) -> dict:
+    """The valid fields of a device's ``controls`` frame."""
+    report = {}
+    if isinstance(frame.get("muted"), bool):
+        report["muted"] = frame["muted"]
+    if _is_level(frame.get("volume")):
+        report["volume"] = frame["volume"]
+    return report
 
 
 def _is_level(value: Any) -> bool:
@@ -138,29 +139,29 @@ class Admin:
         entry = self._attached.get(device_name)
         if entry is not None and entry.attachment is attachment:
             del self._attached[device_name]
-            self._settle(entry, "muted", "volume")
+            self._settle(entry)
             self._record(device_name)
             self._changed(device_name)
 
     def reported(self, device_name: str, attachment: Any, frame: dict) -> None:
-        """A ``mute`` or ``volume`` frame from the device."""
-        entry, report = self._attached.get(device_name), _report(frame)
-        if entry is None or entry.attachment is not attachment or report is None:
+        """A ``controls`` frame from the device: its mute and volume as they now are."""
+        entry = self._attached.get(device_name)
+        if entry is None or entry.attachment is not attachment:
             return
-        key, value = report
-        changed = getattr(entry, key) != value
-        setattr(entry, key, value)
-        self._settle(entry, key)
+        report = _report(frame)
+        changed = any(getattr(entry, key) != value for key, value in report.items())
+        for key, value in report.items():
+            setattr(entry, key, value)
+        self._settle(entry)
         if changed:
             self._changed(device_name)
 
     @staticmethod
-    def _settle(entry: _Attached, *keys: str) -> None:
-        for key in keys:
-            for waiter in entry.waiters[key]:
-                if not waiter.done():
-                    waiter.set_result(None)
-            entry.waiters[key].clear()
+    def _settle(entry: _Attached) -> None:
+        for waiter in entry.waiters:
+            if not waiter.done():
+                waiter.set_result(None)
+        entry.waiters.clear()
 
     # ── frames to admin connections ──
 
@@ -253,15 +254,11 @@ class Admin:
         if entry is None:
             await self._load()
             return {"error": "not_attached" if self._listed(name) else "unknown_device"}
-        waiters = []
-        for key, value in wanted.items():
-            waiter = asyncio.get_running_loop().create_future()
-            entry.waiters[key].append(waiter)
-            waiters.append(waiter)
-            with contextlib.suppress(Exception):  # a socket that just closed: the device detaches
-                await entry.ws.send_json({"type": "mute", "on": value} if key == "muted"
-                                         else {"type": "volume", "level": value})
-        await asyncio.wait(waiters, timeout=SET_TIMEOUT)
-        for key in wanted:
-            entry.waiters[key] = [waiter for waiter in entry.waiters[key] if waiter not in waiters]
+        waiter = asyncio.get_running_loop().create_future()
+        entry.waiters.append(waiter)
+        with contextlib.suppress(Exception):  # a socket that just closed: the device detaches
+            await entry.ws.send_json({"type": "controls", **wanted})
+        await asyncio.wait([waiter], timeout=SET_TIMEOUT)
+        if waiter in entry.waiters:
+            entry.waiters.remove(waiter)
         return {"device": self._device(name)}
