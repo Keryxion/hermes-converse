@@ -137,24 +137,25 @@ plugin such as Cadence and play as ordinary server-started turns.
 
 ### Announcements from Home Assistant
 
-Home Assistant, or anything else that can POST, can speak a message on named devices with no
-agent turn. `POST /v1/audio/announce` takes the same API key as the voice route. In Home
-Assistant's `configuration.yaml`:
+The Arya Devices integration for Home Assistant speaks a message on Arya devices, after a chime
+and with no agent turn. Add it under Settings → Devices & services and enter the Hermes server's
+address and API key. There is nothing to write in `configuration.yaml`.
+
+- Each Arya device becomes a Home Assistant device, named by its `device_name`, with one notify
+  entity: `Kitchen` has `notify.kitchen_announce`. A device that connects later appears by itself.
+- The entity is unavailable while its device is not attached.
+- `notify.arya_announce` announces on every attached device at once.
 
 ```yaml
-rest_command:
-  arya_announce:
-    url: http://<hermes-host>:8642/v1/audio/announce
-    method: post
-    content_type: application/json
-    headers:
-      Authorization: !secret arya_authorization  # "Bearer <API_SERVER_KEY>"
-    payload: '{"message": {{ message | tojson }}{% if target is defined %}, "target": {{ target | tojson }}{% endif %}}'
+action: notify.send_message
+target:
+  entity_id: notify.kitchen_announce
+data:
+  message: The laundry is done.
 ```
 
-An automation then calls `rest_command.arya_announce` with `message` and, optionally, `target`:
-a `device_name` (`Kitchen`) or a list of them. Without `target`, every attached device speaks it,
-after a chime. See [the server spec](specs/server.md#announcements).
+The integration uses two routes on the API server; see
+[the server spec](specs/server.md#announcements).
 
 ## Editing voice instructions
 

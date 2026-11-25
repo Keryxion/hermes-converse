@@ -557,8 +557,23 @@ platform is not hosted, the connection is refused with `conversation_unavailable
 ## Announcements
 
 An announcement is a message spoken on one or more devices without an agent
-turn, such as a Home Assistant notification. The API server has one route for
-it, next to the WebSocket route and behind the same API key:
+turn, such as a Home Assistant notification. The API server has two routes for
+it, next to the WebSocket route and behind the same API key. The Arya Devices
+integration for Home Assistant is their caller: it lists the devices to create
+an entity for each, and announces when an entity is sent a message.
+
+```
+GET /v1/audio/devices
+Authorization: Bearer <API_SERVER_KEY>
+```
+
+```json
+{"devices": [{"device_name": "Kitchen", "attached": true},
+             {"device_name": "Den Echo", "attached": false}]}
+```
+
+Every device that has ever connected is listed, by `device_name`. `attached` is
+whether it has a connection now. A wrong or missing key is refused with 401.
 
 ```
 POST /v1/audio/announce
@@ -596,7 +611,8 @@ An announcement is not a Hermes message. It runs no turn, is not added to any
 conversation's history, gets no `transcript` frame, and is not replayed. A person
 who answers it starts an ordinary turn that does not know what was announced.
 
-Verify: one name speaks on that device only; an array, and an omitted `target`,
+Verify: the device list names every known device and whether it is attached;
+one name speaks on that device only; an array, and an omitted `target`,
 speak on each attached device; an unattached or unknown device is listed in
 `skipped` and the rest still speak; the tone frame comes immediately before
 `speaking`; an announcement during a reply plays after it, tone included; no
