@@ -1470,7 +1470,8 @@ Model and provider can be null when their identity is unknown.
 ## 12. Mute and volume
 
 The device owns its microphone mute and its playback volume. It reports both to
-the server, and the server can set either, for example from Home Assistant.
+the server, and the server can set either, for example when Home Assistant asks
+it to over an admin connection ([admin spec](admin.md)).
 
 Report each after every `ready`, and again whenever it changes, whatever
 changed it:

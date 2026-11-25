@@ -554,114 +554,71 @@ earlier turn has not settled.
 At startup a socket waits up to 30 s for the platform to connect. When the
 platform is not hosted, the connection is refused with `conversation_unavailable`.
 
+## Admin connections
+
+`GET /v1/audio/admin` is a WebSocket for software that manages the devices, such
+as the Arya Devices integration for Home Assistant. Its frames are in
+[the admin spec](admin.md). Check the API key from the `Authorization` header
+before accepting the socket, and refuse a bad one with 401.
+
+Send `devices` first, then a `device` frame to every admin connection whenever a
+device's entry changes: it attaches or detaches, a new device is reserved, or
+its reported mute or volume changes. The list is every row of `devices.db`.
+Handle each request in its own task, so a `set` waiting on a device does not
+hold up the frames behind it.
+
+Verify: a wrong key gets 401 and no socket; the first frame lists every known
+device; attaching, detaching, and a first connection each send a `device` frame
+to every admin connection; an unknown frame type with a `request_id` gets
+`bad_request`; a frame with no `request_id` gets nothing.
+
 ## Announcements
 
 An announcement is a message spoken on one or more devices without an agent
-turn, such as a Home Assistant notification. The API server has two routes for
-it, next to the WebSocket route and behind the same API key. The Arya Devices
-integration for Home Assistant is their caller: it lists the devices to create
-an entity for each, and announces when an entity is sent a message.
+turn, such as a Home Assistant notification. It arrives as an `announce` request
+on an admin connection.
 
-```
-GET /v1/audio/devices
-Authorization: Bearer <API_SERVER_KEY>
-```
-
-```json
-{"devices": [{"device_name": "Kitchen", "attached": true, "muted": false, "volume": 40},
-             {"device_name": "Den Echo", "attached": false, "muted": null, "volume": null}]}
-```
-
-Every device that has ever connected is listed, by `device_name`. `attached` is
-whether it has a connection now. `muted` and `volume` are described under Mute
-and volume. A wrong or missing key is refused with 401.
-
-```
-POST /v1/audio/announce
-Authorization: Bearer <API_SERVER_KEY>
-Content-Type: application/json
-
-{"message": "The laundry is done.", "target": ["Kitchen", "Den Echo"]}
-```
-
-| Field | What it does |
-|---|---|
-| `message` | The text to speak. Required; a non-empty string after trimming. |
-| `target` | A `device_name`, or an array of them. Omitted, it is every attached device. |
-
-A name is normalized as `device_name` is on `start` and must then match exactly.
-A device is announced to on whichever of its conversations is attached.
-
-```json
-{"announced": ["Kitchen"], "skipped": ["Den Echo"]}
-```
-
-| Status | Meaning |
-|---|---|
-| 200 | The request was understood. `announced` lists the devices that accepted the announcement; `skipped` lists named devices that are not attached or are unknown. |
-| 400 | The body is not JSON, `message` is missing or empty, or `target` is not a string or an array of strings. |
-| 401 | The key is missing or wrong. |
+A name in `target` is normalized as `device_name` is on `start` and must then
+match exactly. A device is announced to on whichever of its conversations is
+attached.
 
 On each device, send `{"type":"tone","tone":"announcement"}` and then speak the
 message as prepared speech. The tone and the speech stay together: when the
 device is capturing or replying, both wait for the current exchange, and when
 60 s pass first, neither is sent. Nothing is queued for a later connection, and
-no wake election runs.
+no wake election runs. Answer the request once each device has accepted or been
+skipped, without waiting for playback.
 
 An announcement is not a Hermes message. It runs no turn, is not added to any
 conversation's history, gets no `transcript` frame, and is not replayed. A person
 who answers it starts an ordinary turn that does not know what was announced.
 
-Verify: the device list names every known device and whether it is attached;
-one name speaks on that device only; an array, and an omitted `target`,
+Verify: one name speaks on that device only; an array, and an omitted `target`,
 speak on each attached device; an unattached or unknown device is listed in
 `skipped` and the rest still speak; the tone frame comes immediately before
 `speaking`; an announcement during a reply plays after it, tone included; no
-`transcript` is sent and nothing is replayed; a wrong key is refused with 401
-and nothing is spoken.
+`transcript` is sent and nothing is replayed.
 
 ## Mute and volume
 
 A device owns its microphone mute and playback volume and reports them in `mute`
 and `volume` frames (client spec, section 12). Keep the last report of each for
-as long as the device stays attached, in memory only. The device list gives them
-as `muted` and `volume`; each is `null` for a device that is not attached or has
-not reported it.
+as long as the device stays attached, in memory only. Admin connections are
+given them as `muted` and `volume`; each is `null` for a device that is not
+attached or has not reported it.
 
-One route sets them, behind the same API key:
-
-```
-POST /v1/audio/devices
-Authorization: Bearer <API_SERVER_KEY>
-Content-Type: application/json
-
-{"device_name": "Kitchen", "muted": true, "volume": 40}
-```
-
-`muted` is a Boolean and `volume` an integer from 0 to 100; send either or both.
-Send the device a `mute` or `volume` frame for each, wait for its report of each
-or 2 s, whichever comes first, and answer with the device as the list gives it:
-
-```json
-{"device_name": "Kitchen", "attached": true, "muted": true, "volume": 40}
-```
-
-| Status | Meaning |
-|---|---|
-| 200 | The frames were sent. The body holds what the device last reported, which is unchanged when it could not apply a request or did not answer. |
-| 400 | The body is not JSON, `device_name` is missing, neither `muted` nor `volume` is given, or one has the wrong type or range. |
-| 401 | The key is missing or wrong. |
-| 404 | No device has that name. |
-| 409 | The device is not attached. Nothing is kept for later. |
+For a `set` request, send the device a `mute` or `volume` frame for each field
+given, wait for its report of each or 2 s, whichever comes first, and answer
+with the device's entry.
 
 The `mute` tool and `next_action: "mute"` are unchanged: the agent can mute a
 device and cannot unmute one.
 
-Verify: a device's reports appear in the list and become `null` when it
+Verify: a device's reports reach admin connections and become `null` when it
 detaches; setting each sends its frame and answers with the device's report; a
 device that does not answer is answered after 2 s with its last report; an
-unattached device gives 409 and an unknown one 404; a device that sends no
-`volume` lists `null`.
+unattached device gives `not_attached` and an unknown one `unknown_device`; a
+device that sends no `volume` lists `null`.
 
 ## Commands from a device
 

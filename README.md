@@ -156,8 +156,8 @@ data:
   message: The laundry is done.
 ```
 
-The integration uses three routes on the API server; see
-[the server spec](specs/server.md#announcements).
+The integration holds one WebSocket to the server, `GET /v1/audio/admin`, so a change made on a
+device shows in Home Assistant at once; see [the admin spec](specs/admin.md).
 
 ## Editing voice instructions
 
