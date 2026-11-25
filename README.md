@@ -143,7 +143,8 @@ address and API key. There is nothing to write in `configuration.yaml`.
 
 - Each Arya device becomes a Home Assistant device, named by its `device_name`, with one notify
   entity: `Kitchen` has `notify.kitchen_announce`. A device that connects later appears by itself.
-- The entity is unavailable while its device is not attached.
+- `binary_sensor.kitchen_attached` is on while the device is attached. The device's other entities
+  are unavailable while it is not.
 - `notify.arya_announce` announces on every attached device at once.
 - Each device also has `switch.kitchen_mute` for its microphone and `number.kitchen_volume`.
 
