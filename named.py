@@ -6,6 +6,7 @@ never persisted.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import sqlite3
 import threading
 import unicodedata
@@ -54,6 +55,14 @@ class DeviceConversation:
         return 'voice_' + uuid.uuid5(uuid.UUID(self.recipient_id), self.assistant_name).hex
 
 
+def _settings(raw) -> dict:
+    try:
+        value = json.loads(raw or '{}')
+    except ValueError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
 class DeviceStore:
     """Profile-scoped device identities; DB calls run on worker threads."""
     def __init__(self, path=None):
@@ -76,6 +85,9 @@ class DeviceStore:
                     title TEXT NOT NULL UNIQUE,
                     PRIMARY KEY(recipient_id, assistant_name));
             ''')
+            if 'settings' not in [row[1] for row in self._db.execute('PRAGMA table_info(devices)')]:
+                with self._db:
+                    self._db.execute("ALTER TABLE devices ADD COLUMN settings TEXT NOT NULL DEFAULT '{}'")
         return self._db
 
     def reserve(self, assistant_name: str, device_name: str) -> DeviceConversation:
@@ -94,10 +106,21 @@ class DeviceStore:
                     raise NamedError()
             return DeviceConversation(recipient, device_name, assistant_name)
 
-    def names(self) -> list[str]:
-        """Every device that has ever connected."""
+    def settings(self) -> dict[str, dict]:
+        """Every device that has ever connected, with its settings."""
         with self._lock:
-            return [row[0] for row in self._connection().execute('SELECT device_name FROM devices')]
+            return {name: _settings(raw) for name, raw in
+                    self._connection().execute('SELECT device_name, settings FROM devices')}
+
+    def update_settings(self, device_name: str, **values) -> None:
+        """Set these keys of the device's settings and keep every other."""
+        with self._lock:
+            db = self._connection()
+            with db:
+                row = db.execute('SELECT settings FROM devices WHERE device_name=?', (device_name,)).fetchone()
+                if row is not None:
+                    db.execute('UPDATE devices SET settings=? WHERE device_name=?',
+                               (json.dumps({**_settings(row[0]), **values}), device_name))
 
     def close(self):
         with self._lock:

@@ -56,7 +56,7 @@ from aiohttp import ClientError, ClientSession, ClientTimeout, web
 
 from . import command_catalog
 from .admin import ROUTE_PATH as ADMIN_ROUTE_PATH
-from .admin import Admin
+from .admin import Admin, client_address
 from .approvals import phrase, summary
 
 from .arbitrate import Arbitrator
@@ -260,9 +260,9 @@ class ConverseRoute:
                 return ws
             conn.set(device_name=names[1])
             return await self._named_handle(ws, frame, names, api_key, http, base_url,
-                                            settings, server_recv_unix_ms)
+                                            settings, server_recv_unix_ms, client_address(request))
 
-    async def _named_handle(self, ws, frame, names, api_key, http, base_url, settings, recv_ms):
+    async def _named_handle(self, ws, frame, names, api_key, http, base_url, settings, recv_ms, address=None):
         connection = _NamedConnection()
         device = None
         attachment = None
@@ -304,7 +304,7 @@ class ConverseRoute:
                                   named=(device, connection), transcripts=frame.get("transcripts") is True,
                                   models=frame.get("models") is True, turns=turns,
                                   wake_word_format=frame.get("wake_word_format"),
-                                  after=frame.get("after"), audio=audio)
+                                  after=frame.get("after"), audio=audio, address=address)
         except NamedError as exc:
             await _fail(ws, exc.error, exc.code)
         except (ClientError, TimeoutError, ValueError):
@@ -331,7 +331,7 @@ class ConverseRoute:
     async def _connected(self, ws, session, api_key, http, base_url, synth, cap, name,
                          quiet_interval, settings, attachment, server_recv_unix_ms, input_rate, output_rate,
                          *, named, transcripts=False, models=False, turns=None, after=None, audio=None,
-                         wake_word_format=None):
+                         wake_word_format=None, address=None):
         client = turns
         device, connection = named
         adopted = self.hub.detached.pop(attachment.conversation_id, None)
@@ -417,7 +417,7 @@ class ConverseRoute:
         # carry the session id, so this is what attributes them to a device.
         logger.info("converse session: session=%s device_id=%s name=%r arbitrated=%s",
                     getattr(session, "session_id", None), device_id, name, arbitrator is not None)
-        self.admin.attach(device_name, attachment, ws)
+        self.admin.attach(device_name, attachment, ws, address)
         await _serve(ws, session=session, synth=synth, cap=cap, client=client, settings=settings,
                      report=lambda frame: self.admin.reported(device_name, attachment, frame),
                      name=name, guidance=guidance, quiet_interval=quiet_interval, arbitrator=arbitrator,

@@ -34,8 +34,8 @@ async def _json(ws):
     return await ws.receive_json(timeout=5)
 
 
-def _entry(name, attached=True, muted=None, volume=None):
-    return {"device_name": name, "attached": attached, "muted": muted, "volume": volume}
+def _entry(name, attached=True, muted=None, volume=None, address="127.0.0.1"):
+    return {"device_name": name, "attached": attached, "muted": muted, "volume": volume, "address": address}
 
 
 @pytest.mark.asyncio
@@ -181,3 +181,33 @@ async def test_the_announce_tool_speaks_on_every_device_but_the_callers(monkeypa
             await _recv(kitchen, 0.3)
         await _end(kitchen)
         await _end(den)
+
+
+@pytest.mark.asyncio
+async def test_the_address_is_the_forwarded_one_and_is_kept_while_the_device_is_away(monkeypatch):
+    _patch_speech(monkeypatch, _FakeStreamer([b"\x01\x02"]))
+    harness = Harness(FakeHermes(API_KEY))
+    async with harness as client:
+        ws = await client.ws_connect("/v1/audio/converse", protocols=(VOICE_PROTOCOL, _key_protocol()),
+                                     headers={"X-Forwarded-For": "192.168.1.52, 10.0.0.1"})
+        await ws.send_str(_start_msg(device_name="Kitchen"))
+        assert json.loads((await _recv(ws)).data)["type"] == "ready"
+        admin, devices = await _admin(client)
+        assert devices == [_entry("Kitchen", address="192.168.1.52")]
+        await _end(ws)
+        assert await _json(admin) == {"type": "device", **_entry("Kitchen", attached=False, address="192.168.1.52")}
+        # It is stored, not only remembered: a server that restarted still knows it.
+        await asyncio.gather(*harness.route.admin._tasks)
+        harness.route.admin._addresses.clear()
+        _, devices = await _admin(client)
+        assert devices == [_entry("Kitchen", attached=False, address="192.168.1.52")]
+        stored = harness.route._devices.settings()["Kitchen"]
+        assert stored["address"] == "192.168.1.52" and stored["last_attached"] > 0
+
+
+def test_a_forwarded_address_that_is_not_an_ip_falls_back_to_the_peer():
+    from types import SimpleNamespace
+
+    request = SimpleNamespace(headers={"X-Forwarded-For": "<script>"}, remote="10.0.0.7")
+    assert admin_module.client_address(request) == "10.0.0.7"
+    assert admin_module.client_address(SimpleNamespace(headers={}, remote=None)) is None

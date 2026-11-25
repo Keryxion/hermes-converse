@@ -9,7 +9,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import ipaddress
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
@@ -52,24 +54,44 @@ def _is_level(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 100
 
 
+def client_address(request: web.Request) -> Optional[str]:
+    """The IP address a connection came from: the first of ``X-Forwarded-For``, else the peer."""
+    for candidate in (request.headers.get("X-Forwarded-For", "").split(",")[0].strip(), request.remote):
+        with contextlib.suppress(ValueError):
+            return str(ipaddress.ip_address(candidate or ""))
+    return None
+
+
 class Admin:
     def __init__(self, devices: DeviceStore, hub: Any, base_url: Callable[[], str]) -> None:
         self._devices, self._hub, self._base_url = devices, hub, base_url
         self._attached: dict[str, _Attached] = {}  # device_name -> its voice connection
+        self._addresses: dict[str, Optional[str]] = {}  # device_name -> where it last connected from
         self._sockets: set[web.WebSocketResponse] = set()
         self._tasks: set[asyncio.Task] = set()
 
     # ── the voice route's side ──
 
-    def attach(self, device_name: str, attachment: Any, ws: Any) -> None:
+    def attach(self, device_name: str, attachment: Any, ws: Any, address: Optional[str]) -> None:
         self._attached[device_name] = _Attached(attachment, ws)
+        self._addresses[device_name] = address
+        self._record(device_name)
         self._changed(device_name)
+
+    def _record(self, device_name: str) -> None:
+        """Keep when the device was last attached, and from where, for while it is away."""
+        async def record() -> None:
+            with contextlib.suppress(Exception):  # the store closes at shutdown
+                await asyncio.to_thread(self._devices.update_settings, device_name, last_attached=time.time(),
+                                        address=self._addresses.get(device_name))
+        self._spawn(record())
 
     def detach(self, device_name: str, attachment: Any) -> None:
         entry = self._attached.get(device_name)
         if entry is not None and entry.attachment is attachment:
             del self._attached[device_name]
             self._settle(entry, "muted", "volume")
+            self._record(device_name)
             self._changed(device_name)
 
     def reported(self, device_name: str, attachment: Any, frame: dict) -> None:
@@ -97,7 +119,8 @@ class Admin:
     def _device(self, device_name: str) -> dict:
         entry = self._attached.get(device_name)
         return {"device_name": device_name, "attached": entry is not None,
-                "muted": entry.muted if entry else None, "volume": entry.volume if entry else None}
+                "muted": entry.muted if entry else None, "volume": entry.volume if entry else None,
+                "address": self._addresses.get(device_name)}
 
     def _changed(self, device_name: str) -> None:
         for ws in self._sockets:
@@ -125,7 +148,9 @@ class Admin:
                 raise web.HTTPUnauthorized()
         ws = web.WebSocketResponse(heartbeat=30.0)
         await ws.prepare(request)
-        names = await asyncio.to_thread(self._devices.names)
+        names = await asyncio.to_thread(self._devices.settings)
+        for name, settings in names.items():  # a device this process has not seen attach
+            self._addresses.setdefault(name, settings.get("address"))
         # No await between the list and joining the set: every later change follows it.
         self._send(ws, {"type": "devices",
                         "devices": [self._device(name) for name in sorted({*names, *self._attached})]})
@@ -181,7 +206,7 @@ class Admin:
         name = normalize_name(name)
         entry = self._attached.get(name)
         if entry is None:
-            known = name in await asyncio.to_thread(self._devices.names)
+            known = name in await asyncio.to_thread(self._devices.settings)
             return {"error": "not_attached" if known else "unknown_device"}
         waiters = []
         for key, value in wanted.items():
