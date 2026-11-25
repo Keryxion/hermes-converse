@@ -198,7 +198,7 @@ async def test_the_address_is_the_forwarded_one_and_is_kept_while_the_device_is_
         assert await _json(admin) == {"type": "device", **_entry("Kitchen", attached=False, address="192.168.1.52")}
         # It is stored, not only remembered: a server that restarted still knows it.
         await asyncio.gather(*harness.route.admin._tasks)
-        harness.route.admin._addresses.clear()
+        harness.route.admin._seen.clear()
         _, devices = await _admin(client)
         assert devices == [_entry("Kitchen", attached=False, address="192.168.1.52")]
         stored = harness.route._devices.settings()["Kitchen"]
@@ -211,3 +211,40 @@ def test_a_forwarded_address_that_is_not_an_ip_falls_back_to_the_peer():
     request = SimpleNamespace(headers={"X-Forwarded-For": "<script>"}, remote="10.0.0.7")
     assert admin_module.client_address(request) == "10.0.0.7"
     assert admin_module.client_address(SimpleNamespace(headers={}, remote=None)) is None
+
+
+@pytest.mark.asyncio
+async def test_a_device_unattached_for_30_days_is_unlisted_and_removed_with_its_conversations(monkeypatch):
+    import time
+
+    _patch_speech(monkeypatch, _FakeStreamer([b"\x01\x02"]))
+    harness = Harness(FakeHermes(API_KEY))
+    async with harness as client:
+        store, admin = harness.route._devices, harness.route.admin
+        kitchen = await _device(client, "Kitchen")
+        for name in ("Old", "Attic"):
+            await _end(await _device(client, name))
+        await asyncio.sleep(0.2)
+        await asyncio.gather(*admin._tasks)
+        long_ago = time.time() - 31 * 86400
+        store.update_settings("Old", last_attached=long_ago)
+        store.update_settings("Kitchen", last_attached=long_ago)  # attached: never removed
+        with store._lock:  # a row from before last_attached was recorded
+            store._connection().execute("INSERT INTO devices (device_name, recipient_id) VALUES ('Ancient', 'r')")
+            store._connection().commit()
+        admin._seen.clear()  # as after a restart
+
+        ws, devices = await _admin(client)
+        assert [d["device_name"] for d in devices] == ["Attic", "Kitchen"]
+        await ws.send_json({"type": "set", "request_id": "1", "device_name": "Old", "muted": True})
+        assert (await _json(ws))["error"] == "unknown_device"
+        await ws.send_json({"type": "set", "request_id": "2", "device_name": "Attic", "muted": True})
+        assert (await _json(ws))["error"] == "not_attached"
+
+        await admin.purge()
+        assert [d["device_name"] for d in (await _json(ws))["devices"]] == ["Attic", "Kitchen"]
+        assert sorted(store.settings()) == ["Ancient", "Attic", "Kitchen"]
+        with store._lock:
+            titles = [row[0] for row in store._connection().execute("SELECT title FROM conversations")]
+        assert sorted(titles) == ["Arya: Attic", "Arya: Kitchen"]
+        await _end(kitchen)

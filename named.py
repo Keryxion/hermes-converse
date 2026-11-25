@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import json
 import sqlite3
 import threading
+import time
 import unicodedata
 import uuid
 
@@ -63,6 +64,10 @@ def _settings(raw) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def _stale(last_attached, before: float) -> bool:
+    return isinstance(last_attached, (int, float)) and last_attached < before
+
+
 class DeviceStore:
     """Profile-scoped device identities; DB calls run on worker threads."""
     def __init__(self, path=None):
@@ -104,6 +109,8 @@ class DeviceStore:
                 if db.execute('SELECT 1 FROM conversations WHERE recipient_id=? AND assistant_name=?',
                               (recipient, assistant_name)).fetchone() is None:
                     raise NamedError()
+                # A device that is connecting is not stale: the hourly removal leaves it alone.
+                self._merge(db, device_name, last_attached=time.time())
             return DeviceConversation(recipient, device_name, assistant_name)
 
     def settings(self) -> dict[str, dict]:
@@ -117,10 +124,28 @@ class DeviceStore:
         with self._lock:
             db = self._connection()
             with db:
-                row = db.execute('SELECT settings FROM devices WHERE device_name=?', (device_name,)).fetchone()
-                if row is not None:
-                    db.execute('UPDATE devices SET settings=? WHERE device_name=?',
-                               (json.dumps({**_settings(row[0]), **values}), device_name))
+                self._merge(db, device_name, **values)
+
+    @staticmethod
+    def _merge(db, device_name: str, **values) -> None:
+        row = db.execute('SELECT settings FROM devices WHERE device_name=?', (device_name,)).fetchone()
+        if row is not None:
+            db.execute('UPDATE devices SET settings=? WHERE device_name=?',
+                       (json.dumps({**_settings(row[0]), **values}), device_name))
+
+    def remove_stale(self, before: float, attached: set[str]) -> list[str]:
+        """Remove every device last attached earlier than *before* and not in *attached*, with its
+        conversations; the names removed. A device with no ``last_attached`` stays."""
+        with self._lock:
+            db = self._connection()
+            with db:
+                stale = [(name, recipient) for name, recipient, raw in
+                         db.execute('SELECT device_name, recipient_id, settings FROM devices')
+                         if name not in attached and _stale(_settings(raw).get('last_attached'), before)]
+                for name, recipient in stale:
+                    db.execute('DELETE FROM conversations WHERE recipient_id=?', (recipient,))
+                    db.execute('DELETE FROM devices WHERE device_name=?', (name,))
+            return [name for name, _ in stale]
 
     def close(self):
         with self._lock:

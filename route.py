@@ -169,6 +169,8 @@ class ConverseRoute:
         app.router.add_get(ROUTE_PATH, self.handle)
         app.router.add_get(ADMIN_ROUTE_PATH, self.admin.handle)
         app.router.add_get(WAKE_ROUTE_PREFIX + "/{slug}/{file}", self.wake_file)
+        app.on_startup.append(self.admin.run_purge)
+        app.on_cleanup.append(self.admin.close)
         app.on_cleanup.append(_flush_tracing)
         async def close_devices(app):
             await asyncio.to_thread(self._devices.close)

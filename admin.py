@@ -23,6 +23,8 @@ from .named import DeviceStore, normalize_name
 logger = logging.getLogger(__name__)
 
 ROUTE_PATH = "/v1/audio/admin"
+LISTED_SECONDS = 30 * 86400  # a device unattached this long leaves the list and is removed
+PURGE_INTERVAL = 3600.0  # seconds between removals of devices that have ended
 SET_TIMEOUT = 2.0  # seconds a `set` waits for the device's report
 HTTP_TIMEOUT = ClientTimeout(total=30, connect=5)
 
@@ -66,25 +68,71 @@ class Admin:
     def __init__(self, devices: DeviceStore, hub: Any, base_url: Callable[[], str]) -> None:
         self._devices, self._hub, self._base_url = devices, hub, base_url
         self._attached: dict[str, _Attached] = {}  # device_name -> its voice connection
-        self._addresses: dict[str, Optional[str]] = {}  # device_name -> where it last connected from
+        self._seen: dict[str, dict] = {}  # device_name -> its stored last_attached and address
         self._sockets: set[web.WebSocketResponse] = set()
         self._tasks: set[asyncio.Task] = set()
+        self._purger: Optional[asyncio.Task] = None  # the hourly removal
 
     # ── the voice route's side ──
 
     def attach(self, device_name: str, attachment: Any, ws: Any, address: Optional[str]) -> None:
         self._attached[device_name] = _Attached(attachment, ws)
-        self._addresses[device_name] = address
+        self._seen[device_name] = {"address": address}
         self._record(device_name)
         self._changed(device_name)
 
     def _record(self, device_name: str) -> None:
         """Keep when the device was last attached, and from where, for while it is away."""
+        seen = self._seen.setdefault(device_name, {})
+        seen["last_attached"] = time.time()
+
         async def record() -> None:
             with contextlib.suppress(Exception):  # the store closes at shutdown
-                await asyncio.to_thread(self._devices.update_settings, device_name, last_attached=time.time(),
-                                        address=self._addresses.get(device_name))
+                await asyncio.to_thread(self._devices.update_settings, device_name, **seen)
         self._spawn(record())
+
+    def _listed(self, device_name: str) -> bool:
+        """Attached now, or within the last 30 days."""
+        last = self._seen.get(device_name, {}).get("last_attached")
+        return device_name in self._attached or (
+            isinstance(last, (int, float)) and last >= time.time() - LISTED_SECONDS)
+
+    def _devices_frame(self) -> dict:
+        return {"type": "devices", "devices": [
+            self._device(name) for name in sorted({*self._seen, *self._attached}) if self._listed(name)]}
+
+    async def _load(self) -> None:
+        """Learn the stored devices this process has not seen attach."""
+        for name, settings in (await asyncio.to_thread(self._devices.settings)).items():
+            self._seen.setdefault(name, settings)
+
+    async def purge(self) -> None:
+        """Remove the devices that have ended, and tell admin connections the list without them."""
+        removed = await asyncio.to_thread(self._devices.remove_stale, time.time() - LISTED_SECONDS,
+                                          set(self._attached))
+        for name in removed:
+            if name not in self._attached:
+                self._seen.pop(name, None)
+        if removed:
+            logger.info("converse: removed devices unattached for 30 days: %s", removed)
+            await self._load()
+            for ws in self._sockets:
+                self._send(ws, self._devices_frame())
+
+    async def run_purge(self, app: Any = None) -> None:
+        """Start the hourly removal; an ``on_startup`` hook."""
+        async def hourly() -> None:
+            while True:
+                await asyncio.sleep(PURGE_INTERVAL)
+                try:
+                    await self.purge()
+                except Exception:
+                    logger.exception("converse: removing ended devices failed")
+        self._purger = asyncio.ensure_future(hourly())
+
+    async def close(self, app: Any = None) -> None:
+        if self._purger is not None:
+            self._purger.cancel()
 
     def detach(self, device_name: str, attachment: Any) -> None:
         entry = self._attached.get(device_name)
@@ -120,7 +168,7 @@ class Admin:
         entry = self._attached.get(device_name)
         return {"device_name": device_name, "attached": entry is not None,
                 "muted": entry.muted if entry else None, "volume": entry.volume if entry else None,
-                "address": self._addresses.get(device_name)}
+                "address": self._seen.get(device_name, {}).get("address")}
 
     def _changed(self, device_name: str) -> None:
         for ws in self._sockets:
@@ -148,12 +196,9 @@ class Admin:
                 raise web.HTTPUnauthorized()
         ws = web.WebSocketResponse(heartbeat=30.0)
         await ws.prepare(request)
-        names = await asyncio.to_thread(self._devices.settings)
-        for name, settings in names.items():  # a device this process has not seen attach
-            self._addresses.setdefault(name, settings.get("address"))
+        await self._load()
         # No await between the list and joining the set: every later change follows it.
-        self._send(ws, {"type": "devices",
-                        "devices": [self._device(name) for name in sorted({*names, *self._attached})]})
+        self._send(ws, self._devices_frame())
         self._sockets.add(ws)
         try:
             async for msg in ws:
@@ -206,8 +251,8 @@ class Admin:
         name = normalize_name(name)
         entry = self._attached.get(name)
         if entry is None:
-            known = name in await asyncio.to_thread(self._devices.settings)
-            return {"error": "not_attached" if known else "unknown_device"}
+            await self._load()
+            return {"error": "not_attached" if self._listed(name) else "unknown_device"}
         waiters = []
         for key, value in wanted.items():
             waiter = asyncio.get_running_loop().create_future()
