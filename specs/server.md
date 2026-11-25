@@ -721,7 +721,7 @@ being connected with no turn for a tool to act on.
 |---|---|---|
 | `set_wake_word` | `phrase` (optional) | Lists available phrases and model formats, or requests a switch on this device and reports its result (Wake words). |
 | `speak_this` | `text` | The device says exactly `text`, and nothing else the turn produces is spoken. |
-| `play_tone` | `tone`: `confirm` or `error` | The device plays that tone (`tones.md`). |
+| `play_tone` | `tone`: `confirm` or `error` | That tone plays in the reply audio (`tones.md`). |
 | `standby` | None | The device goes to standby when this turn's playback has drained: `turn_done` carries `next_action: "standby"`. It stops sending audio and waits for the wake word or Talk. |
 | `mute` | None | From the call, nothing the device's microphone sends is heard. The device mutes when this turn's reply has been sent: `turn_done` carries `next_action: "mute"`. Its microphone stays off until the person unmutes it on the device. |
 | `no_barge_in` | None | From the call until this turn's playback has ended, microphone audio does not interrupt the turn. |
@@ -753,11 +753,17 @@ that only calls `play_tone` still speaks its reply text; call `speak_this` with
 
 ### `play_tone`
 
-Send `{"type":"tone","tone":"confirm"}` to the device. The agent's tool plays `confirm`
-and `error`; the third tone, `approval`, is sent by the server itself when it
-asks for an approval. A tone plays before any
-speech from the same turn. It is not a reply: it has no `turn_id`, and the
-device reports no state for it.
+Render the tone's notes (`tones.md`) into the reply audio at the point the
+agent called the tool: after the turn's speech produced before the call and
+before any after it. The agent's tool plays `confirm` and `error`; the third
+tone, `approval`, is rendered by the server itself just before it speaks an
+approval question. With no turn of the device's running, the tone is a
+transient output of its own, queued behind whatever the device has to say.
+
+Send a tone joined to the first audio of the speech after it, not ahead of it:
+sent alone, it plays out while that speech is still being synthesized and the
+device's buffer runs dry. A tone with no speech after it goes out when the
+reply's text ends.
 
 ### `standby`
 

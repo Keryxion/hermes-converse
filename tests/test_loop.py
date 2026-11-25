@@ -3,6 +3,7 @@ shared turn driver (control-frame ordering, history cap, session mode, timeouts,
 
 from __future__ import annotations
 
+from array import array
 import asyncio
 import contextvars
 import json
@@ -18,8 +19,8 @@ from hermes_converse import loop as cl
 from hermes_converse import speech, vad
 from hermes_converse.loop import (
     AsyncQueue,
-    HISTORY_MAX_MESSAGES, ConverseSession, QuietTick, TailBarge, Utterance,
-    drive_converse_turns, parse_start_config)
+    HISTORY_MAX_MESSAGES, TONE_GAIN, ConverseSession, QuietTick, TailBarge, Tone, Utterance,
+    drive_converse_turns, parse_start_config, tone_pcm)
 from hermes_converse.synth import decode_audio_file_to_pcm16, resample_synth, resolve_synthesizer
 
 from tests.support.converse_audio import calibration, silence, speech_like
@@ -693,8 +694,9 @@ def _run_driver(session, history, replies, quiet_interval=0.0, interrupt_turn=No
 
     async def _run_turn(transcript, on_delta, *, interrupted):
         reply = next(reply_iter)
-        on_delta(reply)
-        return reply, None
+        for delta in reply if isinstance(reply, list) else [reply]:
+            on_delta(delta)
+        return "".join(reply), None
 
     async def _main():
         await drive_converse_turns(
@@ -736,6 +738,35 @@ def _turn_done_frame(sent):
 
 def _spoken_bytes(sent):
     return b"".join(f[1] for f in sent if isinstance(f, tuple) and f[0] == "bytes")
+
+
+def test_a_tone_plays_in_the_reply_audio_between_the_speech_around_it():
+    sent = _run_driver(_FakeConverseSession(["turn it on"]), [],
+                       [["Done. ", Tone("confirm"), "Anything else?"]])
+    assert _spoken_bytes(sent) == b"Done." + tone_pcm("confirm", 24000) + b"Anything else?"
+    assert "tone" not in _types(sent)
+
+
+def test_a_tone_with_no_turn_running_plays_on_its_own():
+    # play_tone between turns publishes an output with no text, only the tone.
+    tone_only = cl.ConversationOutput("", "tone:1", transient=True, tones=("confirm",))
+    sent = _run_driver(_FakeConverseSession([tone_only]), [], [])
+    assert _spoken_bytes(sent) == tone_pcm("confirm", 24000)
+    assert "tone" not in _types(sent)
+
+
+def test_tone_notes_are_ramped_and_timed():
+    error = array("h", tone_pcm("error", 16000))
+    assert len(error) == 3 * 1120  # three 70 ms slots: note, rest, note
+    assert error[0] == 0 and error[1119] == 0 and set(error[1120:2240]) == {0}
+    assert max(error) <= round(32767 * TONE_GAIN)
+
+
+def test_a_tone_is_sent_joined_to_the_speech_after_it():
+    # Alone, it would play out before the speech after it is synthesized: a client underrun.
+    sent = _run_driver(_FakeConverseSession(["delete it"]), [], [[Tone("approval"), "Delete the file?"]])
+    assert [f[1] for f in sent if isinstance(f, tuple) and f[0] == "bytes"] == [
+        tone_pcm("approval", 24000) + b"Delete the file?"]
 
 
 def test_driver_barge_in_interrupts_the_in_flight_turn():
