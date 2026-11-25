@@ -121,14 +121,15 @@ class Admin:
                 self._send(ws, self._devices_frame())
 
     async def run_purge(self, app: Any = None) -> None:
-        """Start the hourly removal; an ``on_startup`` hook."""
+        """Start the removal, at startup and then hourly; an ``on_startup`` hook. The pass at
+        startup is what a server restarted more often than hourly would otherwise never get."""
         async def hourly() -> None:
             while True:
-                await asyncio.sleep(PURGE_INTERVAL)
                 try:
                     await self.purge()
                 except Exception:
                     logger.exception("converse: removing ended devices failed")
+                await asyncio.sleep(PURGE_INTERVAL)
         self._purger = asyncio.ensure_future(hourly())
 
     async def close(self, app: Any = None) -> None:
