@@ -1865,7 +1865,7 @@ async def _produce_speech(d: _Driver, turn: _Turn) -> None:
         async for sentence in _reply_sentences(d, turn):
             epoch = turn.speech_epoch  # a reconnect after this replays the sentence instead
             cleaned = speech.strip_markdown(sentence)
-            if not cleaned:
+            if not cleaned or cleaned.strip().upper() == "[SILENT]":  # Hermes's say-nothing reply
                 continue
             shown = not (turn.transient or isinstance(sentence, Aside))
             turn.ns.setdefault("first_sentence", time.time_ns())
