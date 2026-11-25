@@ -570,8 +570,19 @@ device was last attached as `last_attached` in its JSON `settings` in
 `devices.db`, at attach and at detach. A device with no `last_attached` is
 listed only while attached, so rows from before this was recorded stay out
 until their device connects. A connection whose `start` has `test: true` is
-never listed and records no `last_attached`. Check for devices past 30 days once
-an hour, and send `devices` to every admin connection when one has left. An
+never listed.
+
+A device ends. Once an hour, remove every unattached device whose
+`last_attached` is more than 30 days old: its row in `devices` and its rows in
+`conversations`. Its Hermes sessions stay; Hermes owns their retention. A device
+that connects again afterwards is a new device with a new conversation. Send
+`devices` to every admin connection when a listed device has been removed.
+
+A test device ends sooner and leaves nothing. Record `test` in its `settings`
+with `last_attached`. The same hourly pass removes one that has been unattached
+for an hour, and deletes its Hermes sessions as well, so a test run's devices do
+not pile up in `devices.db` or in Hermes's session list. It lasts the hour so a
+test can reconnect to its conversation. An
 unlisted device cannot be named by a request: `set` answers `unknown_device`
 and `announce` lists it in `skipped`.
 
@@ -580,7 +591,10 @@ hold up the frames behind it.
 
 Verify: a wrong key gets 401 and no socket; the first frame lists the devices
 attached now or within 30 days and no others; a `test` device is never listed,
-attached or not; a device passing 30 days sends `devices` without it; attaching, detaching, and
+attached or not; a device unattached for 30 days is removed with its
+conversations, its Hermes sessions are kept, and `devices` is sent without it; a
+test device unattached for an hour is removed with its Hermes sessions; an
+attached device is never removed; attaching, detaching, and
 joining the list each send a `device` frame to every admin connection; an unknown frame type with a `request_id` gets
 `bad_request`; a frame with no `request_id` gets nothing.
 
