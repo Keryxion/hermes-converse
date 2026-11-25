@@ -12,7 +12,7 @@ in [animations.md](animations.md).
 | Confirm | The assistant did what was asked and has nothing to say | One note: 1047 Hz, 70 ms |
 | Error | The assistant could not do it | Two low notes: 262 Hz, 70 ms each, 70 ms apart |
 | Approval | The assistant needs permission and is about to ask | Three rising notes: 523 Hz, 659 Hz, 784 Hz, 70 ms each |
-| Announcement | An announcement is about to be spoken | Three notes: 659 Hz, 523 Hz, 784 Hz, 150 ms each |
+| Announcement | An announcement is about to be spoken | A fanfare: three quick rising notes, 523 Hz, 659 Hz, 784 Hz, 90 ms each with 30 ms of silence after each, then 1047 Hz held for 420 ms |
 
 The client plays listening, thinking, and listening ended. The server renders
 confirm, error, approval, and announcement into the reply audio, so a client plays them as

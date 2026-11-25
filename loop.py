@@ -363,7 +363,7 @@ TONE_NOTES = {
     "confirm": ((1047, 70),),
     "error": ((262, 70), (0, 70), (262, 70)),
     "approval": ((523, 70), (659, 70), (784, 70)),
-    "announcement": ((659, 150), (523, 150), (784, 150)),
+    "announcement": ((523, 90), (0, 30), (659, 90), (0, 30), (784, 90), (0, 30), (1047, 420)),
 }
 # The level and edges arya-ios played these tones with.
 TONE_GAIN = 0.125  # quiet next to speech: information, not an event
