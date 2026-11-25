@@ -135,6 +135,46 @@ A countdown is a timer that ends with a tone on a device; see
 [client spec section 10](specs/client.md#10-countdowns). Spoken reminders come from a scheduler
 plugin such as Cadence and play as ordinary server-started turns.
 
+### Announcements from Home Assistant
+
+Home Assistant, or anything else that can POST, can speak a message on named devices with no
+agent turn. Enable Hermes's webhook platform and add a route that delivers to `converse`:
+
+```yaml
+platforms:
+  webhook:
+    enabled: true
+    extra:
+      port: 8644
+      routes:
+        announce:
+          secret: "<a long random string>"
+          signature: gitlab
+          deliver: converse
+          deliver_only: true
+          prompt: "{message}"
+          deliver_extra:
+            chat_id: "{target}"
+```
+
+`signature: gitlab` makes the route accept the secret as a plain `X-Gitlab-Token` header, which
+Home Assistant can send. In Home Assistant's `configuration.yaml`:
+
+```yaml
+rest_command:
+  arya_announce:
+    url: http://<hermes-host>:8644/webhooks/announce
+    method: post
+    content_type: application/json
+    headers:
+      X-Gitlab-Token: !secret arya_announce_secret
+    payload: '{"message": {{ message | tojson }}, "target": {{ target | default("all") | tojson }}}'
+```
+
+An automation then calls `rest_command.arya_announce` with `message` and, optionally, `target`:
+one `device_name` (`Kitchen`), several separated by commas (`Kitchen, Den Echo`), or `all`.
+Only attached devices speak it; see [the server spec](specs/server.md#announcements).
+
 ## Editing voice instructions
 
 On the first voice session, Converse creates `CONVERSE.md` in the active Hermes profile,

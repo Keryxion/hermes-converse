@@ -554,6 +554,46 @@ earlier turn has not settled.
 At startup a socket waits up to 30 s for the platform to connect. When the
 platform is not hosted, the connection is refused with `conversation_unavailable`.
 
+## Announcements
+
+An announcement is text spoken on one or more devices without an agent turn: a
+Home Assistant notification, a message from another chat, or a scheduled job's
+output. It needs no route, frame, or credential of its own. It is a `send` on the
+`converse` platform whose chat id names devices instead of a conversation:
+
+| Chat id | Devices |
+|---|---|
+| `Kitchen` | The device with that `device_name`. |
+| `Kitchen, Den Echo` | Each device named, separated by commas. |
+| `all` | Every attached device. |
+
+A name is normalized as `device_name` is on `start` and must then match exactly.
+A device is announced to on whichever of its conversations is attached. Each
+device follows the outcomes under Gateway conversation: spoken once when idle,
+after the current exchange when capturing or replying, and skipped when not
+attached or when 60 s pass first. Nothing is queued for a later connection.
+
+`send` reports success when at least one device accepted the announcement, and
+failure when none did or no name matched. A name that matches no device is
+skipped.
+
+An announcement is not a Hermes message. It runs no turn, is not added to any
+conversation's history, gets no `transcript` frame, and is not replayed. A person
+who answers it starts an ordinary turn that does not know what was announced.
+
+Hermes supplies the way in. For Home Assistant or any HTTP caller it is a webhook
+route with `deliver: converse` and `deliver_only: true`, whose
+`deliver_extra.chat_id` carries the names. The POST returns 200 when `send`
+succeeds and 502 when it fails. The same route without `deliver_only` runs the
+agent on the event first and announces its reply. Any other Hermes producer that
+sends to the `converse` platform with such a chat id announces the same way.
+
+Verify: one name speaks on that device only; a comma list and `all` speak on each
+attached device; an unattached device is skipped and the rest still speak; no
+attached device, or an unknown name alone, reports failure; an announcement
+during a reply plays after it; no `transcript` is sent and nothing is replayed;
+a conversation id still reaches that conversation.
+
 ## Commands from a device
 
 A `command` frame names any gateway command in `name`, without a leading slash.
@@ -615,7 +655,7 @@ Hermes's `privacy.redact_pii` the origin's id is hashed, so such a message is
 not found and has no transcript.
 
 Text that is not a Hermes message gets no `transcript` frame of either kind:
-`say`, and the spoken approval summary. A server-started reply is a Hermes
+`say`, an announcement, and the spoken approval summary. A server-started reply is a Hermes
 message and closes with its `message_id` like any other.
 
 When a client connects with `transcripts: true`, replay what it missed from

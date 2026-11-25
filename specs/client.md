@@ -852,8 +852,8 @@ interrupted or fails has no closing frame, and a silent turn has no assistant
 frame at all.
 
 Speech that is not a message of the conversation has no `transcript` frames,
-neither pieces nor a closing frame, and is never replayed: `say`, and the
-spoken question of an approval. So every `message_id` a client receives names a
+neither pieces nor a closing frame, and is never replayed: `say`, an
+announcement (section 9), and the spoken question of an approval. So every `message_id` a client receives names a
 message of the conversation and works as `after`.
 
 When a reply is interrupted and the request is run again, the new reply arrives
@@ -1253,9 +1253,14 @@ stream and restore local wake detection unless an activation is now open.
 Serialize outbound audio on each socket: never interleave the untagged
 binary PCM of two turns. Output waits behind an active turn and its playback
 drain; stale output is discarded instead of played late. Ordinary barge-in,
-`cancel`, and state reports apply equally to these turns. Output goes to the one
-device attached to that conversation. It is never broadcast and never runs a
-wake election.
+`cancel`, and state reports apply equally to these turns. A conversation's
+output goes to the one device attached to it. It is never broadcast and never
+runs a wake election.
+
+An announcement is speech the server was given for this device by name, such as
+a Home Assistant notification. It arrives as speech already prepared:
+`speaking` + PCM → `turn_done`. The same announcement can play on several
+devices at once; each plays its own copy and none runs a wake election.
 
 
 ## 10. Countdowns
