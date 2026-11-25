@@ -17,6 +17,10 @@ class NamedError(Exception):
         self.error, self.code = error, code
 
 
+def normalize_name(value: str) -> str:
+    return unicodedata.normalize('NFC', ' '.join(value.split()))
+
+
 def parse_names(frame: dict) -> tuple[str, str]:
     """The ``start`` frame's required names. Both are mandatory and no other identity or
     conversation field is accepted."""
@@ -28,7 +32,7 @@ def parse_names(frame: dict) -> tuple[str, str]:
         if (not isinstance(value, str) or not value.strip() or len(value) > 98
                 or any(unicodedata.category(c).startswith('C') for c in value)):
             raise NamedError('bad_start', 4400)
-        names.append(unicodedata.normalize('NFC', ' '.join(value.split())))
+        names.append(normalize_name(value))
     if len(': '.join(names)) > 100:
         raise NamedError('bad_start', 4400)
     return names[0], names[1]
@@ -89,6 +93,11 @@ class DeviceStore:
                               (recipient, assistant_name)).fetchone() is None:
                     raise NamedError()
             return DeviceConversation(recipient, device_name, assistant_name)
+
+    def names(self) -> list[str]:
+        """Every device that has ever connected."""
+        with self._lock:
+            return [row[0] for row in self._connection().execute('SELECT device_name FROM devices')]
 
     def close(self):
         with self._lock:

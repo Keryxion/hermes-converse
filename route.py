@@ -32,7 +32,9 @@ Protocol:
            ``{"type":"wake","claim_id":"...","wake_word":"...", ...}`` requests an
            advisory wake recommendation; see ``specs/client.md``. Accepted interruptions are captured as continuations.
            ``{"type":"wake_word_set","phrase":"...","status":"ok"}`` the result of a wake-word switch.
+           ``{"type":"mute","on":...}`` / ``{"type":"volume","level":...}`` the device's mute and volume.
   server → ``ready`` (rates, ``session_id``, ``wake_word``, clock-skew timestamps), ``set_wake_word``,
+           ``mute`` / ``volume`` (set the device's),
            ``transcript``, ``thinking``,
            ``speaking`` + binary PCM, ``interrupted``, ``turn_done`` (``next_action``), ``quiet``, ``error``.
 """
@@ -53,6 +55,8 @@ from typing import Any, Awaitable, Callable, Optional
 from aiohttp import ClientError, ClientSession, ClientTimeout, web
 
 from . import command_catalog
+from .admin import ROUTE_PATH as ADMIN_ROUTE_PATH
+from .admin import Admin
 from .approvals import phrase, summary
 
 from .arbitrate import Arbitrator
@@ -134,6 +138,7 @@ class ConverseRoute:
         self._devices = device_store or DeviceStore()
         self._named_locks: dict[tuple[str, str], asyncio.Lock] = {}  # per device: one device's setup never waits on another's
         self._named_connections: dict[str, _NamedConnection] = {}
+        self.admin = Admin(self._devices, self.hub, base_url_resolver)
 
     async def _arbitrator_for_settings(self, settings: Settings) -> Optional[Arbitrator]:
         """Lazily create the shared arbitrator when arbitration is enabled."""
@@ -162,6 +167,7 @@ class ConverseRoute:
                            "register %s", ROUTE_PATH)
             return False
         app.router.add_get(ROUTE_PATH, self.handle)
+        app.router.add_get(ADMIN_ROUTE_PATH, self.admin.handle)
         app.router.add_get(WAKE_ROUTE_PREFIX + "/{slug}/{file}", self.wake_file)
         app.on_cleanup.append(_flush_tracing)
         async def close_devices(app):
@@ -314,6 +320,7 @@ class ConverseRoute:
                 audio.close()
             if attachment is not None:
                 self.hub.detach(attachment.conversation_id, attachment)
+                self.admin.detach(device.device_name, attachment)
             if connection.session is not None:
                 connection.session.stop()
             connection.done.set()
@@ -410,7 +417,9 @@ class ConverseRoute:
         # carry the session id, so this is what attributes them to a device.
         logger.info("converse session: session=%s device_id=%s name=%r arbitrated=%s",
                     getattr(session, "session_id", None), device_id, name, arbitrator is not None)
+        self.admin.attach(device_name, attachment, ws)
         await _serve(ws, session=session, synth=synth, cap=cap, client=client, settings=settings,
+                     report=lambda frame: self.admin.reported(device_name, attachment, frame),
                      name=name, guidance=guidance, quiet_interval=quiet_interval, arbitrator=arbitrator,
                      device_id=device_id, hub=self.hub, attachment=attachment,
                      named_device=device, named_connection=connection, transcripts=transcripts,
@@ -574,7 +583,8 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                  device_id: str = "", hub=None, attachment=None,
                  transcripts: bool = False, relay: Optional[Relay] = None,
                  adopted: Optional[Detached] = None, audio=None,
-                 wake_word: Optional[WakeWordLink] = None, default_route=(None, None)) -> None:
+                 wake_word: Optional[WakeWordLink] = None, default_route=(None, None),
+                 report: Callable[[dict], None] = lambda frame: None) -> None:
     """Run socket input and its single driver; preserve an unfinished turn on disconnect."""
     loop = asyncio.get_running_loop()
     session.enable_turn_control()
@@ -706,6 +716,8 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                         gateway = getattr(hub, "gateway", None)
                         if gateway is not None:
                             gateway.approvals.respond(attachment, frame)
+                    if frame.get("type") in ("mute", "volume"):
+                        report(frame)  # the device's own mute and volume, for admin connections
                     if frame.get("type") == "cancel":
                         session.cancel(frame.get("turn_id"))
                     if frame.get("type") == "heard":
