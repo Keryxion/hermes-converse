@@ -145,6 +145,7 @@ address and API key. There is nothing to write in `configuration.yaml`.
   entity: `Kitchen` has `notify.kitchen_announce`. A device that connects later appears by itself.
 - The entity is unavailable while its device is not attached.
 - `notify.arya_announce` announces on every attached device at once.
+- Each device also has `switch.kitchen_mute` for its microphone and `number.kitchen_volume`.
 
 ```yaml
 action: notify.send_message
@@ -154,7 +155,7 @@ data:
   message: The laundry is done.
 ```
 
-The integration uses two routes on the API server; see
+The integration uses three routes on the API server; see
 [the server spec](specs/server.md#announcements).
 
 ## Editing voice instructions

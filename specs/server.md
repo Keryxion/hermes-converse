@@ -568,12 +568,13 @@ Authorization: Bearer <API_SERVER_KEY>
 ```
 
 ```json
-{"devices": [{"device_name": "Kitchen", "attached": true},
-             {"device_name": "Den Echo", "attached": false}]}
+{"devices": [{"device_name": "Kitchen", "attached": true, "muted": false, "volume": 40},
+             {"device_name": "Den Echo", "attached": false, "muted": null, "volume": null}]}
 ```
 
 Every device that has ever connected is listed, by `device_name`. `attached` is
-whether it has a connection now. A wrong or missing key is refused with 401.
+whether it has a connection now. `muted` and `volume` are described under Mute
+and volume. A wrong or missing key is refused with 401.
 
 ```
 POST /v1/audio/announce
@@ -618,6 +619,49 @@ speak on each attached device; an unattached or unknown device is listed in
 `speaking`; an announcement during a reply plays after it, tone included; no
 `transcript` is sent and nothing is replayed; a wrong key is refused with 401
 and nothing is spoken.
+
+## Mute and volume
+
+A device owns its microphone mute and playback volume and reports them in `mute`
+and `volume` frames (client spec, section 12). Keep the last report of each for
+as long as the device stays attached, in memory only. The device list gives them
+as `muted` and `volume`; each is `null` for a device that is not attached or has
+not reported it.
+
+One route sets them, behind the same API key:
+
+```
+POST /v1/audio/devices
+Authorization: Bearer <API_SERVER_KEY>
+Content-Type: application/json
+
+{"device_name": "Kitchen", "muted": true, "volume": 40}
+```
+
+`muted` is a Boolean and `volume` an integer from 0 to 100; send either or both.
+Send the device a `mute` or `volume` frame for each, wait for its report of each
+or 2 s, whichever comes first, and answer with the device as the list gives it:
+
+```json
+{"device_name": "Kitchen", "attached": true, "muted": true, "volume": 40}
+```
+
+| Status | Meaning |
+|---|---|
+| 200 | The frames were sent. The body holds what the device last reported, which is unchanged when it could not apply a request or did not answer. |
+| 400 | The body is not JSON, `device_name` is missing, neither `muted` nor `volume` is given, or one has the wrong type or range. |
+| 401 | The key is missing or wrong. |
+| 404 | No device has that name. |
+| 409 | The device is not attached. Nothing is kept for later. |
+
+The `mute` tool and `next_action: "mute"` are unchanged: the agent can mute a
+device and cannot unmute one.
+
+Verify: a device's reports appear in the list and become `null` when it
+detaches; setting each sends its frame and answers with the device's report; a
+device that does not answer is answered after 2 s with its last report; an
+unattached device gives 409 and an unknown one 404; a device that sends no
+`volume` lists `null`.
 
 ## Commands from a device
 
@@ -788,7 +832,7 @@ being connected with no turn for a tool to act on.
 | `speak_this` | `text` | The device says exactly `text`, and nothing else the turn produces is spoken. |
 | `play_tone` | `tone`: `confirm` or `error` | The device plays that tone (`tones.md`). |
 | `standby` | None | The device goes to standby when this turn's playback has drained: `turn_done` carries `next_action: "standby"`. It stops sending audio and waits for the wake word or Talk. |
-| `mute` | None | From the call, nothing the device's microphone sends is heard. The device mutes when this turn's reply has been sent: `turn_done` carries `next_action: "mute"`. Its microphone stays off until the person unmutes it on the device. |
+| `mute` | None | From the call, nothing the device's microphone sends is heard. The device mutes when this turn's reply has been sent: `turn_done` carries `next_action: "mute"`. Its microphone stays off until it is unmuted (client spec, section 12). |
 | `no_barge_in` | None | From the call until this turn's playback has ended, microphone audio does not interrupt the turn. |
 | `command` | `name`: a gateway command without a leading slash; `args`: an array of strings, default `[]` | Runs the command in this conversation and returns its reply to the agent. |
 | `client_diagnostics` | None | Returns a fresh diagnostic snapshot from the attached client, as described above. |
@@ -849,7 +893,7 @@ cancellation, interruption, error, and timeout paths too.
 The agent calls `mute` when the person asks the device to stop listening, for
 example "stop listening" or "mute yourself". It is the device's own mute,
 reached by voice: the microphone goes off when `turn_done` arrives and stays
-off until the person unmutes on the device, while the reply plays out. The
+off until it is unmuted, while the reply plays out. The
 exchange ends as it does for `standby`. Nothing
 can unmute by voice, because a muted device hears nothing. If the turn calls
 both `mute` and `standby`, the last call wins. Results are the same as for

@@ -19,7 +19,7 @@ deleted history is not restored.
 Wake selection is cooperative: it recommends an answering device without
 restricting audio processing. Section 8 defines the cooperative wake contract.
 Sections 9–10 define conversation output and countdowns. Section 11 defines
-changing the chat model.
+changing the chat model. Section 12 defines mute and volume.
 
 Server lifecycle and integration details are in [the server spec](server.md).
 What a client records for tracing is in [client tracing](client_tracing.md).
@@ -194,6 +194,7 @@ All are JSON text frames:
 | `{"type": "commands"}` | Ask which commands the server runs; see "Commands" below. |
 | `{"type": "command", "name": "new"}` | Run a Hermes command for this device's conversation, such as starting a fresh one; see "Commands" below. |
 | `{"type": "say", "text": "..."}` | Speaks the given text (trimmed, at most 400 characters) as a reply of its own: `thinking`, `speaking` + PCM, then `turn_done` with `next_action: "standby"`. No agent turn runs, nothing is added to the conversation, and no `transcript` frame is sent for it. For fixed device prompts such as a spoken help reminder. Empty or non-string text is ignored. |
+| `{"type": "mute", "on": true}`, `{"type": "volume", "level": 40}` | The device's microphone mute and playback volume, after `ready` and whenever either changes; see section 12. |
 | `{"type": "approval_response", "approval_id": "...", "choice": "once"}` | Answer a pending approval from a screen with one of its `choices`; see "Approvals" in section 4. |
 
 Every control frame has a `type`. To end the session, close the socket: the
@@ -358,6 +359,7 @@ Countdowns are unaffected by a command.
 | `{"type":"tone","tone":"confirm"}` | Play the named tone (see `tones.md`): `confirm` or `error` when the assistant chooses to, `approval` just before the server asks for an approval, `announcement` just before an announcement (section 9). It is not a reply: no `turn_id`, and the device reports no state for it. |
 | `client_diagnostics` | Request a fresh version, build, and diagnostic snapshot; answer on this socket with the same `request_id`, as below. |
 | `countdown`, `countdown_cancel` | Start, extend, or cancel a countdown that ends with a tone (section 10). |
+| `mute`, `volume` | Set the device's microphone mute or playback volume, then report it (section 12). |
 | `set_wake_word` | Switch to this wake phrase and its models, then answer with `wake_word_set` (section 8). |
 
 The `current_model` frame reports the session selection (section 11). Turn liveness is the repeated `thinking` frame; there is no
@@ -757,7 +759,7 @@ the one to move to:
 |---|---|---|
 | Listening | An activation is open; PCM streams to the server. | `quiet` (section 5), `standby`, `mute`, or the device's own controls. |
 | Standby | No PCM, except to let the person interrupt a reply, as below. The wake word or Talk opens an activation. | The wake word, Talk, or `listen`. |
-| Muted | No PCM, and no wake word. Talk does nothing. | Only the person, with the device's mute control. Unmuting always lands in standby. |
+| Muted | No PCM, and no wake word. Talk does nothing. | The person, with the device's mute control, or a `mute` frame with `on: false` (section 12). Unmuting always lands in standby. |
 
 A device in standby streams while a reply plays, for interruption only
 (section 9), and stops when the ending is applied. The exception is a turn made
@@ -784,8 +786,9 @@ Apply `mute` on receipt: the reply keeps playing with the microphone already
 off. Apply every other row once the turn's audio has drained or been discarded.
 Then report the state you are in.
 
-Muting is the same whoever asks: the device's own control, or `mute`. It ends
-the exchange, and nothing the server sends unmutes. `cancel` alone leaves the
+Muting is the same whoever asks: the device's own control, `mute` on a
+`turn_done`, or a `mute` frame (section 12). It ends the exchange. Nothing a
+turn sends unmutes; only a `mute` frame with `on: false` does. `cancel` alone leaves the
 microphone as it is, including a `cancel` the device sends for a timeout of its
 own. A Stop control the person presses is `cancel` and then standby; only a
 control the person uses may add that. A control that only stops listening, like
@@ -1463,3 +1466,36 @@ list then holds the levels the gateway accepts, not confirmed for this model. Of
 them, marked "Not confirmed for this model", and allow reset. `unknown` with an
 empty list means there is nothing to offer.
 Model and provider can be null when their identity is unknown.
+
+## 12. Mute and volume
+
+The device owns its microphone mute and its playback volume. It reports both to
+the server, and the server can set either, for example from Home Assistant.
+
+Report each after every `ready`, and again whenever it changes, whatever
+changed it:
+
+```json
+{"type": "mute", "on": false}
+{"type": "volume", "level": 40}
+```
+
+| field | what it is |
+|---|---|
+| `on` | Boolean: whether the device is muted (section 4). |
+| `level` | Integer from 0 to 100: the volume of everything the device plays, which is replies, tones, and countdown sounds. 0 is silent. |
+
+The server sets one by sending the same frame. Apply it, then send your own
+frame with the value you now have, even when nothing changed. A request the
+device cannot apply, such as unmuting past a hardware switch, is answered with
+the unchanged value.
+
+- `mute` with `on: true` mutes exactly as the device's own control does.
+  `on: false` unmutes into standby.
+- `volume` takes effect at once, including on audio that is playing.
+- Neither plays a tone or changes a turn.
+- Ignore a `mute` whose `on` is not a Boolean and a `volume` whose `level` is
+  not an integer from 0 to 100.
+
+A device with no volume of its own to set sends no `volume` frame and ignores
+the server's.
