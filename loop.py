@@ -642,6 +642,11 @@ class ConverseSession:
         return requested or ("listen" if self._exchange_listening else "standby")
 
     @_session_state
+    def exchange_listening(self) -> bool:
+        """True when the device was left listening: `listen` would not switch anything."""
+        return self._exchange_listening
+
+    @_session_state
     def record_next_action(self, action: str) -> None:
         self._exchange_listening = action == "listen"
 
@@ -1765,6 +1770,8 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
     # Arm before turn_done so an immediate state report cannot be lost.
     if session.finish_turn(turn.turn_id, d.tail_fallback if turn.pcm_chunks else 0):
         next_action = "listen"
+    # Read before the new action is recorded: whether the device was already listening.
+    already_listening = getattr(session, "exchange_listening", lambda: False)()
     record_action = getattr(session, "record_next_action", None)
     if record_action is not None:
         record_action(next_action)
@@ -1784,11 +1791,15 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
         turn.ms("pcm_done"), len(turn.reply_parts), sum(len(p) for p in turn.reply_parts),
         getattr(session, "session_id", None), turn.turn_id, outcome, len(turn.result.get("reply") or ""),
         sum(len(p) for p in turn.spoken_parts), turn.pcm_chunks, next_action, action_source)
-    # Ordinary completion preserves the device's interaction mode. An explicit output
-    # question can open listening; an ordinary or replayed reply never reopens a released PTT mic.
+    # Ordinary completion preserves the device's interaction mode. An explicit output question
+    # can open listening on a device that is not already listening; an ordinary or replayed reply
+    # never reopens a released PTT mic. An interrupted, cancelled or failed turn carries nothing:
+    # its ending leaves the microphone where it is.
     turn_done: dict[str, Any] = {"type": "turn_done", "turn_id": turn.turn_id}
     if next_action in ("standby", "mute") or (
-            turn.output is not None and turn.output.next_action == "listen" and not turn.output.unheard):
+            completed and not already_listening
+            and turn.output is not None and turn.output.next_action == "listen"
+            and not turn.output.unheard):
         turn_done["next_action"] = next_action
     await d.send_json(turn_done)
     _finish_trace(tt, turn, reply, err=turn_err, barged=barged, next_action=next_action)
@@ -1948,6 +1959,9 @@ async def _produce_speech(d: _Driver, turn: _Turn) -> None:
             turn.pcm_q.put_nowait(tone)
     except Exception as exc:
         logger.warning("converse synthesis failed: %s", exc, exc_info=True)
+        # Synthesis is part of the run: a silent or cut-off reply ends the turn as a failure,
+        # `error` then `turn_done`, never as an ordinary completion. The text is spoken-safe.
+        turn.result.setdefault("err", "the reply could not be spoken")
     finally:
         turn.pcm_q.put_nowait(None)
 
