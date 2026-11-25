@@ -551,6 +551,13 @@ example inside a long tool call; the next request is admitted behind it, and the
 stopped turn's late reply is discarded. A device is never refused because an
 earlier turn has not settled.
 
+Connecting does not create the gateway session. The gateway creates it with the
+device's first message: a turn, a command, or another producer's message. Until
+then the device has nothing to catch up on and its model selection is the
+default, and a device that connects and never speaks leaves no session behind.
+Verify: a device that connects and disconnects without a message adds no Hermes
+session; its first turn creates one, and a reconnect continues it.
+
 At startup a socket waits up to 30 s for the platform to connect. When the
 platform is not hosted, the connection is refused with `conversation_unavailable`.
 
