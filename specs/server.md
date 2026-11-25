@@ -569,35 +569,32 @@ as the Arya Devices integration for Home Assistant. Its frames are in
 before accepting the socket, and refuse a bad one with 401.
 
 Send `devices` first, then a `device` frame to every admin connection whenever a
-listed device's entry changes: it attaches or detaches, joins the list, or its
-reported mute or volume changes.
+device's entry changes: it attaches or detaches, connects for the first time, or
+its reported mute or volume changes. The list is every device in `devices.db`.
 
-The list is the devices attached now or within the last 30 days. Record when a
-device was last attached as `last_attached` in its JSON `settings` in
-`devices.db`, at attach and at detach. Record with it, as `address`, the IP address the
-connection came from: the first address of `X-Forwarded-For` when the request
-has one, otherwise the socket's peer. It is kept while the device is away and
-given to admin connections. A device with no `last_attached` is
-listed only while attached, so rows from before this was recorded stay out
-until their device connects.
+Record when a device was last attached as `last_attached` in its JSON `settings`
+in `devices.db`, at attach and at detach. Record with it, as `address`, the IP
+address the connection came from: the first address of `X-Forwarded-For` when
+the request has one, otherwise the socket's peer. It is kept while the device is
+away and given to admin connections.
 
-A device ends. Once an hour, remove every unattached device whose
-`last_attached` is more than 30 days old: its row in `devices` and its rows in
-`conversations`. Its Hermes sessions stay; Hermes owns their retention. A device
-that connects again afterwards is a new device with a new conversation. Send
-`devices` to every admin connection when a listed device has been removed.
-
-An unlisted device cannot be named by a request: `set` answers `unknown_device`
-and `announce` lists it in `skipped`.
+A device ends, which is what keeps the list short. Once an hour, remove every
+unattached device whose `last_attached` is more than 30 days old: its row in
+`devices` and its rows in `conversations`. Give a row that has no
+`last_attached` the current time instead, so it ends 30 days later. Its Hermes
+sessions stay; Hermes owns their retention. A device that connects again
+afterwards is a new device with a new conversation. Send `devices` to every
+admin connection when a device has been removed.
 
 Handle each request in its own task, so a `set` waiting on a device does not
 hold up the frames behind it.
 
-Verify: a wrong key gets 401 and no socket; the first frame lists the devices
-attached now or within 30 days and no others; a device unattached for 30 days is removed with its
-conversations, its Hermes sessions are kept, and `devices` is sent without it; an
-attached device is never removed; attaching, detaching, and
-joining the list each send a `device` frame to every admin connection; an unknown frame type with a `request_id` gets
+Verify: a wrong key gets 401 and no socket; the first frame lists every device
+in `devices.db`; a device unattached for 30 days is removed with its
+conversations, its Hermes sessions are kept, and `devices` is sent without it; a
+row with no `last_attached` is given one and kept; an attached device is never
+removed; attaching, detaching, and a first connection each send a `device` frame
+to every admin connection; an unknown frame type with a `request_id` gets
 `bad_request`; a frame with no `request_id` gets nothing.
 
 ## Announcements

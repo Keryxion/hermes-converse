@@ -27,8 +27,8 @@ sent every change.
 
 ## 2. Devices
 
-The first frame lists the devices: each one that is attached now or was within
-the last 30 days.
+The first frame lists every device the server knows. It forgets one that has
+not been attached for 30 days.
 
 ```json
 {"type": "devices", "devices": [
@@ -44,14 +44,14 @@ the last 30 days.
 | `volume` | Its playback volume, an integer from 0 to 100. `null` while it is not attached, or for a device with no volume to set. |
 | `address` | The IP address it last connected from, kept while it is away so the device can be found on the network. `null` when none is known. |
 
-Whenever anything about a listed device changes, or a device joins the list, the
-server sends that device whole:
+Whenever anything about a device changes, or a new device connects for the first
+time, the server sends that device whole:
 
 ```json
 {"type": "device", "device_name": "Kitchen", "attached": true, "muted": true, "volume": 40, "address": "192.168.1.52"}
 ```
 
-When a device leaves the list, the server sends `devices` again. A `devices`
+When the server forgets a device, it sends `devices` again. A `devices`
 frame replaces everything known before: forget a device it does not name. The
 same holds for the one sent after a reconnect.
 
@@ -70,7 +70,7 @@ A request that fails is answered with an `error`:
 | `error` | Meaning |
 |---|---|
 | `bad_request` | A field is missing or has the wrong type or range, or the `type` is not a request. |
-| `unknown_device` | No listed device has that name. |
+| `unknown_device` | No device has that name. |
 | `not_attached` | The device is not attached. Nothing is kept for later. |
 
 A frame that is not a JSON object, or has no string `request_id`, is ignored.
@@ -93,7 +93,7 @@ Speak a message on devices, after a chime and with no agent turn:
 ```
 
 `announced` lists the devices that accepted the announcement, and `skipped` the
-named devices that are not attached or not listed. A device that is in an
+named devices that are not attached or are unknown. A device that is in an
 exchange accepts it and plays it afterwards. Nothing is kept for a device that
 is skipped.
 
