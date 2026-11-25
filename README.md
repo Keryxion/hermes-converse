@@ -135,6 +135,30 @@ A countdown is a timer that ends with a tone on a device; see
 [client spec section 10](specs/client.md#10-countdowns). Spoken reminders come from a scheduler
 plugin such as Cadence and play as ordinary server-started turns.
 
+### Announcements from Home Assistant
+
+The [Arya Devices](https://github.com/Keryxion/arya-homeassistant) integration for Home Assistant speaks a message on Arya devices, after a chime
+and with no agent turn. Install it with HACS, add it under Settings → Devices & services, and enter the Hermes server's
+address and API key. There is nothing to write in `configuration.yaml`.
+
+- Each Arya device becomes a Home Assistant device, named by its `device_name`, with one notify
+  entity: `Kitchen` has `notify.kitchen_announce`. A device that connects later appears by itself.
+- `binary_sensor.kitchen_attached` is on while the device is attached. The device's other entities
+  are unavailable while it is not.
+- `notify.arya_announce` announces on every attached device at once.
+- Each device also has `switch.kitchen_mute` for its microphone and `number.kitchen_volume`.
+
+```yaml
+action: notify.send_message
+target:
+  entity_id: notify.kitchen_announce
+data:
+  message: The laundry is done.
+```
+
+The integration holds one WebSocket to the server, `GET /v1/audio/admin`, so a change made on a
+device shows in Home Assistant at once; see [the admin spec](specs/admin.md).
+
 ## Editing voice instructions
 
 On the first voice session, Converse creates `CONVERSE.md` in the active Hermes profile,
@@ -327,7 +351,8 @@ API-server client.
 | `synth.py` | one `text → int16 PCM` seam over streaming or one-shot TTS, plus resampling |
 | `speech.py` | the only module that imports Hermes core speech helpers |
 | `settings.py` | the settings schema |
-| `voice_tools.py` | the `speak_this`, `play_tone`, `standby`, `mute`, approved `command`, `client_diagnostics`, and `set_wake_word` agent tools |
+| `admin.py` | `GET /v1/audio/admin`: the device list, announcements, and mute and volume for managing software |
+| `voice_tools.py` | the `announce`, `speak_this`, `play_tone`, `standby`, `mute`, approved `command`, `client_diagnostics`, and `set_wake_word` agent tools |
 | `wake_words.py` | wake-word dictionaries, the verified model cache behind `GET /v1/audio/wake/<slug>/<file>`, and live switches |
 | `client_diagnostics.py` | fresh diagnostic requests and responses on one client socket |
 | `named.py` | named-device routing records and public Hermes conversation lookup/continuation |

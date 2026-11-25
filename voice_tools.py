@@ -51,6 +51,17 @@ SCHEMAS = {
         "parameters": {"type": "object", "properties": {
             "phrase": {"type": "string", "description": "A listed phrase, such as Hey Arya."}}},
     },
+    "announce": {
+        "name": "announce",
+        "description": (
+            "Speak a message, after a chime, on every other connected voice device. Call it when the "
+            "person asks you to announce something (\"announce dinner's ready\"). The device you are "
+            "talking through does not play it. The result counts the devices that took it; 0 means "
+            "no other device is connected, so say nobody heard it."),
+        "parameters": {"type": "object", "properties": {
+            "message": {"type": "string", "description": "What to say, worded for the listeners."}},
+            "required": ["message"]},
+    },
     "speak_this": {
         "name": "speak_this",
         "description": (
@@ -156,6 +167,17 @@ def make_handlers(hub: Any) -> dict[str, Callable[..., Any]]:
             turn.on_delta("\n" + text + "\n")
         return _result("ok")
 
+    def announce(args: dict, **kw: Any) -> str:
+        from gateway.session_context import get_session_env
+
+        message = args.get("message")
+        if not isinstance(message, str) or not message.strip():
+            return json.dumps({"error": "message must be the text to announce"})
+        # Every attached device but the one whose conversation asked, when a device did.
+        caller = (get_session_env("HERMES_SESSION_CHAT_ID", "")
+                  if get_session_env("HERMES_SESSION_PLATFORM", "") == "converse" else "")
+        return json.dumps({"result": "ok", "devices": hub.announce_all(message.strip(), but=caller)})
+
     def play_tone(args: dict, **kw: Any) -> str:
         error, attachment = device()
         if attachment is None:
@@ -235,7 +257,7 @@ def make_handlers(hub: Any) -> dict[str, Callable[..., Any]]:
         result = await asyncio.wrap_future(attachment.wake_word(phrase.strip() if phrase else None))
         return json.dumps(result, ensure_ascii=False)
 
-    return {"speak_this": speak_this, "play_tone": play_tone, "standby": standby, "mute": mute,
+    return {"announce": announce, "speak_this": speak_this, "play_tone": play_tone, "standby": standby, "mute": mute,
             "no_barge_in": no_barge_in, "command": command, "client_diagnostics": client_diagnostics,
             "set_wake_word": set_wake_word}
 
