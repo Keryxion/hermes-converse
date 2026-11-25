@@ -612,7 +612,7 @@ joining the list each send a `device` frame to every admin connection; an unknow
 
 An announcement is a message spoken on one or more devices without an agent
 turn, such as a Home Assistant notification. It arrives as an `announce` request
-on an admin connection.
+on an admin connection, or from the agent's `announce` tool.
 
 A name in `target` is normalized as `device_name` is on `start` and must then
 match exactly. A device is announced to on whichever of its conversations is
@@ -625,6 +625,13 @@ when 60 s pass first, it is not sent. Nothing is queued for a later connection, 
 no wake election runs. Answer the request once each device has accepted or been
 skipped, without waiting for playback.
 
+The agent announces with the `announce` tool, when the person asks it to
+("announce dinner's ready"). It announces on every attached device except the
+one whose conversation called it, which hears the agent's reply instead. It
+works from any conversation; one that is not a device's reaches every attached
+device. The result is `{"result": "ok", "devices": 2}`, the number of devices
+that accepted it; 0 means no other device is attached.
+
 An announcement is not a Hermes message. It runs no turn, is not added to any
 conversation's history, gets no `transcript` frame, and is not replayed. A person
 who answers it starts an ordinary turn that does not know what was announced.
@@ -634,7 +641,8 @@ speak on each attached device; an unattached or unknown device is listed in
 `skipped`, as is a `test` device, and the rest still speak; the reply audio
 starts with the tone; an announcement during a reply plays after it, tone
 included; no
-`transcript` is sent and nothing is replayed.
+`transcript` is sent and nothing is replayed; the `announce` tool speaks on
+every attached device but the caller's and returns their count.
 
 ## Mute and volume
 
@@ -813,7 +821,8 @@ credentials or conversation content.
 ## Voice tools
 
 The agent has tools for controlling or inspecting the device it is talking through and
-its conversation. They act only on the device whose conversation calls them.
+its conversation. They act only on the device whose conversation calls them,
+except `announce`.
 
 A tool call always happens inside a turn, and the tools act on that turn however
 it started: by speech, or by the server for a reminder, a still-ringing alarm,
@@ -823,6 +832,7 @@ being connected with no turn for a tool to act on.
 | Tool | Arguments | Effect |
 |---|---|---|
 | `set_wake_word` | `phrase` (optional) | Lists available phrases and model formats, or requests a switch on this device and reports its result (Wake words). |
+| `announce` | `message` | Announces `message` on every other attached device (Announcements). |
 | `speak_this` | `text` | The device says exactly `text`, and nothing else the turn produces is spoken. |
 | `play_tone` | `tone`: `confirm` or `error` | That tone plays in the reply audio (`tones.md`). |
 | `standby` | None | The device goes to standby when this turn's playback has drained: `turn_done` carries `next_action: "standby"`. It stops sending audio and waits for the wake word or Talk. |

@@ -10,8 +10,6 @@ import asyncio
 import contextlib
 import json
 import logging
-import time
-import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
@@ -23,7 +21,6 @@ from .named import DeviceStore, normalize_name
 logger = logging.getLogger(__name__)
 
 ROUTE_PATH = "/v1/audio/admin"
-ANNOUNCE_TTL = 60.0  # seconds an announcement may wait behind the device's current exchange
 SET_TIMEOUT = 2.0  # seconds a `set` waits for the device's report
 HTTP_TIMEOUT = ClientTimeout(total=30, connect=5)
 
@@ -171,11 +168,7 @@ class Admin:
         announced, skipped = [], []
         for name in dict.fromkeys(normalize_name(name) for name in target):
             entry = self._attached.get(name)
-            # Prepared speech with the tone at its start: it waits behind the device's current
-            # exchange and is dropped when that takes longer than the TTL.
-            accepted = entry is not None and self._hub.publish(
-                entry.attachment.conversation_id, message.strip(), f"announce:{uuid.uuid4().hex}",
-                expires_at=time.time() + ANNOUNCE_TTL, transient=True, tones=("announcement",)) == "accepted"
+            accepted = entry is not None and self._hub.announce(entry.attachment.conversation_id, message.strip())
             (announced if accepted else skipped).append(name)
         return {"announced": announced, "skipped": skipped}
 

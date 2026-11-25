@@ -352,7 +352,7 @@ API-server client.
 | `speech.py` | the only module that imports Hermes core speech helpers |
 | `settings.py` | the settings schema |
 | `admin.py` | `GET /v1/audio/admin`: the device list, announcements, and mute and volume for managing software |
-| `voice_tools.py` | the `speak_this`, `play_tone`, `standby`, `mute`, approved `command`, `client_diagnostics`, and `set_wake_word` agent tools |
+| `voice_tools.py` | the `announce`, `speak_this`, `play_tone`, `standby`, `mute`, approved `command`, `client_diagnostics`, and `set_wake_word` agent tools |
 | `wake_words.py` | wake-word dictionaries, the verified model cache behind `GET /v1/audio/wake/<slug>/<file>`, and live switches |
 | `client_diagnostics.py` | fresh diagnostic requests and responses on one client socket |
 | `named.py` | named-device routing records and public Hermes conversation lookup/continuation |

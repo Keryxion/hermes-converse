@@ -156,3 +156,28 @@ async def test_set_sends_the_frames_and_answers_with_the_devices_report(monkeypa
         assert (await _json(admin))["attached"] is False
         await admin.send_json({"type": "set", "request_id": "3", "device_name": "Kitchen", "volume": 10})
         assert await _json(admin) == {"type": "result", "request_id": "3", "error": "not_attached"}
+
+
+@pytest.mark.asyncio
+async def test_the_announce_tool_speaks_on_every_device_but_the_callers(monkeypatch):
+    from gateway import session_context
+    from hermes_converse.voice_tools import make_handlers
+
+    streamer = _FakeStreamer([b"\x01\x02"])
+    _patch_speech(monkeypatch, streamer)
+    async with Harness(FakeHermes(API_KEY)) as client:
+        kitchen, den = await _device(client, "Kitchen"), await _device(client, "Den")
+        hub = client.app["hub"]
+        caller = next(key for key, item in hub._attachments.items() if item.session.device_name == "Kitchen")
+        monkeypatch.setattr(session_context, "get_session_env", lambda key, default="": {
+            "HERMES_SESSION_PLATFORM": "converse", "HERMES_SESSION_CHAT_ID": caller}.get(key, default))
+        announce = make_handlers(hub)["announce"]
+        assert "error" in json.loads(announce({"message": " "}))
+        assert json.loads(announce({"message": "Dinner's ready."})) == {"result": "ok", "devices": 1}
+        _, pcm = await _collect_turn(den)
+        assert b"".join(pcm) == tone_pcm("announcement", 24000) + b"\x01\x02"
+        assert streamer.requests == ["Dinner's ready."]
+        with pytest.raises(asyncio.TimeoutError):
+            await _recv(kitchen, 0.3)
+        await _end(kitchen)
+        await _end(den)
