@@ -61,12 +61,12 @@ async def test_devices_are_listed_and_every_change_reaches_every_admin(monkeypat
             assert await _json(ws) == {"type": "device", **_entry("Den")}
 
         await kitchen.send_json({"type": "mute", "on": True})
-        await kitchen.send_json({"type": "volume", "level": 40})
-        await kitchen.send_json({"type": "volume", "level": 400})  # out of range: ignored
-        await kitchen.send_json({"type": "volume", "level": 40})  # unchanged: no frame
+        await kitchen.send_json({"type": "volume", "level": 0.4})
+        await kitchen.send_json({"type": "volume", "level": 4})  # out of range: ignored
+        await kitchen.send_json({"type": "volume", "level": 0.4})  # unchanged: no frame
         for ws in (first, second):
             assert await _json(ws) == {"type": "device", **_entry("Kitchen", muted=True)}
-            assert await _json(ws) == {"type": "device", **_entry("Kitchen", muted=True, volume=40)}
+            assert await _json(ws) == {"type": "device", **_entry("Kitchen", muted=True, volume=0.4)}
 
         await _end(kitchen)
         for ws in (first, second):
@@ -121,7 +121,7 @@ async def test_bad_requests_get_bad_request_and_a_frame_with_no_request_id_gets_
                 {"type": "restart"}, {"type": "announce", "message": "  "},
                 {"type": "announce", "message": "hi", "target": [1]},
                 {"type": "set", "device_name": "Kitchen"},
-                {"type": "set", "device_name": "Kitchen", "volume": 101},
+                {"type": "set", "device_name": "Kitchen", "volume": 1.01},
                 {"type": "set", "device_name": "Kitchen", "volume": True},
                 {"type": "set", "device_name": "Kitchen", "muted": "yes"})):
             await admin.send_json({**frame, "request_id": str(n)})
@@ -138,23 +138,23 @@ async def test_set_sends_the_frames_and_answers_with_the_devices_report(monkeypa
         kitchen = await _device(client, "Kitchen")
         admin, _ = await _admin(client)
         await admin.send_json({"type": "set", "request_id": "1", "device_name": "Kitchen",
-                               "muted": True, "volume": 40})
+                               "muted": True, "volume": 0.4})
         assert json.loads((await _recv(kitchen)).data) == {"type": "mute", "on": True}
-        assert json.loads((await _recv(kitchen)).data) == {"type": "volume", "level": 40}
+        assert json.loads((await _recv(kitchen)).data) == {"type": "volume", "level": 0.4}
         await kitchen.send_json({"type": "mute", "on": True})
-        await kitchen.send_json({"type": "volume", "level": 35})  # the device decides
+        await kitchen.send_json({"type": "volume", "level": 0.35})  # the device decides
         frames = [await _json(admin) for _ in range(3)]
-        assert {"type": "result", "request_id": "1", "device": _entry("Kitchen", muted=True, volume=35)} in frames
-        assert {"type": "device", **_entry("Kitchen", muted=True, volume=35)} in frames
+        assert {"type": "result", "request_id": "1", "device": _entry("Kitchen", muted=True, volume=0.35)} in frames
+        assert {"type": "device", **_entry("Kitchen", muted=True, volume=0.35)} in frames
 
         # A device that does not answer is answered with its last report.
         await admin.send_json({"type": "set", "request_id": "2", "device_name": "Kitchen", "muted": False})
         assert await _json(admin) == {"type": "result", "request_id": "2",
-                                      "device": _entry("Kitchen", muted=True, volume=35)}
+                                      "device": _entry("Kitchen", muted=True, volume=0.35)}
 
         await _end(kitchen)
         assert (await _json(admin))["attached"] is False
-        await admin.send_json({"type": "set", "request_id": "3", "device_name": "Kitchen", "volume": 10})
+        await admin.send_json({"type": "set", "request_id": "3", "device_name": "Kitchen", "volume": 0.1})
         assert await _json(admin) == {"type": "result", "request_id": "3", "error": "not_attached"}
 
 

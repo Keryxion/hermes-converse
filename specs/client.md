@@ -194,7 +194,7 @@ All are JSON text frames:
 | `{"type": "commands"}` | Ask which commands the server runs; see "Commands" below. |
 | `{"type": "command", "name": "new"}` | Run a Hermes command for this device's conversation, such as starting a fresh one; see "Commands" below. |
 | `{"type": "say", "text": "..."}` | Speaks the given text (trimmed, at most 400 characters) as a reply of its own: `thinking`, `speaking` + PCM, then `turn_done` with `next_action: "standby"`. No agent turn runs, nothing is added to the conversation, and no `transcript` frame is sent for it. For fixed device prompts such as a spoken help reminder. Empty or non-string text is ignored. |
-| `{"type": "mute", "on": true}`, `{"type": "volume", "level": 40}` | The device's microphone mute and playback volume, after `ready` and whenever either changes; see section 12. |
+| `{"type": "mute", "on": true}`, `{"type": "volume", "level": 0.4}` | The device's microphone mute and playback volume, after `ready` and whenever either changes; see section 12. |
 | `{"type": "approval_response", "approval_id": "...", "choice": "once"}` | Answer a pending approval from a screen with one of its `choices`; see "Approvals" in section 4. |
 
 Every control frame has a `type`. To end the session, close the socket: the
@@ -1474,13 +1474,13 @@ changed it:
 
 ```json
 {"type": "mute", "on": false}
-{"type": "volume", "level": 40}
+{"type": "volume", "level": 0.4}
 ```
 
 | field | what it is |
 |---|---|
 | `on` | Boolean: whether the device is muted (section 4). |
-| `level` | Integer from 0 to 100: the volume of everything the device plays, which is replies, tones, and countdown sounds. 0 is silent. |
+| `level` | Number from 0 to 1: the volume of everything the device plays, which is replies, tones, and countdown sounds, on the scale the device's own volume controls use. 0 is silent and 1 is its loudest. |
 
 The server sets one by sending the same frame. Apply it, then send your own
 frame with the value you now have, even when nothing changed. A request the
@@ -1492,7 +1492,7 @@ the unchanged value.
 - `volume` takes effect at once, including on audio that is playing.
 - Neither plays a tone or changes a turn.
 - Ignore a `mute` whose `on` is not a Boolean and a `volume` whose `level` is
-  not an integer from 0 to 100.
+  not a number from 0 to 1.
 
 A device with no volume of its own to set sends no `volume` frame and ignores
 the server's.

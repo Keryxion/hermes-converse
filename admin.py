@@ -39,7 +39,7 @@ class _Attached:
     attachment: Any
     ws: Any
     muted: Optional[bool] = None
-    volume: Optional[int] = None
+    volume: Optional[float] = None
     waiters: dict[str, list[asyncio.Future]] = field(default_factory=lambda: {"muted": [], "volume": []})
 
 
@@ -53,7 +53,7 @@ def _report(frame: dict) -> Optional[tuple[str, Any]]:
 
 
 def _is_level(value: Any) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 100
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and 0 <= value <= 1
 
 
 def client_address(request: web.Request) -> Optional[str]:

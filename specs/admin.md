@@ -32,7 +32,7 @@ not been attached for 30 days.
 
 ```json
 {"type": "devices", "devices": [
-  {"device_name": "Kitchen", "attached": true, "muted": false, "volume": 40, "address": "192.168.1.52"},
+  {"device_name": "Kitchen", "attached": true, "muted": false, "volume": 0.4, "address": "192.168.1.52"},
   {"device_name": "Den Echo", "attached": false, "muted": null, "volume": null, "address": "192.168.1.60"}]}
 ```
 
@@ -41,14 +41,14 @@ not been attached for 30 days.
 | `device_name` | The device's name, which identifies it in every frame. |
 | `attached` | Whether the device has a voice connection now. |
 | `muted` | Whether its microphone is muted. `null` while it is not attached, or when it has not said. |
-| `volume` | Its playback volume, an integer from 0 to 100. `null` while it is not attached, or for a device with no volume to set. |
+| `volume` | Its playback volume, a number from 0 to 1. `null` while it is not attached, or for a device with no volume to set. |
 | `address` | The IP address it last connected from, kept while it is away so the device can be found on the network. `null` when none is known. |
 
 Whenever anything about a device changes, or a new device connects for the first
 time, the server sends that device whole:
 
 ```json
-{"type": "device", "device_name": "Kitchen", "attached": true, "muted": true, "volume": 40, "address": "192.168.1.52"}
+{"type": "device", "device_name": "Kitchen", "attached": true, "muted": true, "volume": 0.4, "address": "192.168.1.52"}
 ```
 
 When the server forgets a device, it says so:
@@ -107,15 +107,15 @@ is skipped.
 Change a device's microphone mute, its volume, or both:
 
 ```json
-{"type": "set", "request_id": "8", "device_name": "Kitchen", "muted": true, "volume": 40}
+{"type": "set", "request_id": "8", "device_name": "Kitchen", "muted": true, "volume": 0.4}
 ```
 
-`muted` is a Boolean and `volume` an integer from 0 to 100; send at least one.
+`muted` is a Boolean and `volume` a number from 0 to 1; send at least one.
 The result holds the device as it then is:
 
 ```json
 {"type": "result", "request_id": "8",
- "device": {"device_name": "Kitchen", "attached": true, "muted": true, "volume": 40, "address": "192.168.1.52"}}
+ "device": {"device_name": "Kitchen", "attached": true, "muted": true, "volume": 0.4, "address": "192.168.1.52"}}
 ```
 
 The device decides. One that cannot apply a change, such as unmuting past a
