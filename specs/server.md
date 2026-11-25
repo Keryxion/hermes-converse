@@ -571,7 +571,7 @@ address the connection came from: the first address of `X-Forwarded-For` when
 the request has one, otherwise the socket's peer. It is kept while the device is
 away and given to admin connections.
 
-A device ends, which is what keeps the list short. Once an hour, remove every
+A device ends, which is what keeps the list short. At startup and then once an hour, remove every
 unattached device whose `last_attached` is more than 30 days old: its row in
 `devices` and its rows in `conversations`. Give a row that has no
 `last_attached` the current time instead, so it ends 30 days later. Its Hermes
