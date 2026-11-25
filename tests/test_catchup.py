@@ -163,3 +163,36 @@ def test_a_turn_is_never_given_another_turns_message():
         settled.set()
         return await ids.user_message("t2", settled)
     assert asyncio.run(look()) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('kind', ['audio', 'speaking'])
+async def test_relay_drops_encoding_finished_for_replaced_socket(monkeypatch, kind):
+    import asyncio
+    from types import SimpleNamespace
+    from hermes_converse import catchup
+    entered, release = asyncio.Event(), asyncio.Event()
+    old_frames, new_frames = [], []
+    async def old_send(frame):
+        old_frames.append(frame)
+    async def new_send(frame):
+        new_frames.append(frame)
+    async def encode_later(fn, *args):
+        entered.set()
+        await release.wait()
+        return fn(*args)
+    monkeypatch.setattr(catchup, 'on_audio_thread', encode_later)
+    old = SimpleNamespace(send_bytes=old_send, send_json=old_send)
+    new = SimpleNamespace(send_bytes=new_send, send_json=new_send)
+    old_audio = SimpleNamespace(encode=lambda *args: [b'old-format'], begin=lambda turn: None)
+    new_audio = SimpleNamespace(encode=lambda *args: [b'new-format'], begin=lambda turn: None)
+    relay = catchup.Relay(old, audio=old_audio, source_rate=24000)
+    send = relay.send_bytes(b'pcm') if kind == 'audio' else relay.send_json({'type': 'speaking'})
+    pending = asyncio.create_task(send)
+    await asyncio.wait_for(entered.wait(), 2)
+    relay.attach(new, audio=new_audio)
+    release.set()
+    await pending
+    assert old_frames == new_frames == []
+    await relay.send_bytes(b'pcm')
+    assert new_frames == [b'new-format']

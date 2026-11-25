@@ -818,3 +818,44 @@ def test_register_platform_reports_an_unsupporting_hermes():
 
     ctx = SimpleNamespace(register_platform=refuse, register_hook=lambda *a: pytest.fail("no hooks"))
     assert register_platform(ctx, ConversationHub()) is False
+
+
+async def test_a_silent_server_turn_still_ends_with_what_it_asked_for(rig, monkeypatch):
+    """`speak_this("")` keeps a server-started turn silent, but the turn still ends: its output
+    carries the standby and the no_barge_in hold the turn asked for."""
+    from hermes_converse.server_turn import ServerTurn
+    from hermes_converse.voice_tools import make_handlers
+    import json
+    from gateway import session_context
+
+    device = Device()
+    rig.hub.attach("den", device)
+    server_turn = ServerTurn()
+    rig.adapter._server_turns["den"] = server_turn
+    monkeypatch.setattr(session_context, "get_session_env", lambda key, default="": {
+        "HERMES_SESSION_PLATFORM": "converse", "HERMES_SESSION_CHAT_ID": "den"}.get(key, default)
+    )
+    handlers = make_handlers(rig.hub)
+    assert json.loads(handlers["speak_this"]({"text": ""})) == {"result": "ok"}
+    assert json.loads(handlers["standby"]({})) == {"result": "ok"}
+    assert json.loads(handlers["no_barge_in"]({})) == {"result": "ok"}
+    assert (await rig.adapter.send("den", "A reminder nobody needs to hear.", metadata=NOTIFY)).success
+    assert [(o.text, o.next_action, o.no_barge_in) for o in device.outputs] == [("", "standby", True)]
+
+
+async def test_a_silent_server_turn_that_asked_for_nothing_sends_nothing(rig, monkeypatch):
+    """Silence with no standby, mute, hold or follow-up to carry is not published at all."""
+    from hermes_converse.server_turn import ServerTurn
+    from hermes_converse.voice_tools import make_handlers
+    import json
+    from gateway import session_context
+
+    device = Device()
+    rig.hub.attach("den", device)
+    rig.adapter._server_turns["den"] = ServerTurn()
+    monkeypatch.setattr(session_context, "get_session_env", lambda key, default="": {
+        "HERMES_SESSION_PLATFORM": "converse", "HERMES_SESSION_CHAT_ID": "den"}.get(key, default)
+    )
+    assert json.loads(make_handlers(rig.hub)["speak_this"]({"text": ""})) == {"result": "ok"}
+    assert (await rig.adapter.send("den", "Not spoken.", metadata=NOTIFY)).success
+    assert device.outputs == []

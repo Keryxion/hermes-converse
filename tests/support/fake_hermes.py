@@ -74,6 +74,7 @@ class FakeHermes:
         self.tool_calls = tool_calls
         self.reasoning_tokens = tuple(reasoning_tokens)  # one provider report per model call
         self.hang = hang
+        self.after_hang: tuple[str, ...] = ()  # text the model sends once the hang ends
         self.fail: Optional[Exception] = None  # raised by the runner instead of answering
         self.store = FakeStore()
         self.adapter: Any = None
@@ -168,6 +169,11 @@ class FakeHermes:
                 await asyncio.sleep(0)
             while self.hang and not interrupted() and not self._redirects:
                 await asyncio.sleep(0.01)
+            for delta in self.after_hang:
+                if interrupted() or self._redirects:
+                    break
+                adapter.on_stream_delta(delta=delta, kind="text", session_id=sid)
+                await asyncio.sleep(0)
             if not self._redirects or interrupted():
                 break
             self._redirects.clear()
@@ -175,7 +181,7 @@ class FakeHermes:
         if interrupted():
             turn["status"] = "interrupted"
             return None
-        turn["status"], turn["output"] = "completed", "".join(self.deltas)
+        turn["status"], turn["output"] = "completed", "".join(self.deltas + self.after_hang)
         if turn["output"]:
             self.store.add(sid, "assistant", turn["output"])
         return turn["output"] or None

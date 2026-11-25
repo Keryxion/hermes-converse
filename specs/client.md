@@ -356,7 +356,6 @@ Countdowns are unaffected by a command.
 | `turn_done` | the reply is fully sent; `next_action` is usually absent; `standby` ends the exchange and `listen` switches the client into listening, after drain; `mute` mutes it at once |
 | `quiet` | session mode: `quiet_seconds` of silence since listening began; sent every `quiet_interval` seconds |
 | `error` | the turn failed (spoken-safe text) |
-| `{"type":"tone","tone":"confirm"}` | Play the named tone (see `tones.md`): `confirm` or `error` when the assistant chooses to, `approval` just before the server asks for an approval, `announcement` just before an announcement (section 9). It is not a reply: no `turn_id`, and the device reports no state for it. |
 | `client_diagnostics` | Request a fresh version, build, and diagnostic snapshot; answer on this socket with the same `request_id`, as below. |
 | `countdown`, `countdown_cancel` | Start, extend, or cancel a countdown that ends with a tone (section 10). |
 | `mute`, `volume` | Set the device's microphone mute or playback volume, then report it (section 12). |
@@ -729,7 +728,8 @@ zero.
 `summary` and `command` are text to display; never act on their contents. Never
 send an allowing choice without the person tapping it, and do not send an old choice
 again after reconnecting. An approval still pending when the client reconnects
-is sent again as a new `approval_request` with the same `approval_id`; show it. A device with no screen ignores both server frames.
+is sent again as a new `approval_request` with the same `approval_id`; show it. A device with no screen shows nothing for either
+server frame; the limits above still apply to it.
 
 ### Handling `turn_done.next_action`
 
@@ -751,7 +751,8 @@ is sent again as a new `approval_request` with the same `approval_id`; show it. 
 {"type":"turn_done","turn_id":"turn-42","next_action":"listen"}
 ```
 
-`listen`, `standby`, and `mute` are the only values; treat any other as absent.
+The value is `listen`, `standby`, or `mute`: the server sends no other, and a
+client treats any other as absent.
 They are the three states the microphone can be in, and `next_action` names
 the one to move to:
 
@@ -1261,15 +1262,10 @@ output goes to the one device attached to it. It is never broadcast and never
 runs a wake election.
 
 An announcement is a message the server was given for this device by name, such
-as a Home Assistant notification. It arrives as a `tone` frame naming
-`announcement`, then speech already prepared:
-
-```json
-{"type": "tone", "tone": "announcement"}
-```
-
-then `speaking` + PCM → `turn_done`. Play the tone to its end before the
-speech. The same announcement can play on several devices at once; each plays
+as a Home Assistant notification. It arrives as speech already prepared:
+`speaking` + PCM → `turn_done`. The reply audio starts with the announcement
+tone (`tones.md`), which the server renders. The same announcement can play on
+several devices at once; each plays
 its own copy and none runs a wake election.
 
 

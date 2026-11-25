@@ -57,7 +57,7 @@ class ConversationHub:
                 expires_at: float, next_action: Optional[str] = None, unheard: bool = False,
                 no_barge_in: bool = False,
                 after_playback: Optional[Callable[[], Awaitable[None]]] = None,
-                transient: bool = False) -> str:
+                transient: bool = False, tones: tuple[str, ...] = ()) -> str:
         with self._lock:
             item = self._attachments.get(conversation_id)
             if item is None or item.session.stopped:
@@ -73,7 +73,7 @@ class ConversationHub:
                 item.seen.popitem(last=False)
             item.pending += 1
             output = ConversationOutput(text, event_id, next_action=next_action, unheard=unheard,
-                                        transient=transient, no_barge_in=no_barge_in)
+                                        transient=transient, no_barge_in=no_barge_in, tones=tones)
             output.after_playback = after_playback
             def consumed():
                 with self._lock:

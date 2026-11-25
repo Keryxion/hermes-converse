@@ -5,10 +5,13 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
+import uuid
 from typing import Any, Callable
 
 TOOLSET = "converse"
 TONES = ("confirm", "error")
+TONE_TTL = 30  # seconds a tone may wait behind queued speech before it is stale
 
 SCHEMAS = {
     "client_diagnostics": {
@@ -103,6 +106,20 @@ def _result(value: str) -> str:
     return json.dumps({"result": value})
 
 
+def play_tone_on(hub: Any, conversation_id: str, tone: str) -> None:
+    """Play *tone* in the conversation's reply audio: at this point of the running turn's reply,
+    else after whatever the device has queued to say."""
+    from .loop import Tone
+
+    adapter = hub.gateway
+    turn = adapter._turns.get(conversation_id) if adapter is not None else None
+    if turn is not None and turn.started and turn.outcome is None and not turn.stopped and not turn.detached:
+        turn.on_delta(Tone(tone))
+    else:
+        hub.publish(conversation_id, "", f"tone:{uuid.uuid4().hex}", expires_at=time.time() + TONE_TTL,
+                    transient=True, tones=(tone,))
+
+
 def make_handlers(hub: Any) -> dict[str, Callable[..., Any]]:
     def device() -> tuple[str, Any]:
         """("", attachment) for a voice device conversation, else (error result, None)."""
@@ -146,9 +163,7 @@ def make_handlers(hub: Any) -> dict[str, Callable[..., Any]]:
         tone = args.get("tone")
         if tone not in TONES:
             return json.dumps({"error": "tone must be confirm or error"})
-        if attachment.send is None:
-            return _result("not_attached")
-        attachment.send({"type": "tone", "tone": tone})
+        play_tone_on(hub, attachment.conversation_id, tone)
         return _result("ok")
 
     def end_with(mute: bool) -> str:

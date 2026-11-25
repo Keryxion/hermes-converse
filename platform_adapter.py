@@ -353,14 +353,20 @@ class ConverseAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=uuid.uuid4().hex)  # status text, not speech
         server_turn = self._server_turns.get(chat_id)
         text = (server_turn.reply(content or "") if server_turn is not None else content or "").strip()
+        next_action = (None if server_turn is None else "mute" if server_turn.mute
+                       else "standby" if server_turn.standby else None)
+        no_barge_in = server_turn is not None and server_turn.no_barge_in
+        after_playback = server_turn.after_playback if server_turn is not None else None
         if not text or text.upper() == SILENT:
-            return SendResult(success=True, message_id=uuid.uuid4().hex)
+            if next_action is None and not no_barge_in and after_playback is None:
+                return SendResult(success=True, message_id=uuid.uuid4().hex)
+            # A silent server-started turn still ends: its `turn_done` carries what the turn
+            # asked for, and `mute`/`no_barge_in` hold for it as for a spoken one.
+            text = ""
         event_id = f"send:{uuid.uuid4().hex}"
         status = self._hub.publish(chat_id, text, event_id, expires_at=time.time() + OUTPUT_TTL,
-                                   next_action=None if server_turn is None else "mute" if server_turn.mute
-                                   else "standby" if server_turn.standby else None,
-                                   no_barge_in=server_turn is not None and server_turn.no_barge_in,
-                                   after_playback=server_turn.after_playback if server_turn is not None else None)
+                                   next_action=next_action, no_barge_in=no_barge_in,
+                                   after_playback=after_playback)
         if status == "accepted":
             return SendResult(success=True, message_id=event_id)
         # No live device (or it is saturated): report it; nothing is queued for a later connection.
