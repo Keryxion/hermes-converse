@@ -583,15 +583,15 @@ unattached device whose `last_attached` is more than 30 days old: its row in
 `devices` and its rows in `conversations`. Give a row that has no
 `last_attached` the current time instead, so it ends 30 days later. Its Hermes
 sessions stay; Hermes owns their retention. A device that connects again
-afterwards is a new device with a new conversation. Send `devices` to every
-admin connection when a device has been removed.
+afterwards is a new device with a new conversation. Send `device_removed` with
+its `device_name` to every admin connection for each device removed.
 
 Handle each request in its own task, so a `set` waiting on a device does not
 hold up the frames behind it.
 
 Verify: a wrong key gets 401 and no socket; the first frame lists every device
 in `devices.db`; a device unattached for 30 days is removed with its
-conversations, its Hermes sessions are kept, and `devices` is sent without it; a
+conversations, its Hermes sessions are kept, and `device_removed` is sent for it; a
 row with no `last_attached` is given one and kept; an attached device is never
 removed; attaching, detaching, and a first connection each send a `device` frame
 to every admin connection; an unknown frame type with a `request_id` gets

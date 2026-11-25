@@ -51,9 +51,14 @@ time, the server sends that device whole:
 {"type": "device", "device_name": "Kitchen", "attached": true, "muted": true, "volume": 40, "address": "192.168.1.52"}
 ```
 
-When the server forgets a device, it sends `devices` again. A `devices`
-frame replaces everything known before: forget a device it does not name. The
-same holds for the one sent after a reconnect.
+When the server forgets a device, it says so:
+
+```json
+{"type": "device_removed", "device_name": "Den Echo"}
+```
+
+After a reconnect, the new `devices` frame replaces everything known before:
+forget a device it does not name.
 
 ## 3. Requests
 
