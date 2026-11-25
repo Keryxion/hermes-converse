@@ -562,14 +562,26 @@ as the Arya Devices integration for Home Assistant. Its frames are in
 before accepting the socket, and refuse a bad one with 401.
 
 Send `devices` first, then a `device` frame to every admin connection whenever a
-device's entry changes: it attaches or detaches, a new device is reserved, or
-its reported mute or volume changes. The list is every row of `devices.db`.
+listed device's entry changes: it attaches or detaches, joins the list, or its
+reported mute or volume changes.
+
+The list is the devices attached now or within the last 30 days. Record when a
+device was last attached as `last_attached` in its JSON `settings` in
+`devices.db`, at attach and at detach. A device with no `last_attached` is
+listed only while attached, so rows from before this was recorded stay out
+until their device connects. A connection whose `start` has `test: true` is
+never listed and records no `last_attached`. Check for devices past 30 days once
+an hour, and send `devices` to every admin connection when one has left. An
+unlisted device cannot be named by a request: `set` answers `unknown_device`
+and `announce` lists it in `skipped`.
+
 Handle each request in its own task, so a `set` waiting on a device does not
 hold up the frames behind it.
 
-Verify: a wrong key gets 401 and no socket; the first frame lists every known
-device; attaching, detaching, and a first connection each send a `device` frame
-to every admin connection; an unknown frame type with a `request_id` gets
+Verify: a wrong key gets 401 and no socket; the first frame lists the devices
+attached now or within 30 days and no others; a `test` device is never listed,
+attached or not; a device passing 30 days sends `devices` without it; attaching, detaching, and
+joining the list each send a `device` frame to every admin connection; an unknown frame type with a `request_id` gets
 `bad_request`; a frame with no `request_id` gets nothing.
 
 ## Announcements
@@ -595,8 +607,9 @@ who answers it starts an ordinary turn that does not know what was announced.
 
 Verify: one name speaks on that device only; an array, and an omitted `target`,
 speak on each attached device; an unattached or unknown device is listed in
-`skipped` and the rest still speak; the reply audio starts with the tone; an
-announcement during a reply plays after it, tone included; no
+`skipped`, as is a `test` device, and the rest still speak; the reply audio
+starts with the tone; an announcement during a reply plays after it, tone
+included; no
 `transcript` is sent and nothing is replayed.
 
 ## Mute and volume
