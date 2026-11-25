@@ -28,6 +28,7 @@ def _library():
         "opus_decoder_create": (ct.c_void_p, [ct.c_int32, ct.c_int, ct.POINTER(ct.c_int)]),
         "opus_encoder_destroy": (None, [ct.c_void_p]),
         "opus_decoder_destroy": (None, [ct.c_void_p]),
+        "opus_decoder_ctl": (ct.c_int, [ct.c_void_p, ct.c_int]),
         "opus_encoder_ctl": (ct.c_int, [ct.c_void_p, ct.c_int]),  # remaining arguments are variadic
         "opus_encode": (ct.c_int32, [ct.c_void_p, ct.c_void_p, ct.c_int, ct.c_void_p, ct.c_int32]),
         "opus_decode": (ct.c_int, [ct.c_void_p, ct.c_void_p, ct.c_int32, ct.c_void_p, ct.c_int, ct.c_int]),
@@ -96,6 +97,9 @@ class Decoder:
         self.state = lib.opus_decoder_create(rate, 1, ct.byref(error))
         _check(lib, error.value)
         self.close = weakref.finalize(self, lib.opus_decoder_destroy, self.state)
+
+    def reset(self):
+        _check(self.lib, self.lib.opus_decoder_ctl(self.state, 4028))  # OPUS_RESET_STATE
 
     def decode(self, packet: bytes) -> bytes:
         if not self.close.alive or not packet or len(packet) > 1275:

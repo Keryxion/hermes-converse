@@ -7,7 +7,6 @@ depends_on:
   - alpha
 labels:
   backend: docker
-  platform: linux/arm64
 steps:
   - name: live-penny-free
     image: python:3.13-slim

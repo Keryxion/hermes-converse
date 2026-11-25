@@ -347,6 +347,17 @@ async def test_turn_that_outlives_its_stop_never_blocks_or_speaks(rig):
     assert rig.adapter._abandoned == {} and rig.hub._attachments["den"].session.outputs == []
 
 
+async def test_reply_is_judged_by_its_own_message_not_the_next_one_started(rig):
+    """Hermes can start a queued, abandoned voice turn before the run ahead of it sends its final.
+    That final names its own message and is delivered; the abandoned turn's is not."""
+    rig.hub.attach("den", Device())
+    rig.adapter._abandoned["gone"] = object()
+    rig.adapter._active["den"] = "gone"
+    await rig.adapter.send("den", "First turn finished.", reply_to="first", metadata=NOTIFY)
+    await rig.adapter.send("den", "stale", reply_to="gone", metadata=NOTIFY)
+    assert [o.text for o in rig.hub._attachments["den"].session.outputs] == ["First turn finished."]
+
+
 @pytest.mark.parametrize("heard", [False, True])
 async def test_barged_run_nobody_follows_is_delivered_only_if_unheard(rig, heard):
     """Barge-in leaves the run going. If the person's words never reach it (the capture was
@@ -619,11 +630,13 @@ async def test_model_selection_is_sent_as_the_gateway_model_command(rig):
     spoken = []
     await turns.run_turn(text="a", on_delta=spoken.append)
     assert [text for text, _, _ in seen] == ["a"]  # no selection, nothing stored: no command
-    await turns.run_turn(text="b", on_delta=spoken.append, model="flash", provider="litellm")
-    await turns.run_turn(text="c", on_delta=spoken.append, model="flash", provider="litellm")
+    await turns.run_command("/model flash --provider litellm --session")
+    await turns.run_turn(text="b", on_delta=spoken.append)
+    await turns.run_turn(text="c", on_delta=spoken.append)
+    await turns.run_command("/model reset")
     await turns.run_turn(text="d", on_delta=spoken.append)
     assert [text for text, _, _ in seen] == [
-        "a", "/model flash --provider litellm", "b", "c", "/model reset", "d"]
+        "a", "/model flash --provider litellm --session", "b", "c", "/model reset", "d"]
     assert seen[1][1:] == ("model", True) and seen[2][1:] == (None, False)
     assert spoken == ["ok"] * 4  # the command's confirmation is never spoken
 
@@ -728,7 +741,7 @@ async def test_voice_approval_only_confirms_the_same_command_once(rig, confirmed
         rig.adapter._commands.pop("den", None)
 
 
-async def test_new_socket_clears_a_model_left_by_an_earlier_one(rig):
+async def test_new_socket_keeps_session_model(rig):
     turns, key = await _turns(rig)
     rig.store.models[key] = {"model": "terra", "provider": "litellm"}
     seen = []
@@ -741,7 +754,8 @@ async def test_new_socket_clears_a_model_left_by_an_earlier_one(rig):
 
     rig.adapter.set_message_handler(handler)
     await turns.run_turn(text="a", on_delta=lambda _: None)
-    assert seen == ["/model reset", "a"]
+    assert seen == ["a"]
+    assert turns.model_override()["model"] == "terra"
 
 
 async def test_every_agent_event_counts_as_progress(rig):
@@ -804,3 +818,44 @@ def test_register_platform_reports_an_unsupporting_hermes():
 
     ctx = SimpleNamespace(register_platform=refuse, register_hook=lambda *a: pytest.fail("no hooks"))
     assert register_platform(ctx, ConversationHub()) is False
+
+
+async def test_a_silent_server_turn_still_ends_with_what_it_asked_for(rig, monkeypatch):
+    """`speak_this("")` keeps a server-started turn silent, but the turn still ends: its output
+    carries the standby and the no_barge_in hold the turn asked for."""
+    from hermes_converse.server_turn import ServerTurn
+    from hermes_converse.voice_tools import make_handlers
+    import json
+    from gateway import session_context
+
+    device = Device()
+    rig.hub.attach("den", device)
+    server_turn = ServerTurn()
+    rig.adapter._server_turns["den"] = server_turn
+    monkeypatch.setattr(session_context, "get_session_env", lambda key, default="": {
+        "HERMES_SESSION_PLATFORM": "converse", "HERMES_SESSION_CHAT_ID": "den"}.get(key, default)
+    )
+    handlers = make_handlers(rig.hub)
+    assert json.loads(handlers["speak_this"]({"text": ""})) == {"result": "ok"}
+    assert json.loads(handlers["standby"]({})) == {"result": "ok"}
+    assert json.loads(handlers["no_barge_in"]({})) == {"result": "ok"}
+    assert (await rig.adapter.send("den", "A reminder nobody needs to hear.", metadata=NOTIFY)).success
+    assert [(o.text, o.next_action, o.no_barge_in) for o in device.outputs] == [("", "standby", True)]
+
+
+async def test_a_silent_server_turn_that_asked_for_nothing_sends_nothing(rig, monkeypatch):
+    """Silence with no standby, mute, hold or follow-up to carry is not published at all."""
+    from hermes_converse.server_turn import ServerTurn
+    from hermes_converse.voice_tools import make_handlers
+    import json
+    from gateway import session_context
+
+    device = Device()
+    rig.hub.attach("den", device)
+    rig.adapter._server_turns["den"] = ServerTurn()
+    monkeypatch.setattr(session_context, "get_session_env", lambda key, default="": {
+        "HERMES_SESSION_PLATFORM": "converse", "HERMES_SESSION_CHAT_ID": "den"}.get(key, default)
+    )
+    assert json.loads(make_handlers(rig.hub)["speak_this"]({"text": ""})) == {"result": "ok"}
+    assert (await rig.adapter.send("den", "Not spoken.", metadata=NOTIFY)).success
+    assert device.outputs == []

@@ -7,7 +7,6 @@ when:
 
 labels:
   backend: docker
-  platform: linux/arm64
 
 steps:
   - name: hashes

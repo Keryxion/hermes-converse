@@ -54,6 +54,24 @@ def test_store_keeps_device_identity_and_separate_assistant_conversations(tmp_pa
     reopened.close()
 
 
+
+def test_store_accepts_a_table_a_newer_branch_extended(tmp_path):
+    """An alpha deploy of another branch can add columns; this one must still open devices."""
+    import sqlite3
+    path = tmp_path/'devices.db'
+    db = sqlite3.connect(path)
+    db.executescript("""
+        CREATE TABLE devices (device_name TEXT PRIMARY KEY, recipient_id TEXT NOT NULL UNIQUE,
+                              settings TEXT NOT NULL DEFAULT '{}');
+        CREATE TABLE conversations (recipient_id TEXT NOT NULL, assistant_name TEXT NOT NULL,
+                                    title TEXT NOT NULL UNIQUE, session_id TEXT UNIQUE,
+                                    PRIMARY KEY(recipient_id, assistant_name));
+    """)
+    db.close()
+    store = DeviceStore(path)
+    assert store.reserve('Arya', 'Den Echo').recipient_id == store.reserve('Arya', 'Den Echo').recipient_id
+    store.close()
+
 @pytest.mark.asyncio
 async def test_names_select_the_conversation_without_exposing_it(tmp_path, monkeypatch):
     fake = _patch(monkeypatch)
@@ -129,9 +147,14 @@ async def test_replacement_keeps_the_turn_in_flight(tmp_path, monkeypatch):
         second, ready = await connect(client)
         assert ready['type'] == 'ready'
         assert [turn['status'] for turn in fake.turns] == ['running']  # the turn carries on
+        fake.after_hang = (' More.',)
         fake.hang = False
         frames, pcm = await _collect_turn(second)  # the rest of the turn arrives here
         assert [f['type'] for f in frames if f['type'] != 'transcript'][-1] == 'turn_done' and pcm
+        # Text prepared before the switch is only replayed; audio starts with text prepared after it.
+        said = [f for f in frames if f['type'] == 'transcript' and f['role'] == 'assistant' and f['text']]
+        assert [(f['text'], f.get('replay', False)) for f in said] == [('Hello.', True), (' More.', False)]
+        assert frames.index(said[1]) < [f['type'] for f in frames].index('speaking')
         await second.close()
 
 
@@ -143,7 +166,7 @@ async def test_wrong_key_cannot_create_device_or_conversation(tmp_path, monkeypa
         ws = await client.ws_connect('/v1/audio/converse')
         await ws.send_str(_start_msg(key='wrong', **frame()))
         assert (await ws.receive_json(timeout=2))['error'] == 'unauthorized'
-        assert store._db is None and not fake.store.ids
+        assert not store.settings() and not fake.store.ids
         await ws.close()
 
 

@@ -11,7 +11,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from .loop import Aside
+from .loop import Aside, Tone
 
 logger = logging.getLogger(__name__)
 
@@ -201,9 +201,8 @@ class Approvals:
                 "turn_id": getattr(attachment.session, "_active_turn_id", None),
                 "approval_id": p.request_id, "summary": p.summary, "command": p.command,
                 "choices": p.choices})
-            # The tone says a question is coming; it plays before the summary is spoken.
-            self._send(attachment, {"type": "tone", "tone": "approval"})
-        self._speak(p, self._cue(speech or p.summary, p.choices))
+        # The tone says a question is coming; it plays just before the summary is spoken.
+        self._speak(p, self._cue(speech or p.summary, p.choices), tone=speech is None)
 
     @staticmethod
     def _cue(text: str, choices: Any = ()) -> str:
@@ -216,13 +215,16 @@ class Approvals:
             text += "?"
         return f"{text} {_answers(choices)}"
 
-    def _speak(self, p: _Pending, text: str) -> None:
+    def _speak(self, p: _Pending, text: str, *, tone: bool = False) -> None:
         turn = self._adapter._turns.get(p.chat_id)
         if turn is not None and turn.started and turn.outcome is None and not turn.stopped and not turn.detached:
+            if tone:
+                turn.on_delta(Tone("approval"))
             turn.on_delta(Aside(text + "\n"))  # the waiting turn says it; it is not part of the reply
         else:
             self._hub.publish(p.chat_id, text, f"approval:{uuid.uuid4().hex}", expires_at=time.time() + SPEECH_TTL,
-                              transient=True)  # a question, not a message of the conversation
+                              transient=True, next_action="listen",  # the idle device must capture the answer
+                              tones=("approval",) if tone else ())
 
     @staticmethod
     def _send(attachment: Any, frame: dict) -> None:

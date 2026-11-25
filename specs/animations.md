@@ -19,6 +19,10 @@ Free to differ per device:
   its frame rate and LED count while keeping the motion recognizable.
 - Extra channels such as text, icons, level meters, a face, or haptics.
 
+Square status displays use the shared indicator below. A device with both a
+status display and LEDs uses both: the display is readable close up, and the
+LEDs convey the same state and audio activity across the room.
+
 ## States
 
 A device shows one state at a time.
@@ -34,16 +38,19 @@ A device shows one state at a time.
 | `arbitrating` | Wake word heard; waiting for the grant | Orange | Smooth 1 s breath between 35% and 100% brightness |
 | `wake_denied` | Matching `wake_deny` received | Red | Steady for 1.5 s, then standby |
 | `listening` | Wake granted, manual Talk, follow-up listening, or waiting for an approval answer | Green | Steady, with a meter driven by the microphone level where the device can show one |
-| `thinking` | The agent turn has started | Orange | Clearly animated: an orbit on a ring or screen, a breath on a single LED |
-| `speaking` | Reply playing, including its local tail | Speaking blue | Large and prominent, driven by the reply audio level where the device can show it |
+| `thinking` | The agent turn has started | Orange | Clockwise circular chase, 1.2 s per lap, on a ring or square display; a breath on a single LED |
+| `speaking` | Reply playing, including its local tail | Speaking blue | Prominent within the indicator, driven by the reply audio level where the device can show it |
 | `error` | Connection, authentication, capture, or playback failure | Fault red | Persistent pulse, with error text or a warning symbol where available |
 | `ended` | Session explicitly ended | Neutral | 600 ms fade to idle |
 
 An orange travelling animation always means thinking. Faults pulse and never
 rotate: rotation means work is in progress. Idle and
 standby motion stays small and slow so it does not look like an input meter.
-A level meter always shows real audio: microphone input while listening, reply
-output while speaking.
+A level meter always shows real audio: reply output while speaking, otherwise
+microphone input whenever capture is running and unmuted, including wake-word
+standby and thinking. Meter activity does not change the voice state or imply
+that audio is being sent to the server. When capture is stopped or unavailable,
+there is no microphone activity to show.
 
 ### Colors
 
@@ -160,20 +167,71 @@ Ambient light effects, face blinks and glances, and user themes never cover a
 voice state, mute, or a fault. A theme may change geometry and style; it keeps
 the state colors and meanings.
 
+## Square status indicator
+
+Use the same design on every square status display, including the top-left
+conversation indicator and the Atom S3R display on top of the pyramid. In a
+conversation, keep the compact indicator pinned and visible as the transcript
+scrolls. It carries the complete state, audio activity, and mute indication;
+the user never needs to scroll back to a larger animation to read them.
+
+The center is a small orb containing rounded vertical bars, tallest toward the
+middle, with a soft glow and surrounding rings. The bars take the current
+state color and visibly change height with the real audio level. Keep the
+background's state color; audio activity is shown by the bars.
+
+While speaking, drive the bars from reply audio actually playing, including
+the local playback tail, rather than from packets arriving or being queued.
+Otherwise, drive them from the unmuted microphone whenever capture is running.
+During thinking, microphone activity moves the bars while the thinking chase
+continues around them. While speaking, show reply audio exclusively, including
+silence between words. Muting stops microphone-driven movement immediately;
+reply audio may still move the bars.
+
+In silence, retain a small, stationary bar pattern. A subtle, slow breath of
+the orb or glow shows that the indicator is alive, distinct from audio-driven
+bar movement. Keep this breath subordinate to the state's motion: it must not
+turn steady mute or denial into a pulse, or obscure reconnecting or fault
+pulses. Silence never produces simulated audio activity.
+
+Travelling states use multiple separated arcs chasing clockwise around a
+circular path surrounding the center, even though the display is square.
+Thinking uses orange arcs and a 1.2 s lap. Setup, pairing, and call indications
+that travel use the same circular chase geometry with their specified colors
+and periods. Keep the center readable throughout the chase. Breathing states
+still breathe; faults pulse and never chase.
+
+Mute is a separate, continuously visible microphone-off badge or symbol using
+mute red. It coexists with the state animation, reply meter, and any fault
+indication. The mute rules above still apply: muted listening never shows green.
+
+### Hero presentation
+
+Before a conversation starts, a larger version of the same orb, bars, and rings
+may accompany a clear invitation to configure the server, connect, or talk,
+as appropriate to the state. It uses the same colors, audio source, chase,
+and mute rules as the compact indicator. It may scroll away with the
+conversation; the compact indicator remains visible.
+
 ## Device adaptations
+
+The narrow menu-area mark uses its own geometry, with the same state meanings,
+colors, audio-source rules, and mute visibility as the square indicator.
 
 | Device | Rendering |
 |---|---|
 | macOS menu mark | The `)` arc stays visible in every state. The dot takes the state color and animation; larger animations such as thinking and mute also color and animate the arc. The level meter sits beside the dot. The mark stays legible on light and dark menu bars. |
-| iOS orb | The orb and rings take the state color. The waveform shows the microphone level while listening and the reply level while speaking. A label names the state and microphone status. |
-| LED ring (Voice PE, Echo) | Travelling states orbit the ring. Where the device knows the talker's direction, listening points toward the talker. |
-| LED groups (Echo Pyramid) | The four groups mirror the same state. Travelling states may breathe instead. |
+| Square status display | The shared compact indicator above, with a state and microphone-status label where space permits. |
+| LED ring (Voice PE, Echo) | Travelling states chase clockwise around the ring. Audio level modulates the extent or brightness of the indication while retaining its state color and motion. Where the device knows the talker's direction, listening points toward the talker. |
+| Pyramid top display and side LEDs | The Atom S3R top display shows the shared square indicator. All four side LED groups show the same state and audio activity at the same time as the display, using level-driven extent or brightness within each group. Adapt travelling motion to the LED layout while preserving its direction and period. |
 | Echo screen band | The ring unrolled into a band with the talker at the center, using the ring's colors and timing. |
 | Echo face | Eyes and mouth express the state: attentive while listening, searching while thinking, mouth moving with the reply while speaking. The face uses the state color and agrees with the band. |
 | Single LED (Echo Input) | Travelling states breathe or pulse instead. Color and brightness carry the state. |
 
-When Reduce Motion is enabled, show a static state color with text, an icon,
-or a shape, and a non-animated level where practical.
+When Reduce Motion is enabled, remove chasing, decorative breathing, and
+pulsing. Show a static state color with text, an icon, or a shape; keep mute
+and faults visible. Retain a level indication that updates with real audio,
+without decorative motion or animated transitions between levels.
 
 Animations run from a monotonic clock so their periods do not depend on frame
 rate. Rendering never blocks audio capture, network audio, or playback.

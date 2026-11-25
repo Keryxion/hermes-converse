@@ -13,6 +13,12 @@ all apply, and a named device's conversation shows up in the web UI under its de
 
 ## Install
 
+The normal Git installation includes the recorder source but always uses a no-op diagnostics
+integration: runtime environment variables cannot enable recording. Recording requires a separately
+built debug artifact; see [diagnostic recording](docs/diagnostic-recording.md) for its privacy and
+retention limits. To exclude recorder source from an installation entirely, build the standard
+artifact described there instead of installing directly from Git.
+
 ```bash
 hermes plugins install Keryxion/hermes-converse
 hermes plugins enable hermes-converse
@@ -135,6 +141,30 @@ A countdown is a timer that ends with a tone on a device; see
 [client spec section 10](specs/client.md#10-countdowns). Spoken reminders come from a scheduler
 plugin such as Cadence and play as ordinary server-started turns.
 
+### Announcements from Home Assistant
+
+The [Arya Devices](https://github.com/Keryxion/arya-homeassistant) integration for Home Assistant speaks a message on Arya devices, after a chime
+and with no agent turn. Install it with HACS, add it under Settings → Devices & services, and enter the Hermes server's
+address and API key. There is nothing to write in `configuration.yaml`.
+
+- Each Arya device becomes a Home Assistant device, named by its `device_name`, with one notify
+  entity: `Kitchen` has `notify.kitchen_announce`. A device that connects later appears by itself.
+- `binary_sensor.kitchen_attached` is on while the device is attached. The device's other entities
+  are unavailable while it is not.
+- `notify.arya_announce` announces on every attached device at once.
+- Each device also has `switch.kitchen_mute` for its microphone and `number.kitchen_volume`.
+
+```yaml
+action: notify.send_message
+target:
+  entity_id: notify.kitchen_announce
+data:
+  message: The laundry is done.
+```
+
+The integration holds one WebSocket to the server, `GET /v1/audio/admin`, so a change made on a
+device shows in Home Assistant at once; see [the admin spec](specs/admin.md).
+
 ## Editing voice instructions
 
 On the first voice session, Converse creates `CONVERSE.md` in the active Hermes profile,
@@ -159,7 +189,7 @@ plugin settings form):
 
 | key | default | what it does |
 |---|---|---|
-| `voice_model`, `voice_provider` | `""` | a voice-only model override sent with every run |
+| `voice_model`, `voice_provider` | `""` | the default model for voice sessions without a model selection |
 | `turn_timeout_seconds` | `120` | a turn that makes no progress for this long is stopped and reported; each tool call and model call counts as progress |
 | `playback_tail_timeout_seconds` | `45` | how long to wait for the client's `drained` frame |
 | `max_tts_chars_per_turn` | `1500` | safety cap on how much of one reply is spoken |
@@ -327,7 +357,8 @@ API-server client.
 | `synth.py` | one `text → int16 PCM` seam over streaming or one-shot TTS, plus resampling |
 | `speech.py` | the only module that imports Hermes core speech helpers |
 | `settings.py` | the settings schema |
-| `voice_tools.py` | the `speak_this`, `play_tone`, `standby`, `mute`, approved `command`, `client_diagnostics`, and `set_wake_word` agent tools |
+| `admin.py` | `GET /v1/audio/admin`: the device list, announcements, and mute and volume for managing software |
+| `voice_tools.py` | the `announce`, `speak_this`, `play_tone`, `standby`, `mute`, approved `command`, `client_diagnostics`, and `set_wake_word` agent tools |
 | `wake_words.py` | wake-word dictionaries, the verified model cache behind `GET /v1/audio/wake/<slug>/<file>`, and live switches |
 | `client_diagnostics.py` | fresh diagnostic requests and responses on one client socket |
 | `named.py` | named-device routing records and public Hermes conversation lookup/continuation |
