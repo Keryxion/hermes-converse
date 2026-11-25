@@ -7,7 +7,11 @@ import threading
 import time
 from typing import Any, Awaitable, Callable, Optional
 
+import uuid
+
 from .loop import ConversationOutput
+
+ANNOUNCE_TTL = 60.0  # seconds an announcement may wait behind the device's current exchange
 
 
 @dataclass
@@ -52,6 +56,20 @@ class ConversationHub:
         with self._lock:
             if self._attachments.get(conversation_id) is attachment:
                 self._attachments.pop(conversation_id)
+
+    def announce(self, conversation_id: str, message: str) -> bool:
+        """Speak *message* on the device attached to the conversation, as prepared speech with the
+        announcement tone at its start. It waits behind the device's current exchange and is
+        dropped when that takes longer than the TTL."""
+        return self.publish(conversation_id, message, f"announce:{uuid.uuid4().hex}",
+                            expires_at=time.time() + ANNOUNCE_TTL, transient=True,
+                            tones=("announcement",)) == "accepted"
+
+    def announce_all(self, message: str, *, but: str = "") -> int:
+        """Announce on every attached device except the conversation *but*; how many accepted."""
+        with self._lock:
+            targets = [key for key in self._attachments if key != but]
+        return sum(self.announce(key, message) for key in targets)
 
     def publish(self, conversation_id: str, text: str, event_id: str, *,
                 expires_at: float, next_action: Optional[str] = None, unheard: bool = False,

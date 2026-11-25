@@ -555,6 +555,99 @@ earlier turn has not settled.
 At startup a socket waits up to 30 s for the platform to connect. When the
 platform is not hosted, the connection is refused with `conversation_unavailable`.
 
+## Admin connections
+
+`GET /v1/audio/admin` is a WebSocket for software that manages the devices, such
+as the Arya Devices integration for Home Assistant. Its frames are in
+[the admin spec](admin.md). Check the API key from the `Authorization` header
+before accepting the socket, and refuse a bad one with 401.
+
+Send `devices` first, then a `device` frame to every admin connection whenever a
+device's entry changes: it attaches or detaches, connects for the first time, or
+its reported mute or volume changes. The list is every device in `devices.db`.
+
+Record when a device was last attached as `last_attached` in its JSON `settings`
+in `devices.db`, at attach and at detach. Record with it, as `address`, the IP
+address the connection came from: the first address of `X-Forwarded-For` when
+the request has one, otherwise the socket's peer. It is kept while the device is
+away and given to admin connections.
+
+A device ends, which is what keeps the list short. At startup and then once an hour, remove every
+unattached device whose `last_attached` is more than 30 days old: its row in
+`devices` and its rows in `conversations`. Give a row that has no
+`last_attached` the current time instead, so it ends 30 days later. Its Hermes
+sessions stay; Hermes owns their retention. A device that connects again
+afterwards is a new device with a new conversation. Send `device_removed` with
+its `device_name` to every admin connection for each device removed.
+
+Handle each request in its own task, so a `set` waiting on a device does not
+hold up the frames behind it.
+
+Verify: a wrong key gets 401 and no socket; the first frame lists every device
+in `devices.db`; a device unattached for 30 days is removed with its
+conversations, its Hermes sessions are kept, and `device_removed` is sent for it; a
+row with no `last_attached` is given one and kept; an attached device is never
+removed; attaching, detaching, and a first connection each send a `device` frame
+to every admin connection; an unknown frame type with a `request_id` gets
+`bad_request`; a frame with no `request_id` gets nothing.
+
+## Announcements
+
+An announcement is a message spoken on one or more devices without an agent
+turn, such as a Home Assistant notification. It arrives as an `announce` request
+on an admin connection, or from the agent's `announce` tool.
+
+A name in `target` is normalized as `device_name` is on `start` and must then
+match exactly. A device is announced to on whichever of its conversations is
+attached.
+
+On each device, speak the message as prepared speech with the `announcement`
+tone (`tones.md`) rendered at the start of its audio. When the device is
+capturing or replying, the announcement waits for the current exchange, and
+when 60 s pass first, it is not sent. Nothing is queued for a later connection, and
+no wake election runs. Answer the request once each device has accepted or been
+skipped, without waiting for playback.
+
+The agent announces with the `announce` tool, when the person asks it to
+("announce dinner's ready"). It announces on every attached device except the
+one whose conversation called it, which hears the agent's reply instead. It
+works from any conversation; one that is not a device's reaches every attached
+device. The result is `{"result": "ok", "devices": 2}`, the number of devices
+that accepted it; 0 means no other device is attached.
+
+An announcement is not a Hermes message. It runs no turn, is not added to any
+conversation's history, gets no `transcript` frame, and is not replayed. A person
+who answers it starts an ordinary turn that does not know what was announced.
+
+Verify: one name speaks on that device only; an array, and an omitted `target`,
+speak on each attached device; an unattached or unknown device is listed in
+`skipped` and the rest still speak; the reply audio
+starts with the tone; an announcement during a reply plays after it, tone
+included; no
+`transcript` is sent and nothing is replayed; the `announce` tool speaks on
+every attached device but the caller's and returns their count.
+
+## Mute and volume
+
+A device owns its microphone mute and playback volume and reports them in a
+`controls` frame (client spec, section 12). Keep the last report of each for
+as long as the device stays attached, in memory only. Admin connections are
+given them as `muted` and `volume`; each is `null` for a device that is not
+attached or has not reported it.
+
+For a `set` request, send the device one `controls` frame with the fields
+given, wait for its `controls` report or 2 s, whichever comes first, and answer
+with the device's entry.
+
+The `mute` tool and `next_action: "mute"` are unchanged: the agent can mute a
+device and cannot unmute one.
+
+Verify: a device's reports reach admin connections and become `null` when it
+detaches; a `set` sends one `controls` frame and answers with the device's report; a
+device that does not answer is answered after 2 s with its last report; an
+unattached device gives `not_attached` and an unknown one `unknown_device`; a
+device that sends no `volume` lists `null`.
+
 ## Commands from a device
 
 A `command` frame names any gateway command in `name`, without a leading slash.
@@ -616,7 +709,7 @@ Hermes's `privacy.redact_pii` the origin's id is hashed, so such a message is
 not found and has no transcript.
 
 Text that is not a Hermes message gets no `transcript` frame of either kind:
-`say`, and the spoken approval summary. A server-started reply is a Hermes
+`say`, an announcement, and the spoken approval summary. A server-started reply is a Hermes
 message and closes with its `message_id` like any other.
 
 When a client connects with `transcripts: true`, replay what it missed from
@@ -711,7 +804,8 @@ credentials or conversation content.
 ## Voice tools
 
 The agent has tools for controlling or inspecting the device it is talking through and
-its conversation. They act only on the device whose conversation calls them.
+its conversation. They act only on the device whose conversation calls them,
+except `announce`.
 
 A tool call always happens inside a turn, and the tools act on that turn however
 it started: by speech, or by the server for a reminder, a still-ringing alarm,
@@ -721,10 +815,11 @@ being connected with no turn for a tool to act on.
 | Tool | Arguments | Effect |
 |---|---|---|
 | `set_wake_word` | `phrase` (optional) | Lists available phrases and model formats, or requests a switch on this device and reports its result (Wake words). |
+| `announce` | `message` | Announces `message` on every other attached device (Announcements). |
 | `speak_this` | `text` | The device says exactly `text`, and nothing else the turn produces is spoken. |
 | `play_tone` | `tone`: `confirm` or `error` | That tone plays in the reply audio (`tones.md`). |
 | `standby` | None | The device goes to standby when this turn's playback has drained: `turn_done` carries `next_action: "standby"`. It stops sending audio and waits for the wake word or Talk. |
-| `mute` | None | From the call, nothing the device's microphone sends is heard. The device mutes when this turn's reply has been sent: `turn_done` carries `next_action: "mute"`. Its microphone stays off until the person unmutes it on the device. |
+| `mute` | None | From the call, nothing the device's microphone sends is heard. The device mutes when this turn's reply has been sent: `turn_done` carries `next_action: "mute"`. Its microphone stays off until it is unmuted (client spec, section 12). |
 | `no_barge_in` | None | From the call until this turn's playback has ended, microphone audio does not interrupt the turn. |
 | `command` | `name`: a gateway command without a leading slash; `args`: an array of strings, default `[]` | Runs the command in this conversation and returns its reply to the agent. |
 | `client_diagnostics` | None | Returns a fresh diagnostic snapshot from the attached client, as described above. |
@@ -791,7 +886,7 @@ cancellation, interruption, error, and timeout paths too.
 The agent calls `mute` when the person asks the device to stop listening, for
 example "stop listening" or "mute yourself". It is the device's own mute,
 reached by voice: the microphone goes off when `turn_done` arrives and stays
-off until the person unmutes on the device, while the reply plays out. The
+off until it is unmuted, while the reply plays out. The
 exchange ends as it does for `standby`. Nothing
 can unmute by voice, because a muted device hears nothing. If the turn calls
 both `mute` and `standby`, the last call wins. Results are the same as for

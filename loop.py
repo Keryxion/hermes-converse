@@ -363,9 +363,11 @@ TONE_NOTES = {
     "confirm": ((1047, 70),),
     "error": ((262, 70), (0, 70), (262, 70)),
     "approval": ((523, 70), (659, 70), (784, 70)),
+    "announcement": ((523, 90), (0, 30), (659, 90), (0, 30), (784, 90), (0, 30), (1047, 420)),
 }
 # The level and edges arya-ios played these tones with.
 TONE_GAIN = 0.125  # quiet next to speech: information, not an event
+ANNOUNCEMENT_GAIN = 0.5  # as loud as the speech after it: someone across the room knows to listen
 TONE_ATTACK_MS, TONE_RELEASE_MS = 8, 12  # ramped edges, so a note does not click
 
 
@@ -389,11 +391,12 @@ def tone_pcm(name: str, rate: int) -> bytes:
 
     out = array("h")
     attack, release = rate * TONE_ATTACK_MS / 1000, rate * TONE_RELEASE_MS / 1000
+    gain = ANNOUNCEMENT_GAIN if name == "announcement" else TONE_GAIN
     for hz, ms in TONE_NOTES[name]:
         n = rate * ms // 1000
         for i in range(n):
             edge = min(1.0, i / attack, (n - 1 - i) / release)
-            out.append(round(32767 * TONE_GAIN * edge * math.sin(2 * math.pi * hz * i / rate)) if hz else 0)
+            out.append(round(32767 * gain * edge * math.sin(2 * math.pi * hz * i / rate)) if hz else 0)
     return out.tobytes()
 
 

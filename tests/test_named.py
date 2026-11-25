@@ -166,7 +166,7 @@ async def test_wrong_key_cannot_create_device_or_conversation(tmp_path, monkeypa
         ws = await client.ws_connect('/v1/audio/converse')
         await ws.send_str(_start_msg(key='wrong', **frame()))
         assert (await ws.receive_json(timeout=2))['error'] == 'unauthorized'
-        assert store._db is None and not fake.store.ids
+        assert not store.settings() and not fake.store.ids
         await ws.close()
 
 
