@@ -64,10 +64,6 @@ def _settings(raw) -> dict:
     return value if isinstance(value, dict) else {}
 
 
-def _stale(last_attached, before: float) -> bool:
-    return isinstance(last_attached, (int, float)) and last_attached < before
-
-
 class DeviceStore:
     """Profile-scoped device identities; DB calls run on worker threads."""
     def __init__(self, path=None):
@@ -135,17 +131,22 @@ class DeviceStore:
 
     def remove_stale(self, before: float, attached: set[str]) -> list[str]:
         """Remove every device last attached earlier than *before* and not in *attached*, with its
-        conversations; the names removed. A device with no ``last_attached`` stays."""
+        conversations; the names removed. A row with no ``last_attached`` is given the current
+        time, so it ends a full period later."""
         with self._lock:
             db = self._connection()
+            removed = []
             with db:
-                stale = [(name, recipient) for name, recipient, raw in
-                         db.execute('SELECT device_name, recipient_id, settings FROM devices')
-                         if name not in attached and _stale(_settings(raw).get('last_attached'), before)]
-                for name, recipient in stale:
-                    db.execute('DELETE FROM conversations WHERE recipient_id=?', (recipient,))
-                    db.execute('DELETE FROM devices WHERE device_name=?', (name,))
-            return [name for name, _ in stale]
+                for name, recipient, raw in db.execute(
+                        'SELECT device_name, recipient_id, settings FROM devices').fetchall():
+                    last = _settings(raw).get('last_attached')
+                    if not isinstance(last, (int, float)):
+                        self._merge(db, name, last_attached=time.time())
+                    elif last < before and name not in attached:
+                        db.execute('DELETE FROM conversations WHERE recipient_id=?', (recipient,))
+                        db.execute('DELETE FROM devices WHERE device_name=?', (name,))
+                        removed.append(name)
+            return removed
 
     def close(self):
         with self._lock:

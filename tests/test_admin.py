@@ -212,7 +212,7 @@ def test_a_forwarded_address_that_is_not_an_ip_falls_back_to_the_peer():
 
 
 @pytest.mark.asyncio
-async def test_a_device_unattached_for_30_days_is_unlisted_and_removed_with_its_conversations(monkeypatch):
+async def test_a_device_unattached_for_30_days_is_removed_with_its_conversations(monkeypatch):
     import time
 
     _patch_speech(monkeypatch, _FakeStreamer([b"\x01\x02"]))
@@ -233,16 +233,19 @@ async def test_a_device_unattached_for_30_days_is_unlisted_and_removed_with_its_
         admin._seen.clear()  # as after a restart
 
         ws, devices = await _admin(client)
-        assert [d["device_name"] for d in devices] == ["Attic", "Kitchen"]
+        assert [d["device_name"] for d in devices] == ["Ancient", "Attic", "Kitchen", "Old"]
+        await admin.purge()
+        assert await _json(ws) == {"type": "device_removed", "device_name": "Old"}
+        stored = store.settings()
+        assert sorted(stored) == ["Ancient", "Attic", "Kitchen"]
+        assert stored["Ancient"]["last_attached"] > long_ago  # given one, and kept
+        with store._lock:
+            titles = [row[0] for row in store._connection().execute("SELECT title FROM conversations")]
+        assert sorted(titles) == ["Arya: Attic", "Arya: Kitchen"]
         await ws.send_json({"type": "set", "request_id": "1", "device_name": "Old", "muted": True})
         assert (await _json(ws))["error"] == "unknown_device"
         await ws.send_json({"type": "set", "request_id": "2", "device_name": "Attic", "muted": True})
         assert (await _json(ws))["error"] == "not_attached"
-
-        await admin.purge()
-        assert [d["device_name"] for d in (await _json(ws))["devices"]] == ["Attic", "Kitchen"]
-        assert sorted(store.settings()) == ["Ancient", "Attic", "Kitchen"]
-        with store._lock:
-            titles = [row[0] for row in store._connection().execute("SELECT title FROM conversations")]
-        assert sorted(titles) == ["Arya: Attic", "Arya: Kitchen"]
+        _, devices = await _admin(client)
+        assert [d["device_name"] for d in devices] == ["Ancient", "Attic", "Kitchen"]
         await _end(kitchen)
