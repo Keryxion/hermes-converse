@@ -63,7 +63,6 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 | `wake_word_format` | The wake-word model format this device runs: `micro_wake_word` or `open_wake_word`. Only a device that sends it is given a wake word; see section 8. |
 | `transcripts` | Boolean; request user and assistant transcript frames when `true`. Defaults to `false`. See section 4. |
 | `after` | The `message_id` of the last transcript this client has shown, to catch up on what it missed. Only with `transcripts: true`. See "Catching up" in section 4. |
-| `test` | Boolean; `true` marks a device that exists only for a test run, so software managing the devices, such as Home Assistant, is not shown it, and the server forgets it and its conversation an hour after it disconnects. Defaults to `false`. |
 | `assistant_name` | What you call the assistant, normally `Arya`, without “Hey”. Used in the voice system prompt; separate from the device label, such as `Den Echo`. |
 
 `assistant_name` and `device_name` are both required. `start` has no `profile`,
@@ -87,7 +86,7 @@ come out the same are the same device.
 | PCM16 with a rate that is not an integer | The default is used. |
 | `quiet_interval` that is not a number, or is zero or negative | No `quiet` frames. |
 | `quiet_interval` above 3600 | 3600. |
-| `transcripts`, `models` or `test` other than `true` | `false`. |
+| `transcripts` or `models` other than `true` | `false`. |
 | `after` that is not a string | As if absent. |
 | `after` that is not a message of the device's conversation | `new_session: true` ("Catching up", section 4). |
 | Any other field | Ignored. |

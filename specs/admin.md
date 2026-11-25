@@ -28,8 +28,7 @@ sent every change.
 ## 2. Devices
 
 The first frame lists the devices: each one that is attached now or was within
-the last 30 days. A device that connects with `test: true` in its `start`
-(client spec, section 2) is never listed.
+the last 30 days.
 
 ```json
 {"type": "devices", "devices": [
