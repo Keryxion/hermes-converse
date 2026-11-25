@@ -574,7 +574,10 @@ reported mute or volume changes.
 
 The list is the devices attached now or within the last 30 days. Record when a
 device was last attached as `last_attached` in its JSON `settings` in
-`devices.db`, at attach and at detach. A device with no `last_attached` is
+`devices.db`, at attach and at detach. Record with it, as `address`, the IP address the
+connection came from: the first address of `X-Forwarded-For` when the request
+has one, otherwise the socket's peer. It is kept while the device is away and
+given to admin connections. A device with no `last_attached` is
 listed only while attached, so rows from before this was recorded stay out
 until their device connects. A connection whose `start` has `test: true` is
 never listed.

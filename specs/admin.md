@@ -33,8 +33,8 @@ the last 30 days. A device that connects with `test: true` in its `start`
 
 ```json
 {"type": "devices", "devices": [
-  {"device_name": "Kitchen", "attached": true, "muted": false, "volume": 40},
-  {"device_name": "Den Echo", "attached": false, "muted": null, "volume": null}]}
+  {"device_name": "Kitchen", "attached": true, "muted": false, "volume": 40, "address": "192.168.1.52"},
+  {"device_name": "Den Echo", "attached": false, "muted": null, "volume": null, "address": "192.168.1.60"}]}
 ```
 
 | field | what it is |
@@ -43,12 +43,13 @@ the last 30 days. A device that connects with `test: true` in its `start`
 | `attached` | Whether the device has a voice connection now. |
 | `muted` | Whether its microphone is muted. `null` while it is not attached, or when it has not said. |
 | `volume` | Its playback volume, an integer from 0 to 100. `null` while it is not attached, or for a device with no volume to set. |
+| `address` | The IP address it last connected from, kept while it is away so the device can be found on the network. `null` when none is known. |
 
 Whenever anything about a listed device changes, or a device joins the list, the
 server sends that device whole:
 
 ```json
-{"type": "device", "device_name": "Kitchen", "attached": true, "muted": true, "volume": 40}
+{"type": "device", "device_name": "Kitchen", "attached": true, "muted": true, "volume": 40, "address": "192.168.1.52"}
 ```
 
 When a device leaves the list, the server sends `devices` again. A `devices`
@@ -110,7 +111,7 @@ The result holds the device as it then is:
 
 ```json
 {"type": "result", "request_id": "8",
- "device": {"device_name": "Kitchen", "attached": true, "muted": true, "volume": 40}}
+ "device": {"device_name": "Kitchen", "attached": true, "muted": true, "volume": 40, "address": "192.168.1.52"}}
 ```
 
 The device decides. One that cannot apply a change, such as unmuting past a
