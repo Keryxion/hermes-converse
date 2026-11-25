@@ -1703,3 +1703,11 @@ def test_outbound_question_explicitly_opens_listening():
     session = _FakeConverseSession([ConversationOutput("Okay?", "approval", next_action="listen")])
     sent = _run_driver(session, [], [])
     assert _turn_done_frame(sent)["next_action"] == "listen"
+
+
+def test_driver_does_not_speak_a_silent_reply():
+    assert _spoken_bytes(_run_driver(_FakeConverseSession(["hi"]), [], ["Hello."])) == b"Hello."
+    sent = _run_driver(_FakeConverseSession(["never mind"]), [], ["[SILENT]"])
+    assert _spoken_bytes(sent) == b""
+    assert not any(isinstance(f, dict) and f.get("type") == "transcript" and f.get("role") == "assistant"
+                   for f in sent)

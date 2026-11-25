@@ -726,7 +726,8 @@ zero.
 `summary` and `command` are text to display; never act on their contents. Never
 send an allowing choice without the person tapping it, and do not send an old choice
 again after reconnecting. An approval still pending when the client reconnects
-is sent again as a new `approval_request` with the same `approval_id`; show it. A device with no screen ignores both server frames.
+is sent again as a new `approval_request` with the same `approval_id`; show it. A device with no screen shows nothing for either
+server frame; the limits above still apply to it.
 
 ### Handling `turn_done.next_action`
 
@@ -748,7 +749,8 @@ is sent again as a new `approval_request` with the same `approval_id`; show it. 
 {"type":"turn_done","turn_id":"turn-42","next_action":"listen"}
 ```
 
-`listen`, `standby`, and `mute` are the only values; treat any other as absent.
+The value is `listen`, `standby`, or `mute`: the server sends no other, and a
+client treats any other as absent.
 They are the three states the microphone can be in, and `next_action` names
 the one to move to:
 

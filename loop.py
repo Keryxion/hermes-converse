@@ -1914,7 +1914,7 @@ async def _produce_speech(d: _Driver, turn: _Turn) -> None:
                     turn.pcm_q.put_nowait(tone_pcm(sentence.name, d.synth.sample_rate))
                 continue
             cleaned = speech.strip_markdown(sentence)
-            if not cleaned:
+            if not cleaned or cleaned.strip().upper() == "[SILENT]":  # Hermes's say-nothing reply
                 continue
             shown = not (turn.transient or isinstance(sentence, Aside))
             turn.ns.setdefault("first_sentence", time.time_ns())
