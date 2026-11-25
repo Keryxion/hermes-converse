@@ -355,7 +355,7 @@ Countdowns are unaffected by a command.
 | `turn_done` | the reply is fully sent; `next_action` is usually absent; `standby` ends the exchange and `listen` switches the client into listening, after drain; `mute` mutes it at once |
 | `quiet` | session mode: `quiet_seconds` of silence since listening began; sent every `quiet_interval` seconds |
 | `error` | the turn failed (spoken-safe text) |
-| `{"type":"tone","tone":"confirm"}` | Play the named tone (see `tones.md`): `confirm` or `error` when the assistant chooses to, `approval` just before the server asks for an approval. It is not a reply: no `turn_id`, and the device reports no state for it. |
+| `{"type":"tone","tone":"confirm"}` | Play the named tone (see `tones.md`): `confirm` or `error` when the assistant chooses to, `approval` just before the server asks for an approval, `announcement` just before an announcement (section 9). It is not a reply: no `turn_id`, and the device reports no state for it. |
 | `client_diagnostics` | Request a fresh version, build, and diagnostic snapshot; answer on this socket with the same `request_id`, as below. |
 | `countdown`, `countdown_cancel` | Start, extend, or cancel a countdown that ends with a tone (section 10). |
 | `set_wake_word` | Switch to this wake phrase and its models, then answer with `wake_word_set` (section 8). |
@@ -1257,10 +1257,17 @@ drain; stale output is discarded instead of played late. Ordinary barge-in,
 output goes to the one device attached to it. It is never broadcast and never
 runs a wake election.
 
-An announcement is speech the server was given for this device by name, such as
-a Home Assistant notification. It arrives as speech already prepared:
-`speaking` + PCM → `turn_done`. The same announcement can play on several
-devices at once; each plays its own copy and none runs a wake election.
+An announcement is a message the server was given for this device by name, such
+as a Home Assistant notification. It arrives as a `tone` frame naming
+`announcement`, then speech already prepared:
+
+```json
+{"type": "tone", "tone": "announcement"}
+```
+
+then `speaking` + PCM → `turn_done`. Play the tone to its end before the
+speech. The same announcement can play on several devices at once; each plays
+its own copy and none runs a wake election.
 
 
 ## 10. Countdowns

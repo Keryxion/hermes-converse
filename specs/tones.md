@@ -12,6 +12,7 @@ in [animations.md](animations.md).
 | Confirm | A `tone` frame naming `confirm`: the assistant did what was asked and has nothing to say | One note: 1047 Hz, 70 ms |
 | Error | A `tone` frame naming `error`: the assistant could not do it | Two low notes: 262 Hz, 70 ms each, 70 ms apart |
 | Approval | A `tone` frame naming `approval`: the assistant needs permission and is about to ask | Three rising notes: 523 Hz, 659 Hz, 784 Hz, 70 ms each |
+| Announcement | A `tone` frame naming `announcement`: an announcement is about to be spoken | Three notes: 659 Hz, 523 Hz, 784 Hz, 150 ms each |
 
 ## Rules
 
@@ -19,6 +20,8 @@ in [animations.md](animations.md).
 - Tones are quiet: information, not an event. Their volume is configurable.
 - A tone is short enough that it cannot be mistaken for the assistant starting
   to speak.
+- The announcement tone is the exception: it plays at the reply's volume, so
+  someone across the room knows to listen.
 - After a wake word, the listening tone plays locally as soon as the matching
   `wake_grant` arrives. It does not wait for the server. A denied or timed-out
   claim makes no sound.
@@ -26,7 +29,7 @@ in [animations.md](animations.md).
   cancellation, or error, is cut off. It never overlaps the reply: `thinking`
   frames that arrive while the reply is playing make no sound.
 - While muted, the listening and listening-ended tones do not play. Confirm,
-  error, and approval still play.
+  error, approval, and announcement still play.
 - A tone never delays audio processing, triggers a wake, or causes an
   interruption. If a tone cannot play, the device carries on silently.
 

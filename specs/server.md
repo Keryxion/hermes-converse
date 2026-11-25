@@ -556,43 +556,52 @@ platform is not hosted, the connection is refused with `conversation_unavailable
 
 ## Announcements
 
-An announcement is text spoken on one or more devices without an agent turn: a
-Home Assistant notification, a message from another chat, or a scheduled job's
-output. It needs no route, frame, or credential of its own. It is a `send` on the
-`converse` platform whose chat id names devices instead of a conversation:
+An announcement is a message spoken on one or more devices without an agent
+turn, such as a Home Assistant notification. The API server has one route for
+it, next to the WebSocket route and behind the same API key:
 
-| Chat id | Devices |
+```
+POST /v1/audio/announce
+Authorization: Bearer <API_SERVER_KEY>
+Content-Type: application/json
+
+{"message": "The laundry is done.", "target": ["Kitchen", "Den Echo"]}
+```
+
+| Field | What it does |
 |---|---|
-| `Kitchen` | The device with that `device_name`. |
-| `Kitchen, Den Echo` | Each device named, separated by commas. |
-| `all` | Every attached device. |
+| `message` | The text to speak. Required; a non-empty string after trimming. |
+| `target` | A `device_name`, or an array of them. Omitted, it is every attached device. |
 
 A name is normalized as `device_name` is on `start` and must then match exactly.
-A device is announced to on whichever of its conversations is attached. Each
-device follows the outcomes under Gateway conversation: spoken once when idle,
-after the current exchange when capturing or replying, and skipped when not
-attached or when 60 s pass first. Nothing is queued for a later connection.
+A device is announced to on whichever of its conversations is attached.
 
-`send` reports success when at least one device accepted the announcement, and
-failure when none did or no name matched. A name that matches no device is
-skipped.
+```json
+{"announced": ["Kitchen"], "skipped": ["Den Echo"]}
+```
+
+| Status | Meaning |
+|---|---|
+| 200 | The request was understood. `announced` lists the devices that accepted the announcement; `skipped` lists named devices that are not attached or are unknown. |
+| 400 | The body is not JSON, `message` is missing or empty, or `target` is not a string or an array of strings. |
+| 401 | The key is missing or wrong. |
+
+On each device, send `{"type":"tone","tone":"announcement"}` and then speak the
+message as prepared speech. The tone and the speech stay together: when the
+device is capturing or replying, both wait for the current exchange, and when
+60 s pass first, neither is sent. Nothing is queued for a later connection, and
+no wake election runs.
 
 An announcement is not a Hermes message. It runs no turn, is not added to any
 conversation's history, gets no `transcript` frame, and is not replayed. A person
 who answers it starts an ordinary turn that does not know what was announced.
 
-Hermes supplies the way in. For Home Assistant or any HTTP caller it is a webhook
-route with `deliver: converse` and `deliver_only: true`, whose
-`deliver_extra.chat_id` carries the names. The POST returns 200 when `send`
-succeeds and 502 when it fails. The same route without `deliver_only` runs the
-agent on the event first and announces its reply. Any other Hermes producer that
-sends to the `converse` platform with such a chat id announces the same way.
-
-Verify: one name speaks on that device only; a comma list and `all` speak on each
-attached device; an unattached device is skipped and the rest still speak; no
-attached device, or an unknown name alone, reports failure; an announcement
-during a reply plays after it; no `transcript` is sent and nothing is replayed;
-a conversation id still reaches that conversation.
+Verify: one name speaks on that device only; an array, and an omitted `target`,
+speak on each attached device; an unattached or unknown device is listed in
+`skipped` and the rest still speak; the tone frame comes immediately before
+`speaking`; an announcement during a reply plays after it, tone included; no
+`transcript` is sent and nothing is replayed; a wrong key is refused with 401
+and nothing is spoken.
 
 ## Commands from a device
 

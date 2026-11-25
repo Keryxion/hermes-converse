@@ -138,42 +138,23 @@ plugin such as Cadence and play as ordinary server-started turns.
 ### Announcements from Home Assistant
 
 Home Assistant, or anything else that can POST, can speak a message on named devices with no
-agent turn. Enable Hermes's webhook platform and add a route that delivers to `converse`:
-
-```yaml
-platforms:
-  webhook:
-    enabled: true
-    extra:
-      port: 8644
-      routes:
-        announce:
-          secret: "<a long random string>"
-          signature: gitlab
-          deliver: converse
-          deliver_only: true
-          prompt: "{message}"
-          deliver_extra:
-            chat_id: "{target}"
-```
-
-`signature: gitlab` makes the route accept the secret as a plain `X-Gitlab-Token` header, which
-Home Assistant can send. In Home Assistant's `configuration.yaml`:
+agent turn. `POST /v1/audio/announce` takes the same API key as the voice route. In Home
+Assistant's `configuration.yaml`:
 
 ```yaml
 rest_command:
   arya_announce:
-    url: http://<hermes-host>:8644/webhooks/announce
+    url: http://<hermes-host>:8642/v1/audio/announce
     method: post
     content_type: application/json
     headers:
-      X-Gitlab-Token: !secret arya_announce_secret
-    payload: '{"message": {{ message | tojson }}, "target": {{ target | default("all") | tojson }}}'
+      Authorization: !secret arya_authorization  # "Bearer <API_SERVER_KEY>"
+    payload: '{"message": {{ message | tojson }}{% if target is defined %}, "target": {{ target | tojson }}{% endif %}}'
 ```
 
 An automation then calls `rest_command.arya_announce` with `message` and, optionally, `target`:
-one `device_name` (`Kitchen`), several separated by commas (`Kitchen, Den Echo`), or `all`.
-Only attached devices speak it; see [the server spec](specs/server.md#announcements).
+a `device_name` (`Kitchen`) or a list of them. Without `target`, every attached device speaks it,
+after a chime. See [the server spec](specs/server.md#announcements).
 
 ## Editing voice instructions
 
