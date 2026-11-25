@@ -749,7 +749,8 @@ is sent again as a new `approval_request` with the same `approval_id`; show it. 
 {"type":"turn_done","turn_id":"turn-42","next_action":"listen"}
 ```
 
-`listen`, `standby`, and `mute` are the only values; treat any other as absent.
+The value is `listen`, `standby`, or `mute`: the server sends no other, and a
+client treats any other as absent.
 They are the three states the microphone can be in, and `next_action` names
 the one to move to:
 
