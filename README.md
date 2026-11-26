@@ -13,11 +13,8 @@ all apply, and a named device's conversation shows up in the web UI under its de
 
 ## Install
 
-The normal Git installation includes the recorder source but always uses a no-op diagnostics
-integration: runtime environment variables cannot enable recording. Recording requires a separately
-built debug artifact; see [diagnostic recording](docs/diagnostic-recording.md) for its privacy and
-retention limits. To exclude recorder source from an installation entirely, build the standard
-artifact described there instead of installing directly from Git.
+Server diagnostic recording is off by default and requires two explicit environment flags.
+See [diagnostic recording](docs/diagnostic-recording.md) for privacy and retention limits.
 
 ```bash
 hermes plugins install Keryxion/hermes-converse

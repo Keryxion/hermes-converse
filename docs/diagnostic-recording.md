@@ -1,9 +1,22 @@
 # Server diagnostic recordings
 
-Standard installations use a no-op diagnostics integration. Standard source archives exclude the recorder implementation, but a Git clone or Git-based plugin install still contains its source. Build a separate debug artifact from a committed revision containing the artifact build tooling with `python tools/build_artifact.py --debug /new/path`. Omit `--debug` for a standard artifact. The builder reads the committed `HEAD` by default. Pass `--revision <ref>` to select another committed revision. Uncommitted edits are excluded.
+Recording is off by default. It is enabled only when both `HERMES_VOICE_DEBUG=1` and
+`HERMES_CONVERSE_SERVER_RECORDING=1` are present in the server process environment. The
+existing voice debug flag alone never enables recording. Remove the recording flag and restart
+the service to disable recording; leaving both flags set enables recording on later restarts.
+Do not enable it without consent from people whose audio may be captured.
 
-The debug recorder requires `CONVERSE_DIAGNOSTIC_UNTIL` to be set at process startup to a finite Unix timestamp in the future and at most 30 minutes away. An out-of-range timestamp disables recording. Each startup opt-in timestamp is single-use; a restart requires a fresh timestamp. Existing recordings close at the cutoff, including idle sockets.
+The recorder stores mono input PCM and a JSONL timeline with 100 ms RMS values and selected
+server turn frames. Server mute permanently disarms and closes diagnostic recording for all
+sessions in the process, including across unmute and reconnect; a restart resets this disarm.
+It records text lengths in place of text. Each retained recording contains up to 60 seconds
+of audio and 2,000 timeline events. The retained recording limit is 20 per directory across
+processes. At capacity, subsequent recording requests are declined. If recording falls behind
+the socket, its bounded queue stops accepting data.
 
-The debug recorder stores mono input PCM and a JSONL timeline with 100 ms RMS values and selected server turn frames. Server mute permanently disarms and closes diagnostic recording for all sessions in the debug process, including across unmute and reconnect. The service stores single-use opt-in markers in the recording directory; keep these markers to prevent reuse across restarts. It records text lengths in place of text. Each retained recording contains up to 60 seconds of audio and 2,000 timeline events. The retained recording limit is 20 per directory across debug processes. At capacity, subsequent recording requests are declined. If recording falls behind the socket, its bounded queue stops accepting data.
-
-The service user owns the private directory and files under `~/.hermes/logs/converse-recordings`. The running debug service checks expiration on startup, hourly, and when opening a recording. It removes inactive diagnostic files older than 24 hours, including old orphan sidecars and legacy captures. With the service stopped or running a standard artifact, remove retained files manually when their retention window ends. Temporary transcription files follow the normal capture lifecycle.
+The service user owns the private directory and files under `~/.hermes/logs/converse-recordings`
+(directory mode 0700, files 0600). The running service checks expiration on startup, hourly,
+and when opening a recording. It removes inactive diagnostic files older than 24 hours,
+including old orphan sidecars and legacy captures. With the service stopped, remove retained
+files manually when their retention window ends. Temporary transcription files follow the normal
+capture lifecycle.

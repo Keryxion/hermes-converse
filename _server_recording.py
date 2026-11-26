@@ -1,4 +1,4 @@
-"""Local audio diagnostics included only in explicit debug artifacts."""
+"""Local audio diagnostics gated by two explicit debug flags."""
 import asyncio
 from contextlib import contextmanager, suppress
 import fcntl
@@ -24,19 +24,9 @@ MAX_PCM_BYTES = 48000 * 2 * 60
 QUEUE_SIZE = 64
 
 
-def _deadline():
-    try:
-        until = float(os.environ.get('CONVERSE_DIAGNOSTIC_UNTIL', '0'))
-    except ValueError:
-        return 0, 0
-    remaining = until - time.time()
-    if not 0 < remaining <= 1800:
-        return 0, 0
-    return until, time.monotonic() + remaining
-
-
 def _enabled():
-    return time.time() < UNTIL and time.monotonic() < MONOTONIC_UNTIL
+    return (os.environ.get('HERMES_VOICE_DEBUG') == '1'
+            and os.environ.get('HERMES_CONVERSE_SERVER_RECORDING') == '1')
 
 
 @contextmanager
@@ -52,27 +42,6 @@ def _locked_directory(*, create=False):
         yield fd
     finally:
         os.close(fd)
-
-
-def _consume_opt_in(until):
-    try:
-        with _locked_directory(create=True) as directory:
-            name = 'opt-in-' + float(until).hex().replace('.', '_')
-            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                         0o600, dir_fd=directory)
-            try:
-                os.fsync(fd)
-                os.fsync(directory)
-            finally:
-                os.close(fd)
-        return True
-    except OSError:
-        return False
-
-
-UNTIL, MONOTONIC_UNTIL = _deadline()
-if UNTIL and not _consume_opt_in(UNTIL):
-    UNTIL = MONOTONIC_UNTIL = 0
 
 
 def _prune(directory):
@@ -200,7 +169,7 @@ class _Files:
         end = len(chunk) - len(chunk) % 2
         chunk, self._carry = chunk[:end], chunk[end:]
         rate = self.session._input_rate
-        # Bound each write and recheck expiry between chunks, including RMS work.
+        # Bound each write and recheck the recording gate between chunks.
         chunk_size = max(2, (rate // 10) * 2)
         for start in range(0, len(chunk), chunk_size):
             if not _enabled():
@@ -281,8 +250,9 @@ class ServerRecording:
         files = _Files(session)
         try:
             if await asyncio.to_thread(self._write_if_armed, files.open):
+                deadline = asyncio.get_running_loop().time() + MAX_AGE_SECONDS
                 while _enabled():
-                    async with asyncio.timeout(max(0, MONOTONIC_UNTIL - time.monotonic())):
+                    async with asyncio.timeout_at(deadline):
                         item = await queue.get()
                     if item is None:
                         break

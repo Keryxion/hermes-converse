@@ -1,6 +1,4 @@
 """The standard installation routes diagnostics to a no-op."""
-import sys
-import time
 
 import numpy as np
 
@@ -8,18 +6,22 @@ from hermes_converse import route
 from hermes_converse.loop import ConverseSession
 
 
-async def test_normal_install_ignores_runtime_opt_in(tmp_path, monkeypatch):
-    monkeypatch.setenv('CONVERSE_DIAGNOSTIC_RECORDING', '1')
-    monkeypatch.setenv('CONVERSE_DIAGNOSTIC_UNTIL', str(time.time() + 60))
-    monkeypatch.setenv('HOME', str(tmp_path))
-    monkeypatch.delitem(sys.modules, 'hermes_converse._server_recording', raising=False)
-    r = route.diagnostic.ServerRecording(None)
-    r.audio(b'\x01\x00')
-    r.frame({'type': 'turn_done'})
-    r.close()
-    await r.wait_closed()
-    assert 'hermes_converse._server_recording' not in sys.modules
-    assert not list(tmp_path.iterdir())
+async def test_recording_requires_both_debug_flags(tmp_path, monkeypatch):
+    from hermes_converse import _server_recording as recording
+    monkeypatch.setattr(recording, 'ROOT', tmp_path / 'recordings')
+    monkeypatch.setattr(recording, '_mute_disarmed', False)
+    for voice, server, expected in [('', '', False), ('1', '', False),
+                                     ('', '1', False), ('0', '1', False),
+                                     ('1', '0', False), ('1', '1', True)]:
+        monkeypatch.setenv('HERMES_VOICE_DEBUG', voice)
+        monkeypatch.setenv('HERMES_CONVERSE_SERVER_RECORDING', server)
+        assert recording._enabled() is expected
+        r = route.diagnostic.ServerRecording(ConverseSession(np))
+        assert (r._task is not None) is expected
+        r.close()
+        await r.wait_closed()
+    assert not (tmp_path / 'recordings').exists() or all(
+        p.suffix in ('.wav', '.jsonl') for p in (tmp_path / 'recordings').iterdir())
 
 
 def test_recording_uses_session_mute_at_feed(monkeypatch):

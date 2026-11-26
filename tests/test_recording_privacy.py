@@ -19,11 +19,11 @@ def session():
 def configure(monkeypatch, tmp_path):
     monkeypatch.setattr(recording, '_mute_disarmed', False)
     monkeypatch.setattr(recording, 'ROOT', tmp_path / 'recordings')
-    monkeypatch.setattr(recording, 'UNTIL', time.time() + 60)
-    monkeypatch.setattr(recording, 'MONOTONIC_UNTIL', time.monotonic() + 60)
+    monkeypatch.setenv('HERMES_VOICE_DEBUG', '1')
+    monkeypatch.setenv('HERMES_CONVERSE_SERVER_RECORDING', '1')
 
 
-async def test_expiry_stops_existing_stream_and_rms_timeline(tmp_path, monkeypatch):
+async def test_disabled_gate_stops_existing_stream_and_rms_timeline(tmp_path, monkeypatch):
     configure(monkeypatch, tmp_path)
     written = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -38,7 +38,7 @@ async def test_expiry_stops_existing_stream_and_rms_timeline(tmp_path, monkeypat
     r = recording.ServerRecording(session())
     r.audio((1000).to_bytes(2, 'little', signed=True) * 1600)
     await asyncio.wait_for(written.wait(), 3)
-    monkeypatch.setattr(recording, 'UNTIL', time.time() - 1)
+    monkeypatch.setenv('HERMES_VOICE_DEBUG', '0')
     r.audio(b'\x00\x00' * 1600)
     await r.wait_closed()
     with wave.open(str(next(recording.ROOT.glob('*.wav'))), 'rb') as wav:
@@ -48,11 +48,11 @@ async def test_expiry_stops_existing_stream_and_rms_timeline(tmp_path, monkeypat
     assert all(p.stat().st_mode & 0o777 == 0o600 for p in recording.ROOT.iterdir())
 
 
-async def test_idle_recorder_closes_at_deadline(tmp_path, monkeypatch):
+async def test_idle_recording_closes_at_retention_limit(tmp_path, monkeypatch):
     configure(monkeypatch, tmp_path)
-    monkeypatch.setattr(recording, 'MONOTONIC_UNTIL', time.monotonic() + .1)
+    monkeypatch.setattr(recording, 'MAX_AGE_SECONDS', .1)
     r = recording.ServerRecording(session())
-    await asyncio.wait_for(r.wait_closed(), 3)
+    await asyncio.wait_for(r.wait_closed(), 2)
     assert r._queue is None
 
 
@@ -89,8 +89,7 @@ from pathlib import Path
 from types import SimpleNamespace
 m = runpy.run_path(sys.argv[1])
 state = m['_enabled'].__globals__
-state.update(ROOT=Path(sys.argv[2]), UNTIL=time.time() + 60,
-             MONOTONIC_UNTIL=time.monotonic() + 60, MAX_RECORDINGS=1)
+state.update(ROOT=Path(sys.argv[2]), MAX_RECORDINGS=1)
 files = m['_Files'](SimpleNamespace(_input_rate=16000, session_id='child',
                                   _detector=SimpleNamespace(name='test')))
 try:
@@ -112,16 +111,6 @@ finally:
         files.close()
     subprocess.run(command, check=True, timeout=5)
     assert len(list(recording.ROOT.iterdir())) == 2
-
-
-def test_absolute_deadline_rejects_invalid_and_overlong_values(monkeypatch):
-    monkeypatch.setattr(recording.time, 'time', lambda: 10000)
-    monkeypatch.setattr(recording.time, 'monotonic', lambda: 200)
-    for value in ('', 'nan', 'inf', '10000', '11800.01', '9999'):
-        monkeypatch.setenv('CONVERSE_DIAGNOSTIC_UNTIL', value)
-        assert recording._deadline() == (0, 0)
-    monkeypatch.setenv('CONVERSE_DIAGNOSTIC_UNTIL', '11800')
-    assert recording._deadline() == (11800, 2000)
 
 
 def test_close_releases_other_handles_when_wav_close_fails():
@@ -148,7 +137,7 @@ async def test_mute_boundary_does_not_join_samples(tmp_path, monkeypatch):
         assert wav.readframes(10) == b'BCDE'
 
 
-def test_large_write_stops_at_deadline_between_chunks(monkeypatch):
+def test_large_write_stops_when_disabled_between_chunks(monkeypatch):
     files = recording._Files(session())
     written = []
     active = [True]
@@ -271,20 +260,6 @@ async def test_mute_disarms_recording_across_unmute_and_reconnect(tmp_path, monk
         r.close()
         transport.close()
         encoder.close()
-
-
-def test_startup_opt_in_is_single_use_across_processes(tmp_path):
-    script = '''
-import runpy, sys
-from pathlib import Path
-m = runpy.run_path(sys.argv[1])
-f = m['_consume_opt_in']
-f.__globals__['ROOT'] = Path(sys.argv[2])
-print(f(1234567890.0))
-'''
-    command = [sys.executable, '-c', script, recording.__file__, str(tmp_path / 'records')]
-    assert subprocess.check_output(command, text=True).strip() == 'True'
-    assert subprocess.check_output(command, text=True).strip() == 'False'
 
 
 async def test_disarm_discards_queue_and_waits_for_inflight_write(tmp_path, monkeypatch):
