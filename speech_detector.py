@@ -24,7 +24,12 @@ INTERRUPT_WINDOW_MS = 510
 ECHO_MARGIN = 1.5
 _LEVEL_WINDOW_BLOCKS = 10  # 300 ms window RMS
 _ECHO_LAG_BLOCKS = 10  # reference excludes the newest 300 ms (longer than the onset run)
-_ECHO_MIN_BLOCKS = 6  # plus lag: 16 blocks / 480 ms before a baseline is available
+# The first 1.5 s of a reply's playback only learns the device's echo level: until the baseline
+# exists nothing is voiced, so microphone audio cannot interrupt. A device's echo canceller is at
+# its worst there (a Voice PE after a volume change cancels about 9 dB less for the first seconds,
+# arya-esp32#148), and a 480 ms warm-up learned a quiet opening and then took the device's own
+# next loud word for speech.
+_ECHO_MIN_BLOCKS = 40  # plus lag: 50 blocks / 1500 ms before a baseline is available
 
 
 class SpeechDetector:
