@@ -49,6 +49,7 @@ async def _turns(rig, chat_id="den"):
     source = rig.adapter.source_for(chat_id=chat_id, title="Arya: Den Echo", recipient_id="r-" + chat_id,
                                     device_name="Den Echo")
     key = await rig.adapter.bind(source)
+    rig.store.get_or_create_session(source)  # the first message creates the session; these tests start there
     return GatewayTurns(rig.adapter, source, key, settle_timeout=2.0), key
 
 

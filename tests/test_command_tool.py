@@ -398,7 +398,7 @@ async def test_tool_uses_the_real_gateway_command_policy(tmp_path, monkeypatch, 
         device_env["HERMES_SESSION_CHAT_ID"] = chat_id
         source = harness.adapter.source_for(chat_id=chat_id, title="Test", recipient_id="test", device_name="Test")
         key = harness.adapter._source_session_key(source)
-        old_session = runner.session_store.peek_session_id(key)
+        old_session = runner.session_store.get_or_create_session(source).session_id  # an existing conversation
         for pcm in _speech_then_silence_pcm():
             await ws.send_bytes(pcm)
         frames = await _frames_until(ws, "approval_request")
