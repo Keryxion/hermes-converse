@@ -814,6 +814,7 @@ being connected with no turn for a tool to act on.
 | Tool | Arguments | Effect |
 |---|---|---|
 | `set_wake_word` | `phrase` (optional) | Lists available phrases and model formats, or requests a switch on this device and reports its result (Wake words). |
+| `volume` | `level` (optional number from 0 to 1) | Reads the last reported playback volume, or requests a change and returns the last reported volume after the device reports or 2 seconds. For a set, `reported` says whether a volume report arrived after the request; a false value, null or different level does not confirm the requested change. Reports have no request ID, so a matching report is not proof that this request caused it. |
 | `announce` | `message` | Announces `message` on every other attached device (Announcements). |
 | `speak_this` | `text` | The device says exactly `text`, and nothing else the turn produces is spoken. |
 | `play_tone` | `tone`: `confirm` or `error` | That tone plays in the reply audio (`tones.md`). |

@@ -40,6 +40,7 @@ class _Attached:
     ws: Any
     muted: Optional[bool] = None
     volume: Optional[float] = None
+    volume_reports: int = 0
     waiters: list[asyncio.Future] = field(default_factory=list)  # `set` requests awaiting its next report
 
 
@@ -144,6 +145,8 @@ class Admin:
         if entry is None or entry.attachment is not attachment:
             return
         report = _report(frame)
+        if "volume" in report:
+            entry.volume_reports += 1
         changed = any(getattr(entry, key) != value for key, value in report.items())
         for key, value in report.items():
             setattr(entry, key, value)
@@ -238,6 +241,30 @@ class Admin:
             (announced if accepted else skipped).append(name)
         return {"announced": announced, "skipped": skipped}
 
+    async def volume(self, name: str, attachment: Any, level: Optional[float]) -> dict:
+        """Read the last device report, or request a volume and return the report."""
+        entry = self._attached.get(name)
+        if entry is None or entry.attachment is not attachment:
+            return {"result": "not_attached"}
+        if level is not None:
+            previous_reports = entry.volume_reports
+            await self._send_controls(entry, {"volume": level})
+            if self._attached.get(name) is not entry:
+                return {"result": "not_attached"}
+            return {"volume": entry.volume, "reported": entry.volume_reports > previous_reports}
+        return {"volume": entry.volume}
+
+    async def _send_controls(self, entry: _Attached, wanted: dict) -> None:
+        waiter = asyncio.get_running_loop().create_future()
+        entry.waiters.append(waiter)
+        try:
+            with contextlib.suppress(Exception):
+                await entry.ws.send_json({"type": "controls", **wanted})
+            await asyncio.wait([waiter], timeout=SET_TIMEOUT)
+        finally:
+            if waiter in entry.waiters:
+                entry.waiters.remove(waiter)
+
     async def _set(self, frame: dict) -> dict:
         name = frame.get("device_name")
         wanted = {key: frame[key] for key in ("muted", "volume") if key in frame}
@@ -249,11 +276,5 @@ class Admin:
         if entry is None:
             await self._load()
             return {"error": "not_attached" if name in self._seen else "unknown_device"}
-        waiter = asyncio.get_running_loop().create_future()
-        entry.waiters.append(waiter)
-        with contextlib.suppress(Exception):  # a socket that just closed: the device detaches
-            await entry.ws.send_json({"type": "controls", **wanted})
-        await asyncio.wait([waiter], timeout=SET_TIMEOUT)
-        if waiter in entry.waiters:
-            entry.waiters.remove(waiter)
+        await self._send_controls(entry, wanted)
         return {"device": self._device(name)}

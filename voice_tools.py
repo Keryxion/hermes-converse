@@ -44,6 +44,16 @@ SCHEMAS = {
         "parameters": {"type": "object", "properties": {
             "phrase": {"type": "string", "description": "A listed phrase, such as Hey Arya."}}},
     },
+    "volume": {
+        "name": "volume",
+        "description": ("Voice devices only. Read or set this device playback volume. With no level, "
+                        "return the last reported level. A set returns the last device-reported level, "
+                        "which may be null or differ from the request. If reported is false, do not claim success."),
+        "parameters": {"type": "object", "properties": {
+            "level": {"type": "number", "minimum": 0, "maximum": 1,
+                      "description": "Playback volume from 0 (silent) to 1 (maximum)."}},
+            "additionalProperties": False},
+    },
     "announce": {
         "name": "announce",
         "description": (
@@ -201,6 +211,18 @@ def make_handlers(hub: Any) -> dict[str, Callable[..., Any]]:
             attachment.session.ignore_microphone(muted=False)
         return _result("ok")
 
+    async def volume(args: dict, **kw: Any) -> str:
+        from .admin import _is_level
+
+        error, attachment = device()
+        if attachment is None or attachment.volume is None:
+            return _result(error or "not_attached")
+        level = args.get("level")
+        if "level" in args and not _is_level(level):
+            return json.dumps({"error": "level must be a number from 0 to 1"})
+        result = await asyncio.wrap_future(attachment.volume(level))
+        return json.dumps(result)
+
     async def command(args: dict, **kw: Any) -> str:
         error, attachment = device()
         if attachment is None or attachment.command is None:
@@ -239,7 +261,7 @@ def make_handlers(hub: Any) -> dict[str, Callable[..., Any]]:
 
     return {"announce": announce, "speak_this": speak_this, "play_tone": play_tone, "standby": standby, "mute": mute,
             "no_barge_in": no_barge_in, "command": command, "client_diagnostics": client_diagnostics,
-            "set_wake_word": set_wake_word}
+            "set_wake_word": set_wake_word, "volume": volume}
 
 
 def register_tools(ctx: Any, hub: Any) -> None:
