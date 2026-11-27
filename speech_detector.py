@@ -34,6 +34,7 @@ class SpeechDetector:
         self._energy = vad.converse_detector(np, mult=mult)
         self._stream = None
         self.fallback_reason: Optional[str] = None
+        self.decision = {}
         self.quiet = True
         self.probability: Optional[float] = None
         self._in_speech = False
@@ -87,8 +88,11 @@ class SpeechDetector:
         probability = self.probability = self._probability(block)
         self.quiet = self._energy_quiet(block) if probability is None else probability < SPEECH_OFF
         if probability is None:
+            self.decision = {'reason': 'accepted' if energy_phase else 'energy_not_triggered',
+                             'speech_ms': None, 'echo_gate': None}
             return energy_phase
-        voiced = heard = probability >= (SPEECH_OFF if self._in_speech else SPEECH_ON)
+        probability_threshold = SPEECH_OFF if self._in_speech else SPEECH_ON
+        voiced = heard = probability >= probability_threshold
         level = gate = None
         if playing:
             self._levels.append(float(self._np.mean(block.astype(self._np.float64) ** 2)))
@@ -110,6 +114,11 @@ class SpeechDetector:
             self._voiced.clear()
         self._voiced.append(block.size * 1000 / self._input_rate if voiced else 0.0)
         self._speech_ms = sum(self._voiced)
+        reason = ("not_voiced" if not heard else "echo_baseline_warming" if playing and gate is None
+                  else "below_echo_gate" if not voiced else "speech_too_short")
+        self.decision = {'reason': reason, 'speech_ms': self._speech_ms,
+                         'min_speech_ms': MIN_SPEECH_MS, 'echo_gate': gate,
+                         'speech_threshold': probability_threshold}
         if self._speech_ms < MIN_SPEECH_MS:
             if energy_phase is not None:
                 # An energy candidate Silero did not confirm: say which condition held it back.
@@ -125,7 +134,9 @@ class SpeechDetector:
         # during an active turn. A loud click followed by quiet mumbling must
         # not borrow the click's rolling RMS to cancel the reply.
         if (playing or interrupting) and energy_phase is None:
+            self.decision['reason'] = 'energy_not_triggered'
             return None
+        self.decision['reason'] = 'accepted'
         self._in_speech, self._speech_ms = False, 0.0
         self._voiced.clear()
         return "playback" if playing else "generation"

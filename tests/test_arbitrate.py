@@ -228,3 +228,20 @@ async def test_election_closes_when_the_only_silent_device_unregisters():
     await asyncio.sleep(0)
     await arb.unregister('d2')
     assert (await asyncio.wait_for(claim, timeout=1))[0]
+
+
+async def test_diagnostic_election_explains_confidence_winner(monkeypatch):
+    from hermes_converse import arbitrate
+    recorded = []
+    monkeypatch.setattr(arbitrate.diagnostic, 'record_for_sessions', lambda sessions, frame: recorded.append((sessions, frame)))
+    arb = Arbitrator(wake_window=.02)
+    await arb.register('d1', device_name='Office', session_id='s1')
+    await arb.register('d2', device_name='MacBook Pro', session_id='s2')
+    await _pair(arb, {'confidence': .91, 'volume': .1, 'heard_at': 100},
+                {'confidence': .98, 'volume': .01, 'heard_at': 200})
+    assert len(recorded) == 1
+    sessions, frame = recorded[0]
+    assert sessions == {'s1', 's2'}
+    assert frame['decided_by'] == 'confidence'
+    assert frame['winner_session_id'] == 's2'
+    assert [(c['device_name'], c['claim.outcome']) for c in frame['claims']] == [('Office', 'denied'), ('MacBook Pro', 'granted')]

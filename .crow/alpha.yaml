@@ -9,7 +9,6 @@ when:
 
 labels:
   backend: docker
-  platform: linux/arm64
 
 skip_clone: true
 

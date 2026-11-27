@@ -22,6 +22,31 @@ async def _wait_for(predicate):
 async def test_reconnected_microphone_controls_the_running_audio(monkeypatch, action, input_rate):
     fake = _patch(monkeypatch)
     drivers = []
+    recordings = []
+
+    class Recorder:
+        def __init__(self, session, **kwargs):
+            self.frames = []
+            self.closed = False
+            recordings.append(self)
+
+        def audio(self, data):
+            pass
+
+        def output_audio(self, data):
+            pass
+
+        def frame(self, frame, **kwargs):
+            assert not self.closed
+            self.frames.append(frame)
+
+        def close(self):
+            self.closed = True
+
+        async def wait_closed(self):
+            pass
+
+    monkeypatch.setattr(route.diagnostic, 'ServerRecording', Recorder)
     drive = route.drive_converse_turns
     async def tracked_driver(**kwargs):
         drivers.append(kwargs['session'])
@@ -75,6 +100,9 @@ async def test_reconnected_microphone_controls_the_running_audio(monkeypatch, ac
             async with asyncio.timeout(8):
                 frames, _ = await _collect_turn(ws)
             assert any(f['type'] == 'interrupted' and f['turn_id'] == turn_id for f in frames)
+            first, second, current = recordings
+            assert first.closed and second.closed
+            assert any(f['type'] == 'interrupted' and f['turn_id'] == turn_id for f in current.frames)
         else:
             reports = []
             ended = original.playback_ended

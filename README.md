@@ -13,6 +13,8 @@ all apply, and a named device's conversation shows up in the web UI under its de
 
 ## Install
 
+For opt-in interaction audio and JSONL capture, see [diagnostic recording](docs/diagnostic-recording.md).
+
 ```bash
 hermes plugins install Keryxion/hermes-converse
 hermes plugins enable hermes-converse
@@ -20,10 +22,12 @@ hermes converse doctor      # checks audio libraries, STT/TTS config, the API se
 hermes gateway restart      # the route is registered when the API server platform connects
 ```
 
-Requirements: the `api_server` platform enabled with an `API_SERVER_KEY`, an STT provider
-(`stt.provider`, local whisper works) and a TTS provider (`tts.provider`; the default `edge` works
-through the one-shot path, a provider with a chunked API such as ElevenLabs or OpenAI gives the
-lowest latency). The plugin declares `numpy` and `av` (PyAV); Hermes installs them when you enable it.
+Requirements: Hermes **0.21.6 or newer** (`requires_hermes` in `plugin.yaml`; Hermes records a load
+error and never runs `register()` on an older release), the `api_server` platform enabled with an
+`API_SERVER_KEY`, an STT provider (`stt.provider`, local whisper works) and a TTS provider
+(`tts.provider`; the default `edge` works through the one-shot path, a provider with a chunked API
+such as ElevenLabs or OpenAI gives the lowest latency). The plugin declares `numpy` and `av` (PyAV);
+Hermes installs them when you enable it.
 
 Opus sessions also require the system libopus shared library (`apt install libopus0`
 on Debian/Ubuntu, `brew install opus` on macOS). PCM sessions do not load it.
@@ -135,6 +139,30 @@ A countdown is a timer that ends with a tone on a device; see
 [client spec section 10](specs/client.md#10-countdowns). Spoken reminders come from a scheduler
 plugin such as Cadence and play as ordinary server-started turns.
 
+### Announcements from Home Assistant
+
+The [Arya Devices](https://github.com/Keryxion/arya-homeassistant) integration for Home Assistant speaks a message on Arya devices, after a chime
+and with no agent turn. Install it with HACS, add it under Settings → Devices & services, and enter the Hermes server's
+address and API key. There is nothing to write in `configuration.yaml`.
+
+- Each Arya device becomes a Home Assistant device, named by its `device_name`, with one notify
+  entity: `Kitchen` has `notify.kitchen_announce`. A device that connects later appears by itself.
+- `binary_sensor.kitchen_attached` is on while the device is attached. The device's other entities
+  are unavailable while it is not.
+- `notify.arya_announce` announces on every attached device at once.
+- Each device also has `switch.kitchen_mute` for its microphone and `number.kitchen_volume`.
+
+```yaml
+action: notify.send_message
+target:
+  entity_id: notify.kitchen_announce
+data:
+  message: The laundry is done.
+```
+
+The integration holds one WebSocket to the server, `GET /v1/audio/admin`, so a change made on a
+device shows in Home Assistant at once; see [the admin spec](specs/admin.md).
+
 ## Editing voice instructions
 
 On the first voice session, Converse creates `CONVERSE.md` in the active Hermes profile,
@@ -159,6 +187,7 @@ plugin settings form):
 
 | key | default | what it does |
 |---|---|---|
+| `name` | `Arya` | assistant name the voice prompt uses when a client's `start` frame carries none |
 | `voice_model`, `voice_provider` | `""` | the default model for voice sessions without a model selection |
 | `turn_timeout_seconds` | `120` | a turn that makes no progress for this long is stopped and reported; each tool call and model call counts as progress |
 | `playback_tail_timeout_seconds` | `45` | how long to wait for the client's `drained` frame |
@@ -168,12 +197,14 @@ plugin settings form):
 | `endpoint_threshold` | `0.5` | probability at which Smart Turn considers the utterance complete |
 | `endpoint_silence_ms` | `700` | silence that ends an utterance; with Smart Turn, the first completion check |
 | `endpoint_max_silence_ms` | `3000` | longest pause allowed after the wake word or, with Smart Turn, inside an unfinished request |
+| `capture_no_data_seconds` | `5` | drop a partial capture after this long with no incoming audio; `0` disables |
 | `approval_choice` | `deny` | what a voice turn answers when the agent asks for a command approval |
 | `api_base_url` | `""` | loopback URL of the API server when it cannot be derived from the listener |
 | `arbitrate_enabled` | `false` | enable advisory wake selection for cooperating clients |
 | `arbitrate_policy` | `wake_signal` | rank wake claims with `wake_signal` |
 | `arbitrate_device_id` | `""` | optional label prefix for server-generated unique socket identifiers |
 | `arbitrate_wake_window_seconds` | `0.75` | how long the arbitrator collects concurrent wake claims for the same wake word before electing the primary device |
+| `countdown_ring_timeout_seconds` | `900` | how long a countdown alarm rings if nobody ends it; sent to the device as `ring_seconds` |
 | `wake_word` | `Hey Arya` | wake phrase for every named device |
 | `device_wake_words` | `{}` | wake phrase for particular devices by `device_name`; the `set_wake_word` voice tool writes it |
 | `wake_word_repositories` | `[{repository: Keryxion/wakewords, ref: main}]` | ordered GitHub wake-word dictionaries; the last one listing a phrase supplies it, and `[]` uses only cached models |
@@ -327,7 +358,8 @@ API-server client.
 | `synth.py` | one `text → int16 PCM` seam over streaming or one-shot TTS, plus resampling |
 | `speech.py` | the only module that imports Hermes core speech helpers |
 | `settings.py` | the settings schema |
-| `voice_tools.py` | the `speak_this`, `play_tone`, `standby`, `mute`, approved `command`, `client_diagnostics`, and `set_wake_word` agent tools |
+| `admin.py` | `GET /v1/audio/admin`: the device list, announcements, and mute and volume for managing software |
+| `voice_tools.py` | the `announce`, `speak_this`, `play_tone`, `standby`, `mute`, approved `command`, `client_diagnostics`, and `set_wake_word` agent tools |
 | `wake_words.py` | wake-word dictionaries, the verified model cache behind `GET /v1/audio/wake/<slug>/<file>`, and live switches |
 | `client_diagnostics.py` | fresh diagnostic requests and responses on one client socket |
 | `named.py` | named-device routing records and public Hermes conversation lookup/continuation |

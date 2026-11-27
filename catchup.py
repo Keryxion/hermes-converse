@@ -197,6 +197,7 @@ class Relay:
     def __init__(self, ws: Any, *, audio=None, source_rate=None) -> None:
         self.ws = ws
         self.audio, self.source_rate = audio, source_rate
+        self.recording = None
 
     @property
     def attached(self) -> bool:
@@ -205,6 +206,7 @@ class Relay:
     def attach(self, ws: Any, *, audio=None) -> None:
         self.ws = ws
         self.audio = audio
+        self.recording = None
 
     async def _send(self, method: str, payload: Any) -> None:
         ws = self.ws
@@ -217,6 +219,7 @@ class Relay:
             # cancel it first, especially while the agent is waiting for an approval answer.
             if self.ws is ws:
                 self.ws = None
+                self.recording = None
 
     async def send_json(self, frame: dict) -> None:
         ws = self.ws
@@ -230,12 +233,20 @@ class Relay:
                     await self._send("send_bytes", packet)
                 if self.ws is not ws or self.audio is not audio:
                     return
+            if self.recording is not None:
+                self.recording.frame(frame)
             await self._send("send_json", frame)
+
+    def record_transcript(self, frame: dict) -> None:
+        if self.recording is not None:
+            self.recording.frame(frame, direction='diagnostic')
 
     async def send_bytes(self, data: bytes) -> None:
         ws = self.ws
         if ws is not None:
             audio = self.audio
+            if self.recording is not None:
+                self.recording.output_audio(data)
             if audio is None:
                 await self._send("send_bytes", data)
             else:

@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
 from . import speech, vad
+from . import _server_recording as diagnostic
 from .audio_transport import on_audio_thread
 from .level import InputLevel
 from .speech_detector import DEFAULT_VAD_MODEL, SpeechDetector
@@ -341,8 +342,10 @@ class ConversationOutput:
     """A completed conversation response, not a synthetic user transcript."""
 
     def __init__(self, text: str, event_id: str, *, next_action: Optional[str] = None,
-                 unheard: bool = False, transient: bool = False, no_barge_in: bool = False) -> None:
+                 unheard: bool = False, transient: bool = False, no_barge_in: bool = False,
+                 tones: tuple[str, ...] = ()) -> None:
         self.text, self.event_id, self.next_action = text, event_id, next_action
+        self.tones = tones  # played before the text
         self.transient = transient  # not a message of the conversation (`say`): no transcript frames
         self.no_barge_in = no_barge_in  # the turn that wrote it called the tool
         self.unheard = unheard  # a reply barge-in cut before any of it played: spoken before the next request
@@ -354,6 +357,48 @@ class ConversationOutput:
 class Aside(str):
     """Text a turn says that is not part of its reply (an approval question): spoken whole, and
     never sent as a transcript."""
+
+
+# tones.md: (Hz, ms) notes; 0 Hz is a rest.
+TONE_NOTES = {
+    "confirm": ((1047, 70),),
+    "error": ((262, 70), (0, 70), (262, 70)),
+    "approval": ((523, 70), (659, 70), (784, 70)),
+    "announcement": ((523, 90), (0, 30), (659, 90), (0, 30), (784, 90), (0, 30), (1047, 420)),
+}
+# The level and edges arya-ios played these tones with.
+TONE_GAIN = 0.125  # quiet next to speech: information, not an event
+ANNOUNCEMENT_GAIN = 0.5  # as loud as the speech after it: someone across the room knows to listen
+TONE_ATTACK_MS, TONE_RELEASE_MS = 8, 12  # ramped edges, so a note does not click
+
+
+class Tone(Aside):
+    """A tone at this point of a turn's reply: rendered into the reply audio, so it plays in order
+    with the speech around it. Its text is empty, so it adds nothing to the reply's text; it is
+    truthy so it passes the empty-delta filters."""
+
+    def __new__(cls, name: str) -> "Tone":
+        tone = super().__new__(cls, "")
+        tone.name = name
+        return tone
+
+    def __bool__(self) -> bool:
+        return True
+
+
+def tone_pcm(name: str, rate: int) -> bytes:
+    """The named tone as int16 mono PCM at *rate*."""
+    from array import array
+
+    out = array("h")
+    attack, release = rate * TONE_ATTACK_MS / 1000, rate * TONE_RELEASE_MS / 1000
+    gain = ANNOUNCEMENT_GAIN if name == "announcement" else TONE_GAIN
+    for hz, ms in TONE_NOTES[name]:
+        n = rate * ms // 1000
+        for i in range(n):
+            edge = min(1.0, i / attack, (n - 1 - i) / release)
+            out.append(round(32767 * gain * edge * math.sin(2 * math.pi * hz * i / rate)) if hz else 0)
+    return out.tobytes()
 
 
 class QuietTick:
@@ -434,6 +479,8 @@ class ConverseSession:
         self._endpointing = True
         self._endpointing_at_commit: Optional[bool] = None  # `on` sent with `commit`, applied when it is reached
         self._state_lock = threading.RLock()
+        self._diagnostic_disarmed = False
+        self._diagnostic_recordings = set()
         self.session_id = uuid.uuid4().hex  # echoed in `ready`, joinable across client/server traces
         self.device_name: Optional[str] = None  # trace only; set by the route
         # Trace bookkeeping: the wake claim the current exchange belongs to, the live turn trace,
@@ -601,6 +648,11 @@ class ConverseSession:
         return requested or ("listen" if self._exchange_listening else "standby")
 
     @_session_state
+    def exchange_listening(self) -> bool:
+        """True when the device was left listening: `listen` would not switch anything."""
+        return self._exchange_listening
+
+    @_session_state
     def record_next_action(self, action: str) -> None:
         self._exchange_listening = action == "listen"
 
@@ -663,9 +715,27 @@ class ConverseSession:
         self._level.attach(device_name)
 
     @_session_state
+    def feed_audio(self, pcm: bytes, record: Callable[[bytes], None]) -> None:
+        if not pcm or self._stop.is_set():
+            return
+        self.stream.feed(pcm)
+        # The detector still receives its normal input during a microphone hold.
+        record(pcm if self._mic != "muted" else b"")
+
+    @_session_state
+    def feed_encoded_audio(self, audio, packet: bytes, record: Callable[[bytes], None]) -> None:
+        pcm = audio.decode(packet, target_rate=self._input_rate)
+        self.feed_audio(pcm, record)
+
+    @_session_state
     def ignore_microphone(self, *, muted: bool) -> None:
         """Agent tool hook, for the turn under way until its playback ends: microphone audio does
         not interrupt it, and with *muted* is not heard at all."""
+        if muted:
+            self._diagnostic_disarmed = True
+            diagnostic.disarm()
+            for recording in tuple(self._diagnostic_recordings):
+                recording.disarm()
         if muted or self._mic != "muted":
             self._mic = "muted" if muted else "no_barge_in"
 
@@ -710,6 +780,7 @@ class ConverseSession:
                 try:
                     transcript, _volume = await self._capture_and_transcribe(recorder, wake=wake)
                 except BaseException:
+                    self._record_diagnostic({'type': 'capture_abandoned', 'reason': 'cancelled_or_error'})
                     with self._state_lock:
                         self._capturing = self._continuation_capture = False
                         self.release_capture()
@@ -846,6 +917,12 @@ class ConverseSession:
                 return recorder, wake, self._generation, interrupt
         return None
 
+    def _record_diagnostic(self, frame):
+        with self._state_lock:
+            recorders = tuple(self._diagnostic_recordings)
+        for recording in recorders:
+            recording._loop.call_soon_threadsafe(recording.diagnostic, frame)
+
     def _detect(self, blocks: list, learn: bool, playing: bool, interrupting: bool) -> list[tuple]:
         """Audio thread: each block at the session's gain through the speech detector, up to the
         first block where speech starts. One ``(data, phase, gain, level, probability, threshold)``
@@ -854,6 +931,13 @@ class ConverseSession:
         for raw in blocks:
             data = self._level.apply(raw, learn=learn)
             phase = detector.feed(data, playing, interrupting=interrupting)
+            if self._diagnostic_recordings:
+                self._record_diagnostic({'type': 'vad', 'processed_unix_ms': int(time.time() * 1000),
+                                         'phase': 'playback' if playing else 'generation',
+                                         'accepted': phase is not None, 'probability': getattr(detector, 'probability', None),
+                                         'rms': getattr(detector, 'level', None), 'gain': self._level.gain,
+                                         'threshold': getattr(detector, 'threshold', None),
+                                         **getattr(detector, 'decision', {})})
             heard.append((data, phase, self._level.gain, getattr(detector, "level", None),
                           getattr(detector, "probability", None), getattr(detector, "threshold", None)))
             if phase is not None:
@@ -1064,6 +1148,7 @@ class ConverseSession:
         is the captured audio's RMS loudness (:func:`vad.utterance_volume`). *wake* marks the first
         capture after a granted wake. Wake selection never gates this capture."""
         generation = self._generation
+        self._record_diagnostic({'type': 'capture_started', 'wake': wake})
         recorder = recorder or PhaseRecorder()
         with recorder.phase("voice.capture", **{
                 "endpoint.mode": ("commit" if not self._endpointing
@@ -1076,17 +1161,21 @@ class ConverseSession:
             cap.set(**{"vad.model": self._detector.name})
         self._pre_roll.clear()  # capture drained the pre-roll into the WAV
         if self.stream.no_data_return or self._capture_abandoned(generation):
+            self._record_diagnostic({'type': 'stt_skipped', 'reason': 'no_audio_data' if self.stream.no_data_return else 'capture_abandoned'})
             vad.unlink_quietly(wav_path)
             return "", volume
         with recorder.phase("voice.stt") as stt:
+            self._record_diagnostic({'type': 'stt_started'})
             try:
                 transcript = str(await asyncio.to_thread(self._transcribe, wav_path) or "").strip()
             except Exception:
                 logger.warning("converse transcription raised", exc_info=True)
+                self._record_diagnostic({'type': 'stt_error'})
                 transcript = ""
             finally:
                 vad.unlink_quietly(wav_path)
             stt.set(**{"stt.transcript_chars": len(transcript), "stt.success": bool(transcript)})
+            self._record_diagnostic({'type': 'stt_completed', 'text': transcript, 'text_chars': len(transcript)})
         return transcript, volume
 
     def _blocks_ms(self, blocks: int) -> float:
@@ -1176,6 +1265,8 @@ class ConverseSession:
                     "speech_ms=%.0f", self.session_id, "smart_turn" if self._turn_detector is not None else "fixed",
                     wake, reason, self._blocks_ms(c.quiet), self._blocks_ms(c.longest_pause),
                     self._blocks_ms(c.speech_blocks))
+        self._record_diagnostic({'type': 'endpoint', 'reason': reason, 'wake': wake,
+                                 'pause_ms': self._blocks_ms(c.quiet), 'speech_ms': self._blocks_ms(c.speech_blocks)})
         wav_path, volume, samples = await on_audio_thread(self._write_capture, c.frames)
         if phase is not None:
             phase.set(**{"input.audio_ms": samples * 1000 / self._input_rate})
@@ -1307,6 +1398,7 @@ class _Driver:
     last_progress: Optional[Callable[[], float]]
     message_ids: Any = None  # reads Hermes's ids for the turn's messages (catchup.MessageIds)
     present: Optional[Callable[[], bool]] = None  # a device is attached to a stopped session's turn
+    record_transcript: Optional[Callable[[dict], None]] = None
     turn: Any = None  # the turn in flight
 
     def gone(self) -> bool:
@@ -1399,6 +1491,7 @@ async def drive_converse_turns(
     present: Optional[Callable[[], bool]] = None,
     after_turn: Optional[Callable[[], Awaitable[None]]] = None,
     control: Optional[dict] = None,
+    record_transcript: Optional[Callable[[dict], None]] = None,
 ) -> None:
     """Run the per-transcript incremental-TTS turn loop.
 
@@ -1426,7 +1519,7 @@ async def drive_converse_turns(
                 turn_timeout=turn_timeout, tail_fallback=tail_fallback, max_tts_chars=max_tts_chars,
                 standby=standby, mute=mute, transcripts=transcripts, tool_calls=tool_calls,
                 reasoning_tokens=reasoning_tokens, last_progress=last_progress,
-                message_ids=message_ids, present=present)
+                message_ids=message_ids, present=present, record_transcript=record_transcript)
     session.enable_turn_control()
 
     async def resume(transcripts: bool) -> None:
@@ -1550,6 +1643,9 @@ async def drive_converse_turns(
         if tt.traceparent:
             meta["traceparent"] = tt.traceparent
         turn = _Turn(transcript, turn_id, meta)
+        if d.record_transcript is not None:
+            d.record_transcript({'type': 'transcript', 'role': 'user', 'text': str(transcript),
+                                 **meta, 'activation': {'kind': source, 'claim_id': claim_id}})
         turn.input_text = "\n".join([*unsubmitted, str(transcript)])
         try:
             session.reserve_turn(turn_id, turn.tts_stop, transcript)
@@ -1613,6 +1709,8 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
         turn_task = asyncio.ensure_future(cancelled_reply())
     elif turn.output is not None:
         async def prepared_reply():
+            for name in turn.output.tones:
+                turn.on_delta(Tone(name))
             turn.on_delta(turn.output.text)
             turn.result["reply"] = turn.output.text
             turn.ns["agent_end"] = time.time_ns()
@@ -1722,6 +1820,8 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
     # Arm before turn_done so an immediate state report cannot be lost.
     if session.finish_turn(turn.turn_id, d.tail_fallback if turn.pcm_chunks else 0):
         next_action = "listen"
+    # Read before the new action is recorded: whether the device was already listening.
+    already_listening = getattr(session, "exchange_listening", lambda: False)()
     record_action = getattr(session, "record_next_action", None)
     if record_action is not None:
         record_action(next_action)
@@ -1741,11 +1841,15 @@ async def _run_turn(d: _Driver, turn: _Turn, tt: Any) -> str:
         turn.ms("pcm_done"), len(turn.reply_parts), sum(len(p) for p in turn.reply_parts),
         getattr(session, "session_id", None), turn.turn_id, outcome, len(turn.result.get("reply") or ""),
         sum(len(p) for p in turn.spoken_parts), turn.pcm_chunks, next_action, action_source)
-    # Ordinary completion preserves the device's interaction mode. An explicit output
-    # question can open listening; an ordinary or replayed reply never reopens a released PTT mic.
+    # Ordinary completion preserves the device's interaction mode. An explicit output question
+    # can open listening on a device that is not already listening; an ordinary or replayed reply
+    # never reopens a released PTT mic. An interrupted, cancelled or failed turn carries nothing:
+    # its ending leaves the microphone where it is.
     turn_done: dict[str, Any] = {"type": "turn_done", "turn_id": turn.turn_id}
     if next_action in ("standby", "mute") or (
-            turn.output is not None and turn.output.next_action == "listen" and not turn.output.unheard):
+            completed and not already_listening
+            and turn.output is not None and turn.output.next_action == "listen"
+            and not turn.output.unheard):
         turn_done["next_action"] = next_action
     await d.send_json(turn_done)
     _finish_trace(tt, turn, reply, err=turn_err, barged=barged, next_action=next_action)
@@ -1861,11 +1965,17 @@ async def _produce_speech(d: _Driver, turn: _Turn) -> None:
     """The reply's TTS task: synthesize each sentence as it lands, so playback overlaps generation.
     Each chunk is a short blocking call; no thread is held between chunks."""
     spoken_chars = 0
+    # A tone waits for the speech after it and goes out joined to its first audio. Sent on its own
+    # it would play out while that speech is still being synthesized: a gap, and a client underrun.
+    tone = b""
     try:
         async for sentence in _reply_sentences(d, turn):
             epoch = turn.speech_epoch  # a reconnect after this replays the sentence instead
+            if isinstance(sentence, Tone):
+                tone += tone_pcm(sentence.name, d.synth.sample_rate)
+                continue
             cleaned = speech.strip_markdown(sentence)
-            if not cleaned:
+            if not cleaned or cleaned.strip().upper() == "[SILENT]":  # Hermes's say-nothing reply
                 continue
             shown = not (turn.transient or isinstance(sentence, Aside))
             turn.ns.setdefault("first_sentence", time.time_ns())
@@ -1888,13 +1998,20 @@ async def _produce_speech(d: _Driver, turn: _Turn) -> None:
                     if d.gone() or epoch != turn.speech_epoch:
                         break
                     turn.ns.setdefault("first_pcm", time.time_ns())
-                    turn.pcm_q.put_nowait(chunk)
+                    turn.pcm_q.put_nowait(tone + chunk)
+                    tone = b""
             spoken_chars += len(cleaned)
             if spoken_chars >= d.max_tts_chars:
                 logger.debug("converse: TTS output capped at %d chars", spoken_chars)
                 break
+        if tone and not turn.tts_stop.is_set() and not d.gone():  # no speech followed it
+            turn.pcm_q.put_nowait(_Piece(turn.speech_epoch, None))
+            turn.pcm_q.put_nowait(tone)
     except Exception as exc:
         logger.warning("converse synthesis failed: %s", exc, exc_info=True)
+        # Synthesis is part of the run: a silent or cut-off reply ends the turn as a failure,
+        # `error` then `turn_done`, never as an ordinary completion. The text is spoken-safe.
+        turn.result.setdefault("err", "the reply could not be spoken")
     finally:
         turn.pcm_q.put_nowait(None)
 
@@ -1940,8 +2057,11 @@ async def _stream_reply(d: _Driver, turn: _Turn, turn_task: asyncio.Future) -> N
         if isinstance(chunk, _Piece):  # its transcript goes out in order ahead of the PCM it speaks
             # The contract: after a reconnect, audio starts with text prepared after it.
             turn.skipping = chunk.epoch != turn.speech_epoch
-            if not turn.skipping and chunk.frame is not None and d.transcripts:
-                await d.send_json(chunk.frame)
+            if not turn.skipping and chunk.frame is not None:
+                if d.record_transcript is not None:
+                    d.record_transcript(chunk.frame)
+                if d.transcripts:
+                    await d.send_json(chunk.frame)
             continue
         if turn.skipping:
             continue
