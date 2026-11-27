@@ -19,7 +19,7 @@ ROOT = Path.home() / '.hermes/logs/converse-recordings'
 MAX_RECORDINGS = 20
 MAX_AGE_SECONDS = 24 * 60 * 60
 MAX_PCM_BYTES = 48000 * 2 * 60
-QUEUE_SIZE = 64
+QUEUE_SIZE = 2048
 
 
 class _Audio(bytes):
@@ -297,14 +297,14 @@ class ServerRecording:
             with lock, _privacy_lock:
                 self._disarmed = session._diagnostic_disarmed or _mute_disarmed
                 if _enabled() and not self._disarmed:
-                    self._queue = asyncio.Queue(maxsize=QUEUE_SIZE + 1)
+                    self._queue = asyncio.Queue(maxsize=QUEUE_SIZE + 2)
                     self._task = asyncio.create_task(self._run(session, self._queue))
                     session._diagnostic_recordings.add(self)
                     _recorders.add(self)
         else:
             with _privacy_lock:
                 if _enabled() and not _mute_disarmed:
-                    self._queue = asyncio.Queue(maxsize=QUEUE_SIZE + 1)
+                    self._queue = asyncio.Queue(maxsize=QUEUE_SIZE + 2)
                     self._task = asyncio.create_task(self._run(session, self._queue))
                     _recorders.add(self)
 
@@ -352,16 +352,29 @@ class ServerRecording:
         queue = self._queue
         if queue is None or self._disarmed:
             return
-        if not _enabled() or queue.qsize() >= QUEUE_SIZE:
+        if not _enabled():
             self.close()
+            return
+        if queue.qsize() >= QUEUE_SIZE:
+            self._overflow('queue_full')
             return
         size = len(item) if isinstance(item, bytes) else len(item[0]) if isinstance(item, tuple) else 0
         if size:
             if self._queued_bytes + size > MAX_PCM_BYTES:
-                self.close()
+                self._overflow('queued_audio_limit')
                 return
             self._queued_bytes += size
         queue.put_nowait(item)
+
+    def _overflow(self, reason):
+        log.warning('diagnostic recording stopped: session=%s reason=%s', self._session.session_id, reason)
+        if self._queue is not None:
+            self._queue.put_nowait({'event': 'recording_stopped', 'reason': reason,
+                                    'received_unix_ms': int(time.time() * 1000)})
+        self.close()
+
+    def diagnostic(self, frame):
+        self.frame(frame, direction='diagnostic')
 
     def audio(self, data):
         self._record(_Audio(data[:MAX_PCM_BYTES]))
@@ -384,3 +397,11 @@ class ServerRecording:
     async def wait_closed(self):
         if self._task is not None:
             await asyncio.shield(self._task)
+
+
+def record_for_sessions(session_ids, frame):
+    with _privacy_lock:
+        recorders = tuple(_recorders)
+    for recorder in recorders:
+        if recorder._session.session_id in session_ids:
+            recorder.diagnostic(frame)

@@ -16,6 +16,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Optional
 
 from .tracing import emit_span
+from . import _server_recording as diagnostic
 
 logger = logging.getLogger(__name__)
 
@@ -290,6 +291,14 @@ class Arbitrator:
                 if record.sent is not None:
                     event["decision.sent"] = record.sent
                 events.append(("wake.claim", claim.received_ns, event))
+            diagnostic.record_for_sessions({r.claim.session_id for r in election.records}, {
+                'type': 'arbitration', 'election_id': election.election_id, 'policy': self.policy,
+                'decided_by': election.decided_by or ('only_claim' if len(election.records) == 1 else 'immediate'),
+                'window_ms': attrs['election.window_ms'],
+                'winner_device_id': election.winner.device_id if election.winner else None,
+                'winner_session_id': election.winner.session_id if election.winner else None,
+                'claims': [event for _, _, event in events],
+            })
             emit_span("voice.wake.election", election.created_ns, election.decided_ns, attrs, events=events)
         except Exception:
             logger.debug("wake election trace failed", exc_info=True)

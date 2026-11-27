@@ -44,3 +44,10 @@ sets; opening a new set replaces the oldest inactive set. If all sets are active
 writer queue fills, recording stops accepting data. Files older than 24 hours are removed
 on startup, hourly and when opening a set, except while in use. With the service stopped,
 remove retained files manually. Audio is not uploaded.
+
+Diagnostics also include each wake election's candidates, reported confidence/volume/time,
+winner and deciding ranking input; per-block VAD probability, gain, energy threshold,
+speech duration and rejection reason; capture endpoint and STT start, skip, error and completion.
+These events exist even when no conversation turn is created. Microphone pre-roll bursts use a
+bounded 2,048-item queue and the existing PCM byte budget. If either bound is exceeded, the
+retained JSONL ends with `recording_stopped` and its reason, and the server logs a warning.

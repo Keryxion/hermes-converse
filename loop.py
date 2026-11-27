@@ -780,6 +780,7 @@ class ConverseSession:
                 try:
                     transcript, _volume = await self._capture_and_transcribe(recorder, wake=wake)
                 except BaseException:
+                    self._record_diagnostic({'type': 'capture_abandoned', 'reason': 'cancelled_or_error'})
                     with self._state_lock:
                         self._capturing = self._continuation_capture = False
                         self.release_capture()
@@ -916,6 +917,12 @@ class ConverseSession:
                 return recorder, wake, self._generation, interrupt
         return None
 
+    def _record_diagnostic(self, frame):
+        with self._state_lock:
+            recorders = tuple(self._diagnostic_recordings)
+        for recording in recorders:
+            recording._loop.call_soon_threadsafe(recording.diagnostic, frame)
+
     def _detect(self, blocks: list, learn: bool, playing: bool, interrupting: bool) -> list[tuple]:
         """Audio thread: each block at the session's gain through the speech detector, up to the
         first block where speech starts. One ``(data, phase, gain, level, probability, threshold)``
@@ -924,6 +931,13 @@ class ConverseSession:
         for raw in blocks:
             data = self._level.apply(raw, learn=learn)
             phase = detector.feed(data, playing, interrupting=interrupting)
+            if self._diagnostic_recordings:
+                self._record_diagnostic({'type': 'vad', 'processed_unix_ms': int(time.time() * 1000),
+                                         'phase': 'playback' if playing else 'generation',
+                                         'accepted': phase is not None, 'probability': getattr(detector, 'probability', None),
+                                         'rms': getattr(detector, 'level', None), 'gain': self._level.gain,
+                                         'threshold': getattr(detector, 'threshold', None),
+                                         **getattr(detector, 'decision', {})})
             heard.append((data, phase, self._level.gain, getattr(detector, "level", None),
                           getattr(detector, "probability", None), getattr(detector, "threshold", None)))
             if phase is not None:
@@ -1134,6 +1148,7 @@ class ConverseSession:
         is the captured audio's RMS loudness (:func:`vad.utterance_volume`). *wake* marks the first
         capture after a granted wake. Wake selection never gates this capture."""
         generation = self._generation
+        self._record_diagnostic({'type': 'capture_started', 'wake': wake})
         recorder = recorder or PhaseRecorder()
         with recorder.phase("voice.capture", **{
                 "endpoint.mode": ("commit" if not self._endpointing
@@ -1146,17 +1161,21 @@ class ConverseSession:
             cap.set(**{"vad.model": self._detector.name})
         self._pre_roll.clear()  # capture drained the pre-roll into the WAV
         if self.stream.no_data_return or self._capture_abandoned(generation):
+            self._record_diagnostic({'type': 'stt_skipped', 'reason': 'no_audio_data' if self.stream.no_data_return else 'capture_abandoned'})
             vad.unlink_quietly(wav_path)
             return "", volume
         with recorder.phase("voice.stt") as stt:
+            self._record_diagnostic({'type': 'stt_started'})
             try:
                 transcript = str(await asyncio.to_thread(self._transcribe, wav_path) or "").strip()
             except Exception:
                 logger.warning("converse transcription raised", exc_info=True)
+                self._record_diagnostic({'type': 'stt_error'})
                 transcript = ""
             finally:
                 vad.unlink_quietly(wav_path)
             stt.set(**{"stt.transcript_chars": len(transcript), "stt.success": bool(transcript)})
+            self._record_diagnostic({'type': 'stt_completed', 'text': transcript, 'text_chars': len(transcript)})
         return transcript, volume
 
     def _blocks_ms(self, blocks: int) -> float:
@@ -1246,6 +1265,8 @@ class ConverseSession:
                     "speech_ms=%.0f", self.session_id, "smart_turn" if self._turn_detector is not None else "fixed",
                     wake, reason, self._blocks_ms(c.quiet), self._blocks_ms(c.longest_pause),
                     self._blocks_ms(c.speech_blocks))
+        self._record_diagnostic({'type': 'endpoint', 'reason': reason, 'wake': wake,
+                                 'pause_ms': self._blocks_ms(c.quiet), 'speech_ms': self._blocks_ms(c.speech_blocks)})
         wav_path, volume, samples = await on_audio_thread(self._write_capture, c.frames)
         if phase is not None:
             phase.set(**{"input.audio_ms": samples * 1000 / self._input_rate})

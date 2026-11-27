@@ -408,3 +408,19 @@ def test_real_talk_past_the_cap_is_split_at_a_pause(real_model, name):
         assert len(samples) < 20 * 16000  # ended before the cap, at a pause
     heard = np.concatenate([samples for samples, _reason in captures])
     assert np.array_equal(heard[:len(audio)], audio)
+
+
+def test_diagnostic_reasons_follow_actual_onset_thresholds(monkeypatch):
+    detector = sd.SpeechDetector(np, model='energy')
+    monkeypatch.setattr(detector, '_probability', lambda block: .9)
+    block = np.full(480, 5000, np.int16)
+    for _ in range(8):
+        assert detector.feed(block, False) is None
+    assert detector.decision['reason'] == 'speech_too_short'
+    assert detector.decision['speech_ms'] == 240
+    assert detector.feed(block, False) == 'generation'
+    assert detector.decision['reason'] == 'accepted'
+    assert detector.decision['speech_ms'] == 270
+    monkeypatch.setattr(detector, '_probability', lambda block: .1)
+    assert detector.feed(block, False) is None
+    assert detector.decision['reason'] == 'not_voiced'
