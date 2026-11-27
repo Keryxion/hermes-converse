@@ -18,6 +18,9 @@ DEFAULT_VAD_MODEL = "silero"
 SPEECH_ON = 0.5
 SPEECH_OFF = 0.35
 MIN_SPEECH_MS = 250
+# A short affirmative can finish before the interruption minimum. Match the energy
+# detector's 180 ms onset while idle; active turns still need sustained speech.
+MIN_ONSET_MS = 180
 # Interrupting an active turn: the speech may be spread over this window, so the gaps between
 # words do not restart the count. Idle onset still needs it unbroken.
 INTERRUPT_WINDOW_MS = 510
@@ -110,13 +113,14 @@ class SpeechDetector:
             self._voiced.clear()
         self._voiced.append(block.size * 1000 / self._input_rate if voiced else 0.0)
         self._speech_ms = sum(self._voiced)
-        if self._speech_ms < MIN_SPEECH_MS:
+        minimum_ms = MIN_SPEECH_MS if playing or interrupting else MIN_ONSET_MS
+        if self._speech_ms < minimum_ms:
             if energy_phase is not None:
                 # An energy candidate Silero did not confirm: say which condition held it back.
                 reason = ("not_voiced" if not heard else "echo_baseline_warming" if playing and gate is None
                           else "below_echo_gate" if not voiced else "speech_too_short")
                 vad.vad_log(f"candidate rejected ({energy_phase}): reason={reason} "
-                            f"probability={probability:.2f} speech_ms={self._speech_ms:.0f}/{MIN_SPEECH_MS} "
+                            f"probability={probability:.2f} speech_ms={self._speech_ms:.0f}/{minimum_ms} "
                             f"level={'-' if level is None else f'{level:.0f}'} "
                             f"echo_gate={'-' if gate is None else f'{gate:.0f}'}")
             return None
