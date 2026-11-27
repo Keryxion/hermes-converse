@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import threading
 import time
 import uuid
 from typing import Any, Callable
@@ -247,3 +248,39 @@ def register_tools(ctx: Any, hub: Any) -> None:
         ctx.register_tool(name=name, toolset=TOOLSET, schema=SCHEMAS[name], handler=handler,
                           description=SCHEMAS[name]["description"], emoji="🎙️",
                           is_async=asyncio.iscoroutinefunction(handler))
+
+    # Hermes turns an empty model response into a warning before the adapter sees it. Keep the
+    # tool's explicit silence with the exact agent turn, even for server-started turns that have
+    # no adapter processing bracket. Never silence an actual error or a different turn.
+    silent_turns: dict[tuple[str, str], bool] = {}
+    lock = threading.Lock()
+
+    def post_tool_call(*, tool_name=None, args=None, result=None, session_id=None, turn_id=None, **kw):
+        if tool_name != "speak_this" or not session_id or not turn_id or not isinstance(args, dict):
+            return
+        try:
+            value = json.loads(result) if isinstance(result, str) else result
+        except (ValueError, TypeError):
+            return
+        if not isinstance(value, dict) or value.get("result") != "ok" or not isinstance(args.get("text"), str):
+            return
+        key = (session_id, turn_id)
+        with lock:
+            silent_turns[key] = silent_turns.get(key, True) and not args["text"].strip()
+
+    def transform_llm_output(*, response_text="", session_id=None, turn_id=None, platform=None, **kw):
+        if platform != "converse" or not session_id or not turn_id:
+            return None
+        with lock:
+            silent = silent_turns.pop((session_id, turn_id), False)
+        if silent and response_text == "(empty)":
+            return "[SILENT]"
+        return None
+
+    def on_session_end(*, session_id=None, turn_id=None, **kw):
+        with lock:
+            silent_turns.pop((session_id, turn_id), None)
+
+    ctx.register_hook("post_tool_call", post_tool_call)
+    ctx.register_hook("transform_llm_output", transform_llm_output)
+    ctx.register_hook("on_session_end", on_session_end)
