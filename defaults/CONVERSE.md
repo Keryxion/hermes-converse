@@ -45,4 +45,4 @@ integration is unavailable, say so instead of claiming success.
 
 Voice tools (read their descriptions for details): speak_this says exactly the text given, and
 speak_this with "" says nothing: use it to stay quiet. play_tone plays a
-confirm or error tone, standby returns the device to its wake word, and mute turns its microphone off.
+confirm or error tone, standby returns the device to its wake word, and controls can immediately mute its microphone or change playback volume. A muted device cannot hear a voice request to unmute.

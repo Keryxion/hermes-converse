@@ -418,6 +418,9 @@ class ConverseRoute:
         logger.info("converse session: session=%s device_id=%s name=%r arbitrated=%s",
                     getattr(session, "session_id", None), device_id, name, arbitrator is not None)
         self.admin.attach(device_name, attachment, ws, address)
+        socket_loop = asyncio.get_running_loop()
+        attachment.controls = lambda wanted: asyncio.run_coroutine_threadsafe(
+            self.admin.controls(device_name, attachment, wanted), socket_loop)
         await _serve(ws, session=session, synth=synth, cap=cap, client=client, settings=settings,
                      report=lambda frame: self.admin.reported(device_name, attachment, frame),
                      name=name, guidance=guidance, quiet_interval=quiet_interval, arbitrator=arbitrator,

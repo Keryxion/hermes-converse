@@ -25,6 +25,7 @@ class Attachment:
     command: Optional[Callable[[str, list[str], float], Any]] = None
     diagnostics: Optional[Callable[[], Any]] = None
     wake_word: Optional[Callable[[Optional[str]], Any]] = None  # lists phrases, or switches to one
+    controls: Optional[Callable[[dict], Any]] = None
 
 
 class ConversationHub:
