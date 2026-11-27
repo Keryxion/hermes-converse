@@ -180,7 +180,7 @@ class _Files:
             data, timestamp = item
             self.event('audio', direction='output', received_unix_ms=timestamp,
                        offset_samples=self.output_bytes // 2, samples=len(data) // 2)
-            self.output.writeframesraw(data)
+            self.output.writeframes(data)
             self.output_bytes += len(data)
             return True
         if not item:  # mute boundary: never join a sample across it
@@ -198,7 +198,7 @@ class _Files:
             if not _enabled():
                 return False
             part = chunk[start:start + chunk_size]
-            self.wav.writeframesraw(part)
+            self.wav.writeframes(part)
             for index, (sample,) in enumerate(struct.iter_unpack('<h', part)):
                 self._rms_sum += sample * sample
                 self._rms_count += 1

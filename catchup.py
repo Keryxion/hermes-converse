@@ -237,6 +237,10 @@ class Relay:
                 self.recording.frame(frame)
             await self._send("send_json", frame)
 
+    def record_transcript(self, frame: dict) -> None:
+        if self.recording is not None:
+            self.recording.frame(frame, direction='diagnostic')
+
     async def send_bytes(self, data: bytes) -> None:
         ws = self.ws
         if ws is not None:

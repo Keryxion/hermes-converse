@@ -16,6 +16,12 @@ Every connected session writes three files under `~/.hermes/logs/converse-record
 
 The `recording_started` event identifies the session, device, detector and both sample rates.
 Each `audio` event gives its direction, receipt time and offset in that direction's WAV.
+Reply chunks may be sent ahead of playback; their timestamps are send times, not sample end times.
+WAV headers are updated on every write so open recordings play to their full written length.
+`diagnostic` transcript events contain recognized user text and reply pieces independently of the
+client's `transcripts` option. User transcript events include `activation.kind` (`wake` or
+`speech`) and `activation.claim_id`, joining the recorded `wake` and `wake_grant` frames.
+These local events are not sent to a client that did not request transcripts.
 Use `offset_samples / rate` to locate a chunk in the WAV; use `received_unix_ms` to align
 microphone and reply audio with the interaction frames. WAVs concatenate received chunks;
 wall-clock gaps remain visible in JSONL. Reply timestamps describe server sends, not measured

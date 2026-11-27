@@ -1360,8 +1360,13 @@ def test_voice_transcripts_are_opt_in(monkeypatch, enabled):
             return []
     monkeypatch.setattr(speech, "sentence_chunker", Chunker)
     monkeypatch.setattr("hermes_converse.loop.split_text_for_tts_stream", lambda text, cap: [text])
-    sent = _run_driver(_FakeConverseSession(["Hello"]), [], ["Hello there."], transcripts=enabled,
-                       message_ids=_Ids())
+    recorded = []
+    session = _FakeConverseSession(["Hello"])
+    session.take_origin = lambda: ('wake-2', 'wake')
+    sent = _run_driver(session, [], ["Hello there."], transcripts=enabled,
+                       message_ids=_Ids(), record_transcript=recorded.append)
+    assert [(f['role'], f['text']) for f in recorded] == [('user', 'Hello'), ('assistant', 'Hello there.')]
+    assert recorded[0]['activation'] == {'kind': 'wake', 'claim_id': 'wake-2'}
     records = [frame for frame in sent if isinstance(frame, dict) and frame.get("type") == "transcript"]
     if enabled:
         assert [(record["role"], record["text"], record.get("message_id")) for record in records] == [

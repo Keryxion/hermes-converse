@@ -145,7 +145,7 @@ def test_large_write_stops_when_disabled_between_chunks(monkeypatch):
     def write(data):
         written.append(data)
         active[0] = False
-    files.wav = SimpleNamespace(writeframesraw=write)
+    files.wav = SimpleNamespace(writeframes=write)
     files.events = SimpleNamespace(write=lambda line: None)
     monkeypatch.setattr(recording, '_enabled', lambda: active[0])
     assert not files.write(b'\x01\x00' * 16000)
