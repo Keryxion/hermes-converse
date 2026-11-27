@@ -16,6 +16,12 @@ Every connected session writes three files under `~/.hermes/logs/converse-record
 
 The `recording_started` event identifies the session, device, detector and both sample rates.
 Each `audio` event gives its direction, receipt time and offset in that direction's WAV.
+Reply chunks may be sent ahead of playback; their timestamps are send times, not sample end times.
+WAV headers are updated on every write so open recordings play to their full written length.
+`diagnostic` transcript events contain recognized user text and reply pieces independently of the
+client's `transcripts` option. User transcript events include `activation.kind` (`wake` or
+`speech`) and `activation.claim_id`, joining the recorded `wake` and `wake_grant` frames.
+These local events are not sent to a client that did not request transcripts.
 Use `offset_samples / rate` to locate a chunk in the WAV; use `received_unix_ms` to align
 microphone and reply audio with the interaction frames. WAVs concatenate received chunks;
 wall-clock gaps remain visible in JSONL. Reply timestamps describe server sends, not measured
@@ -25,7 +31,9 @@ capture separate pre-AEC channels from the device.
 For VAD or AEC investigation, copy all three files with the same ID, listen to the microphone
 around the relevant frame, and compare it with the reply waveform and RMS timeline. Recording
 continues across turns for the socket lifetime, up to 24 hours, without a 60-second cutoff.
-Reconnects create a new set; `session_id` joins a resumed interaction across sets.
+Reconnects create a new set; `session_id` joins a resumed interaction across sets. If any active
+file or the recording directory is deleted or replaced, the next recording event opens a fresh
+set, recreating the directory when needed. Deleted audio is not copied into the new set.
 
 Recording is off by default. Enable it with the consent of people whose audio and text may
 be captured. Server mute closes and permanently disarms recording for the process; a restart
@@ -36,3 +44,10 @@ sets; opening a new set replaces the oldest inactive set. If all sets are active
 writer queue fills, recording stops accepting data. Files older than 24 hours are removed
 on startup, hourly and when opening a set, except while in use. With the service stopped,
 remove retained files manually. Audio is not uploaded.
+
+Diagnostics also include each wake election's candidates, reported confidence/volume/time,
+winner and deciding ranking input; per-block VAD probability, gain, energy threshold,
+speech duration and rejection reason; capture endpoint and STT start, skip, error and completion.
+These events exist even when no conversation turn is created. Microphone pre-roll bursts use a
+bounded 2,048-item queue and the existing PCM byte budget. If either bound is exceeded, the
+retained JSONL ends with `recording_stopped` and its reason, and the server logs a warning.

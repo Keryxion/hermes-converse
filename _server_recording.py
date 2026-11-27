@@ -19,7 +19,7 @@ ROOT = Path.home() / '.hermes/logs/converse-recordings'
 MAX_RECORDINGS = 20
 MAX_AGE_SECONDS = 24 * 60 * 60
 MAX_PCM_BYTES = 48000 * 2 * 60
-QUEUE_SIZE = 64
+QUEUE_SIZE = 2048
 
 
 class _Audio(bytes):
@@ -57,7 +57,10 @@ def _prune(directory, *, reserve=False):
         stem, _, suffix = name.rpartition('.')
         if ((stem.startswith('input-') and suffix in ('wav', 'jsonl'))
                 or (stem.startswith('capture-') and suffix in ('wav', 'json'))):
-            info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+            try:
+                info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
             if stem.endswith('-output'):
                 stem, suffix = stem[:-7], 'output'
             groups.setdefault(stem, {})[suffix] = (name, info)
@@ -68,14 +71,19 @@ def _prune(directory, *, reserve=False):
         fd = None
         try:
             if audio is not None and stat.S_ISREG(audio[1].st_mode):
-                fd = os.open(audio[0], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
                 try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    continue  # a recorder still owns this pair
+                    fd = os.open(audio[0], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+                except FileNotFoundError:
+                    pass
+                if fd is not None:
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        continue  # a recorder still owns this pair
             for name, info in files.values():
                 if not stat.S_ISDIR(info.st_mode):
-                    os.unlink(name, dir_fd=directory)
+                    with suppress(FileNotFoundError):
+                        os.unlink(name, dir_fd=directory)
             if not any(stat.S_ISDIR(info.st_mode) for _, info in files.values()):
                 del groups[stem]
         finally:
@@ -129,6 +137,8 @@ class _Files:
         self.bytes = self.event_count = 0
         self._rms_sum = self._rms_count = 0
         self._carry = b''
+        self._stem = None
+        self._directory_identity = None
 
     def open(self):
         try:
@@ -149,6 +159,9 @@ class _Files:
                     self.output.setnchannels(1)
                     self.output.setsampwidth(2)
                     self.output.setframerate(getattr(self.session, "_recording_output_rate", 24000))
+                    self._stem = stem
+                    info = os.fstat(directory)
+                    self._directory_identity = (info.st_dev, info.st_ino)
                 except Exception:
                     self.close()
                     # A partial pair still counts against retention if removal fails.
@@ -170,9 +183,37 @@ class _Files:
             self.events.write(line)
             self.event_count += 1
 
+    def _current(self):
+        """Open handles must still belong to all three named files in the current directory."""
+        if self._stem is None:
+            return False
+        try:
+            info = os.stat(ROOT, follow_symlinks=False)
+            if (info.st_dev, info.st_ino) != self._directory_identity:
+                return False
+            for suffix, handle in (('.wav', self._wav_file), ('.jsonl', self.events),
+                                   ('-output.wav', self._output_file)):
+                named = os.stat(ROOT / (self._stem + suffix), follow_symlinks=False)
+                opened = os.fstat(handle.fileno())
+                if (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino):
+                    return False
+            return True
+        except FileNotFoundError:
+            return False
+
     def write(self, item):
         if not _enabled():
             return False
+        if not self._current():
+            self.close()
+            self.__init__(self.session)
+            try:
+                if not self.open():
+                    return False
+            except FileNotFoundError:
+                # Another deletion raced reopening; retry on the next queued event.
+                self.close()
+                return True
         if isinstance(item, dict):
             self.event(item.pop('event'), **item)
             return True
@@ -180,7 +221,7 @@ class _Files:
             data, timestamp = item
             self.event('audio', direction='output', received_unix_ms=timestamp,
                        offset_samples=self.output_bytes // 2, samples=len(data) // 2)
-            self.output.writeframesraw(data)
+            self.output.writeframes(data)
             self.output_bytes += len(data)
             return True
         if not item:  # mute boundary: never join a sample across it
@@ -198,7 +239,7 @@ class _Files:
             if not _enabled():
                 return False
             part = chunk[start:start + chunk_size]
-            self.wav.writeframesraw(part)
+            self.wav.writeframes(part)
             for index, (sample,) in enumerate(struct.iter_unpack('<h', part)):
                 self._rms_sum += sample * sample
                 self._rms_count += 1
@@ -213,6 +254,7 @@ class _Files:
     def close(self):
         wav, events, wav_file = self.wav, self.events, self._wav_file
         self.wav = self.events = self._wav_file = None
+        self._stem = self._directory_identity = None
         output, output_file = self.output, self._output_file
         self.output = self._output_file = None
         for handle in (wav, events, wav_file, output, output_file):
@@ -255,14 +297,14 @@ class ServerRecording:
             with lock, _privacy_lock:
                 self._disarmed = session._diagnostic_disarmed or _mute_disarmed
                 if _enabled() and not self._disarmed:
-                    self._queue = asyncio.Queue(maxsize=QUEUE_SIZE + 1)
+                    self._queue = asyncio.Queue(maxsize=QUEUE_SIZE + 2)
                     self._task = asyncio.create_task(self._run(session, self._queue))
                     session._diagnostic_recordings.add(self)
                     _recorders.add(self)
         else:
             with _privacy_lock:
                 if _enabled() and not _mute_disarmed:
-                    self._queue = asyncio.Queue(maxsize=QUEUE_SIZE + 1)
+                    self._queue = asyncio.Queue(maxsize=QUEUE_SIZE + 2)
                     self._task = asyncio.create_task(self._run(session, self._queue))
                     _recorders.add(self)
 
@@ -275,7 +317,11 @@ class ServerRecording:
     async def _run(self, session, queue):
         files = _Files(session)
         try:
-            if await asyncio.to_thread(self._write_if_armed, files.open):
+            try:
+                opened = await asyncio.to_thread(self._write_if_armed, files.open)
+            except FileNotFoundError:
+                opened = True  # deletion raced the first open; retry with the next event
+            if opened:
                 deadline = asyncio.get_running_loop().time() + MAX_AGE_SECONDS
                 while _enabled():
                     async with asyncio.timeout_at(deadline):
@@ -306,16 +352,29 @@ class ServerRecording:
         queue = self._queue
         if queue is None or self._disarmed:
             return
-        if not _enabled() or queue.qsize() >= QUEUE_SIZE:
+        if not _enabled():
             self.close()
+            return
+        if queue.qsize() >= QUEUE_SIZE:
+            self._overflow('queue_full')
             return
         size = len(item) if isinstance(item, bytes) else len(item[0]) if isinstance(item, tuple) else 0
         if size:
             if self._queued_bytes + size > MAX_PCM_BYTES:
-                self.close()
+                self._overflow('queued_audio_limit')
                 return
             self._queued_bytes += size
         queue.put_nowait(item)
+
+    def _overflow(self, reason):
+        log.warning('diagnostic recording stopped: session=%s reason=%s', self._session.session_id, reason)
+        if self._queue is not None:
+            self._queue.put_nowait({'event': 'recording_stopped', 'reason': reason,
+                                    'received_unix_ms': int(time.time() * 1000)})
+        self.close()
+
+    def diagnostic(self, frame):
+        self.frame(frame, direction='diagnostic')
 
     def audio(self, data):
         self._record(_Audio(data[:MAX_PCM_BYTES]))
@@ -338,3 +397,11 @@ class ServerRecording:
     async def wait_closed(self):
         if self._task is not None:
             await asyncio.shield(self._task)
+
+
+def record_for_sessions(session_ids, frame):
+    with _privacy_lock:
+        recorders = tuple(_recorders)
+    for recorder in recorders:
+        if recorder._session.session_id in session_ids:
+            recorder.diagnostic(frame)

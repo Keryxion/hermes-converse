@@ -954,6 +954,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
             session=session, synth=synth, cap=cap, loop=loop,
             send_json=relay.send_json, send_bytes=relay.send_bytes, run_turn=_run_current_turn, history=history,
             message_ids=MessageIds(client) if hasattr(client, "history") else None,
+            record_transcript=relay.record_transcript,
             present=lambda: relay.attached,
             quiet_interval=quiet_interval, interrupt_turn=_interrupt_turn,
             release_turn=getattr(client, "release", None), transcripts=transcripts,

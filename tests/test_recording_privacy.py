@@ -8,6 +8,8 @@ import time
 from types import SimpleNamespace
 import wave
 
+import pytest
+
 from hermes_converse import _server_recording as recording
 
 
@@ -145,7 +147,8 @@ def test_large_write_stops_when_disabled_between_chunks(monkeypatch):
     def write(data):
         written.append(data)
         active[0] = False
-    files.wav = SimpleNamespace(writeframesraw=write)
+    monkeypatch.setattr(files, '_current', lambda: True)
+    files.wav = SimpleNamespace(writeframes=write)
     files.events = SimpleNamespace(write=lambda line: None)
     monkeypatch.setattr(recording, '_enabled', lambda: active[0])
     assert not files.write(b'\x01\x00' * 16000)
@@ -306,3 +309,75 @@ def test_muted_decode_preserves_normal_decoder_state():
     audio = Audio()
     s.feed_encoded_audio(audio, b'packet', lambda data: None)
     assert audio.input_resampler == 'keep' and audio.input_carry == b'keep'
+
+
+@pytest.mark.parametrize('deleted', ['input', 'output', 'timeline', 'all', 'directory', 'replaced-directory', 'replaced-file'])
+def test_deleted_or_replaced_files_start_a_fresh_set(tmp_path, monkeypatch, deleted):
+    import json
+    import shutil
+    configure(monkeypatch, tmp_path)
+    files = recording._Files(session())
+    assert files.open()
+    try:
+        files.write(recording._Audio(b'\x01\x00' * 160))
+        files.write((b'\x02\x00' * 240, 1234))
+        old_stem = files._stem
+        if deleted == 'directory':
+            shutil.rmtree(recording.ROOT)
+        elif deleted == 'replaced-directory':
+            recording.ROOT.rename(tmp_path / 'moved-recordings')
+            recording.ROOT.mkdir()
+        elif deleted == 'all':
+            for p in recording.ROOT.iterdir():
+                p.unlink()
+        else:
+            suffix = {'input': '.wav', 'output': '-output.wav', 'timeline': '.jsonl', 'replaced-file': '.wav'}[deleted]
+            path = recording.ROOT / (old_stem + suffix)
+            path.unlink()
+            if deleted == 'replaced-file':
+                path.write_bytes(b'replacement')
+        assert files.write(recording._Audio(b'\x03\x00' * 160))
+        assert files.write((b'\x04\x00' * 240, 5678))
+        new_stem = files._stem
+        assert new_stem != old_stem
+        with wave.open(str(recording.ROOT / (new_stem + '.wav'))) as wav:
+            assert wav.readframes(1000) == b'\x03\x00' * 160
+        with wave.open(str(recording.ROOT / (new_stem + '-output.wav'))) as wav:
+            assert wav.readframes(1000) == b'\x04\x00' * 240
+        events = [json.loads(line) for line in (recording.ROOT / (new_stem + '.jsonl')).read_text().splitlines()]
+        assert events[0]['session_id'] == 'synthetic'
+        assert [e['offset_samples'] for e in events if e['event'] == 'audio'] == [0, 0]
+        monkeypatch.setenv('HERMES_CONVERSE_SERVER_RECORDING', '0')
+        for p in recording.ROOT.iterdir():
+            p.unlink()
+        assert not files.write(b'\x05\x00' * 160)
+        assert not list(recording.ROOT.iterdir())
+    finally:
+        files.close()
+
+
+async def test_running_recorder_recovers_without_reconnect(tmp_path, monkeypatch):
+    import shutil
+    configure(monkeypatch, tmp_path)
+    written = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    original = recording._Files.write
+    def write(files, item):
+        result = original(files, item)
+        loop.call_soon_threadsafe(written.set)
+        return result
+    monkeypatch.setattr(recording._Files, 'write', write)
+    r = recording.ServerRecording(session())
+    try:
+        r.audio(b'\x01\x00' * 160)
+        await asyncio.wait_for(written.wait(), 3)
+        shutil.rmtree(recording.ROOT)
+        written.clear()
+        r.audio(b'\x02\x00' * 160)
+        await asyncio.wait_for(written.wait(), 3)
+    finally:
+        r.close()
+        await r.wait_closed()
+    paths = list(recording.ROOT.glob('*.wav'))
+    with wave.open(str(next(p for p in paths if not p.stem.endswith('-output')))) as wav:
+        assert wav.readframes(1000) == b'\x02\x00' * 160
