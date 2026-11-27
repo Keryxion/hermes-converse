@@ -105,6 +105,21 @@ baseline. A brief click, room noise, or soft incidental speech must not repeated
 cancel a reply. Model failure falls back to the energy detector without ending the
 socket. Onset acceptance is separate from the decision to capture its words.
 
+The server knows the reply it is sending, and uses both halves of it against
+the reply's echo ([audio.md](audio.md)):
+
+- Its level. Keep the level of each 100 ms of reply PCM with the time it is due
+  to play. The reply's level at a moment is the loudest audio due in the second
+  before it, which covers the delay through the device's speaker, microphone
+  and the network. While the echo baseline is learned, also learn what the
+  device returns of the reply: microphone level over reply level, at its 90th
+  percentile. The echo gate is the higher of the baseline and that share of the
+  reply's level now, times the same margin.
+- Its words. Keep the text given to speech synthesis for the reply. A capture
+  whose onset came during `speaking` or the playback tail is checked against
+  the text of that reply once transcribed, and dropped when it is the reply
+  read back. It ends as a capture with nothing to answer does.
+
 Once capture owns input, old completion, cancellation, the client's state report, and tail timeout
 must not clear its audio, pre-roll, or pending transcript. An old `standby` call must not
 put a client into standby over an accepted continuation. Fence discarded or
