@@ -26,7 +26,7 @@ python_dependencies:
   - "transformers>=4.46,<6"
   - "huggingface_hub>=0.26,<2"
 provides_tools: [speak_this, play_tone, standby, mute, command, countdown, client_diagnostics, set_wake_word, announce]
-provides_hooks: [on_stream_start, on_stream_delta, pre_tool_call, post_tool_call, post_api_request]
+provides_hooks: [on_stream_start, on_stream_delta, pre_tool_call, post_tool_call, post_api_request, transform_llm_output, on_session_end]
 config_schema:
   vad_model:
     type: str

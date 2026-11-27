@@ -219,21 +219,19 @@ def tools(monkeypatch):
 def test_tools_hold_the_microphone_from_the_call(tools):
     tools.hub.gateway._turns["den"] = SimpleNamespace(standby=False, mute=False)
     assert tools.call("no_barge_in") == {"result": "ok"}
-    assert tools.call("mute") == {"result": "ok"}
     assert tools.call("standby") == {"result": "ok"}
-    assert tools.calls == [('ignore', False), ('ignore', True), ('unmute',)]
+    assert tools.calls == [('ignore', False), ('unmute',)]
 
 
 def test_a_turn_the_server_started_holds_from_its_reply(tools):
     turn = tools.hub.gateway._server_turns["den"] = ServerTurn()
     assert tools.call("no_barge_in") == {"result": "ok"} and turn.no_barge_in
-    assert tools.call("mute") == {"result": "ok"} and turn.mute
     assert tools.calls == []                          # nothing of that turn is playing yet
     assert tools.hub.publish("den", "Dinner.", "e1", expires_at=float("inf"), no_barge_in=True) == "accepted"
     assert isinstance(tools.calls[0], ConversationOutput) and tools.calls[0].no_barge_in
 
 
-@pytest.mark.parametrize('name', ["no_barge_in", "mute"])
+@pytest.mark.parametrize('name', ["no_barge_in", "standby"])
 def test_tools_report_where_they_cannot_act(tools, name):
     tools.env["HERMES_SESSION_CHAT_ID"] = "elsewhere"
     assert tools.call(name) == {"result": "not_attached"}
