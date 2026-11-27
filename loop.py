@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
 from . import speech, vad
+from . import _server_recording as diagnostic
 from .audio_transport import on_audio_thread
 from .level import InputLevel
 from .speech_detector import DEFAULT_VAD_MODEL, SpeechDetector
@@ -478,6 +479,8 @@ class ConverseSession:
         self._endpointing = True
         self._endpointing_at_commit: Optional[bool] = None  # `on` sent with `commit`, applied when it is reached
         self._state_lock = threading.RLock()
+        self._diagnostic_disarmed = False
+        self._diagnostic_recordings = set()
         self.session_id = uuid.uuid4().hex  # echoed in `ready`, joinable across client/server traces
         self.device_name: Optional[str] = None  # trace only; set by the route
         # Trace bookkeeping: the wake claim the current exchange belongs to, the live turn trace,
@@ -712,9 +715,27 @@ class ConverseSession:
         self._level.attach(device_name)
 
     @_session_state
+    def feed_audio(self, pcm: bytes, record: Callable[[bytes], None]) -> None:
+        if not pcm or self._stop.is_set():
+            return
+        self.stream.feed(pcm)
+        # The detector still receives its normal input during a microphone hold.
+        record(pcm if self._mic != "muted" else b"")
+
+    @_session_state
+    def feed_encoded_audio(self, audio, packet: bytes, record: Callable[[bytes], None]) -> None:
+        pcm = audio.decode(packet, target_rate=self._input_rate)
+        self.feed_audio(pcm, record)
+
+    @_session_state
     def ignore_microphone(self, *, muted: bool) -> None:
         """Agent tool hook, for the turn under way until its playback ends: microphone audio does
         not interrupt it, and with *muted* is not heard at all."""
+        if muted:
+            self._diagnostic_disarmed = True
+            diagnostic.disarm()
+            for recording in tuple(self._diagnostic_recordings):
+                recording.disarm()
         if muted or self._mic != "muted":
             self._mic = "muted" if muted else "no_barge_in"
 

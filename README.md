@@ -13,6 +13,8 @@ all apply, and a named device's conversation shows up in the web UI under its de
 
 ## Install
 
+For opt-in interaction audio and JSONL capture, see [diagnostic recording](docs/diagnostic-recording.md).
+
 ```bash
 hermes plugins install Keryxion/hermes-converse
 hermes plugins enable hermes-converse

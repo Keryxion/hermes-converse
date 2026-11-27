@@ -54,6 +54,7 @@ from typing import Any, Awaitable, Callable, Optional
 
 from aiohttp import ClientError, ClientSession, ClientTimeout, web
 
+from . import _server_recording as diagnostic
 from . import command_catalog
 from .admin import ROUTE_PATH as ADMIN_ROUTE_PATH
 from .admin import Admin, client_address
@@ -169,6 +170,7 @@ class ConverseRoute:
         app.router.add_get(ROUTE_PATH, self.handle)
         app.router.add_get(ADMIN_ROUTE_PATH, self.admin.handle)
         app.router.add_get(WAKE_ROUTE_PREFIX + "/{slug}/{file}", self.wake_file)
+        app.cleanup_ctx.append(diagnostic.maintenance)
         app.on_startup.append(self.admin.run_purge)
         app.on_cleanup.append(self.admin.close)
         app.on_cleanup.append(_flush_tracing)
@@ -399,10 +401,6 @@ class ConverseRoute:
                     await ws.send_json(replay)
         if adopted is not None:
             client = adopted.client
-            adopted.relay.attach(ws, audio=audio)
-            resume = (adopted.control or {}).get("resume")
-            if resume is not None:
-                await resume(transcripts)
         device_name = device.device_name
         session.device_name = device_name
         if hasattr(session, "attach_device"):
@@ -426,7 +424,7 @@ class ConverseRoute:
                      device_id=device_id, hub=self.hub, attachment=attachment,
                      named_device=device, named_connection=connection, transcripts=transcripts,
                      relay=relay, adopted=adopted, audio=audio, wake_word=wake_word,
-                     default_route=default_route)
+                     default_route=default_route, ready_frame=ready)
 
 
 async def _model_options(base_url: str, api_key: str, http: ClientSession) -> dict[str, Any]:
@@ -586,9 +584,13 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                  transcripts: bool = False, relay: Optional[Relay] = None,
                  adopted: Optional[Detached] = None, audio=None,
                  wake_word: Optional[WakeWordLink] = None, default_route=(None, None),
-                 report: Callable[[dict], None] = lambda frame: None) -> None:
+                 report: Callable[[dict], None] = lambda frame: None, ready_frame=None) -> None:
     """Run socket input and its single driver; preserve an unfinished turn on disconnect."""
     loop = asyncio.get_running_loop()
+    async def _send_json(frame):
+        recording.frame(frame)
+        await ws.send_json(frame)
+
     session.enable_turn_control()
     if adopted is None:
         session.start()
@@ -596,7 +598,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
     diagnostics = ClientDiagnostics(ws)
     if attachment is not None:
         # Tools run on worker threads; frames go out through the socket's own loop.
-        attachment.send = lambda frame: asyncio.run_coroutine_threadsafe(ws.send_json(frame), loop)
+        attachment.send = lambda frame: asyncio.run_coroutine_threadsafe(_send_json(frame), loop)
         attachment.command = lambda command, args, timeout: asyncio.run_coroutine_threadsafe(
             _command_tool(command, args, timeout), loop)
         attachment.diagnostics = lambda: asyncio.run_coroutine_threadsafe(diagnostics.request(), loop)
@@ -631,7 +633,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
         except Exception:
             logger.warning("converse: model command failed", exc_info=True)
             if not ws.closed:
-                await ws.send_json({"type": "command", "name": frame["name"], "args": frame["args"], "error": "failed"})
+                await _send_json({"type": "command", "name": frame["name"], "args": frame["args"], "error": "failed"})
         finally:
             dispatched = False
             pending_state = None
@@ -650,6 +652,12 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
     if wake_word is not None:
         wake_tasks.add(asyncio.create_task(wake_word.watch()))
     relay = relay or Relay(ws)
+    if adopted is not None:
+        relay.attach(ws, audio=audio)
+    recording = diagnostic.ServerRecording(session, output_rate=relay.source_rate or 24000)
+    relay.recording = recording
+    if ready_frame is not None:
+        recording.frame(ready_frame)
     explicit_stop = False
     after_reply = None  # only the final reply returned by _run_turn, never an approval output
     async def _reply_wake(frame: dict) -> None:
@@ -658,7 +666,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
             reply = await _wake_response(frame, arbitrator=arbitrator, device_id=device_id, track_sent=True)
             if reply["type"] == "wake_grant":
                 session.note_wake(reply["claim_id"])
-            await ws.send_json(reply)
+            await _send_json(reply)
             sent = True
         except Exception:
             logger.debug("converse wake reply failed", exc_info=True)
@@ -677,16 +685,18 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                     break
                 if msg.type == web.WSMsgType.BINARY:
                     try:
-                        pcm = (audio.decode(msg.data, target_rate=session._input_rate)
-                               if audio is not None else msg.data)
+                        if audio is not None:
+                            session.feed_encoded_audio(audio, msg.data, recording.audio)
+                        else:
+                            session.feed_audio(msg.data, recording.audio)
                     except OpusError:
                         explicit_stop = True
                         await _fail(ws, "bad_audio", 4400)
                         break
-                    session.stream.feed(pcm)
                 elif msg.type == web.WSMsgType.TEXT:
                     try:
                         frame = json.loads(msg.data)
+                        recording.frame(frame, direction="client")
                     except (ValueError, TypeError):
                         continue
                     if not isinstance(frame, dict):
@@ -737,14 +747,14 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                                 text, f"say-{uuid.uuid4().hex}", next_action="standby", transient=True))
                     if frame.get("type") == "commands":
                         listing = getattr(client, "commands", None)  # reads config.yaml: off the loop
-                        await ws.send_json({"type": "commands", "commands": await asyncio.to_thread(listing)}
+                        await _send_json({"type": "commands", "commands": await asyncio.to_thread(listing)}
                                            if listing else {"type": "commands", "error": "failed"})
                     if frame.get("type") == "current_model":
-                        await ws.send_json({"type": "current_model", "current_model": await snapshot()})
+                        await _send_json({"type": "current_model", "current_model": await snapshot()})
                     if frame.get("type") == "command":
                         if frame.get("name") in ("model", "reasoning") and frame.get("args"):
                             if not queue_model_change(frame):
-                                await ws.send_json({"type": "command", "name": frame["name"], "args": frame["args"],
+                                await _send_json({"type": "command", "name": frame["name"], "args": frame["args"],
                                                     "error": "change_pending", "current_model": await snapshot()})
                         else:
                             task = asyncio.create_task(_command(frame))
@@ -817,7 +827,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
             reply["current_model"] = (await asyncio.to_thread(client.current_model, default_route)
                                       if asyncio.current_task() is model_change else await snapshot())
         if not ws.closed:
-            await ws.send_json(reply)
+            await _send_json(reply)
             if ("reply" in reply and command == "new"
                     and await asyncio.to_thread(client.session_id) != previous_session):
                 # The client reconnects and finds the fresh conversation with a normal start.
@@ -957,10 +967,13 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
         )
 
     detached = False
-    pump = asyncio.ensure_future(_pump_client())
+    pump = None
     driver = adopted.driver if adopted is not None else asyncio.ensure_future(_drive_turns())
     fence = asyncio.create_task(named_connection.replaced.wait())
     try:
+        if adopted is not None and (resume := control.get("resume")) is not None:
+            await resume(transcripts)
+        pump = asyncio.ensure_future(_pump_client())
         done, _ = await asyncio.wait({pump, driver, fence}, return_when=asyncio.FIRST_COMPLETED)
         if driver in done:
             driver.result()  # surface a crash
@@ -982,6 +995,9 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
         logger.exception("converse loop crashed")
     finally:
         diagnostics.close()
+        if relay.recording is recording:
+            relay.recording = None
+        recording.close()
         if wake_word is not None:
             wake_word.close()
         if detached:
@@ -992,14 +1008,16 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
             named_connection.session = None
         else:
             session.stop()
-        pump.cancel()
+        if pump is not None:
+            pump.cancel()
         if not detached:
             driver.cancel()
         for task in wake_tasks:
             if task is not model_change or not dispatched:
                 task.cancel()
         fence.cancel()
-        await asyncio.gather(pump, *([] if detached else [driver]), *wake_tasks, fence,
+        await asyncio.gather(*([] if pump is None else [pump]), *([] if detached else [driver]),
+                             *wake_tasks, fence, recording.wait_closed(),
                              return_exceptions=True)
         if arbitrator is not None:
             with contextlib.suppress(Exception):
