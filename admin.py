@@ -40,7 +40,7 @@ class _Attached:
     ws: Any
     muted: Optional[bool] = None
     volume: Optional[float] = None
-    volume_reports: int = 0
+    reports: dict = field(default_factory=lambda: {"muted": 0, "volume": 0})
     waiters: list[asyncio.Future] = field(default_factory=list)  # `set` requests awaiting its next report
 
 
@@ -145,8 +145,8 @@ class Admin:
         if entry is None or entry.attachment is not attachment:
             return
         report = _report(frame)
-        if "volume" in report:
-            entry.volume_reports += 1
+        for key in report:
+            entry.reports[key] += 1
         changed = any(getattr(entry, key) != value for key, value in report.items())
         for key, value in report.items():
             setattr(entry, key, value)
@@ -241,18 +241,19 @@ class Admin:
             (announced if accepted else skipped).append(name)
         return {"announced": announced, "skipped": skipped}
 
-    async def volume(self, name: str, attachment: Any, level: Optional[float]) -> dict:
-        """Read the last device report, or request a volume and return the report."""
+    async def controls(self, name: str, attachment: Any, wanted: dict) -> dict:
+        """Read the last reports, or send controls and await a device report."""
         entry = self._attached.get(name)
         if entry is None or entry.attachment is not attachment:
             return {"result": "not_attached"}
-        if level is not None:
-            previous_reports = entry.volume_reports
-            await self._send_controls(entry, {"volume": level})
+        if wanted:
+            previous = entry.reports.copy()
+            await self._send_controls(entry, wanted)
             if self._attached.get(name) is not entry:
                 return {"result": "not_attached"}
-            return {"volume": entry.volume, "reported": entry.volume_reports > previous_reports}
-        return {"volume": entry.volume}
+            return {"muted": entry.muted, "volume": entry.volume,
+                    "reported": all(entry.reports[key] > previous[key] for key in wanted)}
+        return {"muted": entry.muted, "volume": entry.volume}
 
     async def _send_controls(self, entry: _Attached, wanted: dict) -> None:
         waiter = asyncio.get_running_loop().create_future()

@@ -44,14 +44,15 @@ SCHEMAS = {
         "parameters": {"type": "object", "properties": {
             "phrase": {"type": "string", "description": "A listed phrase, such as Hey Arya."}}},
     },
-    "volume": {
-        "name": "volume",
-        "description": ("Voice devices only. Read or set this device playback volume. With no level, "
-                        "return the last reported level. A set returns the last device-reported level, "
-                        "which may be null or differ from the request. If reported is false, do not claim success."),
+    "controls": {
+        "name": "controls",
+        "description": ("Voice devices only. Read or immediately set this device's microphone mute and playback volume. "
+                        "Muted devices cannot hear voice requests to unmute. Results are device reports, not guarantees; "
+                        "if reported is false or a value differs, do not claim the change succeeded."),
         "parameters": {"type": "object", "properties": {
-            "level": {"type": "number", "minimum": 0, "maximum": 1,
-                      "description": "Playback volume from 0 (silent) to 1 (maximum)."}},
+            "muted": {"type": "boolean", "description": "Mute or unmute the microphone immediately."},
+            "volume": {"type": "number", "minimum": 0, "maximum": 1,
+                       "description": "Playback volume from 0 (silent) to 1 (maximum)."}},
             "additionalProperties": False},
     },
     "announce": {
@@ -83,13 +84,6 @@ SCHEMAS = {
                         "Rarely needed: it stops listening by itself after a few seconds of silence. Call it "
                         "only when the person says they are done (\"that's all\", \"good night\"), "
                         "never just because a request is finished: they may add to it."),
-        "parameters": {"type": "object", "properties": {}},
-    },
-    "mute": {
-        "name": "mute",
-        "description": ("Voice devices only. Mute the device's microphone and wake word after this turn's "
-                        "reply, until the person unmutes it on the device (nothing can by voice, so tell "
-                        "them). Only when they ask it to stop listening; if they are just done, use standby."),
         "parameters": {"type": "object", "properties": {}},
     },
     "no_barge_in": {
@@ -178,27 +172,17 @@ def make_handlers(hub: Any) -> dict[str, Callable[..., Any]]:
         play_tone_on(hub, attachment.conversation_id, tone)
         return _result("ok")
 
-    def end_with(mute: bool) -> str:
-        """standby or mute for the calling turn; the last call in a turn wins."""
+    def standby(args: dict, **kw: Any) -> str:
         error, attachment = device()
         if attachment is None:
             return _result(error)
         server_turn = server_turn_of(attachment)
         turn = server_turn or turn_of(attachment)
         if turn is not None:
-            turn.standby, turn.mute = not mute, mute
-        if server_turn is None:  # a turn the server started holds from its reply's start (loop.py)
-            if mute:
-                attachment.session.ignore_microphone(muted=True)
-            else:
-                attachment.session.unmute()
+            turn.standby, turn.mute = True, False
+        if server_turn is None:
+            attachment.session.unmute()
         return _result("ok")
-
-    def standby(args: dict, **kw: Any) -> str:
-        return end_with(mute=False)
-
-    def mute(args: dict, **kw: Any) -> str:
-        return end_with(mute=True)
 
     def no_barge_in(args: dict, **kw: Any) -> str:
         error, attachment = device()
@@ -211,16 +195,19 @@ def make_handlers(hub: Any) -> dict[str, Callable[..., Any]]:
             attachment.session.ignore_microphone(muted=False)
         return _result("ok")
 
-    async def volume(args: dict, **kw: Any) -> str:
+    async def controls(args: dict, **kw: Any) -> str:
         from .admin import _is_level
 
         error, attachment = device()
-        if attachment is None or attachment.volume is None:
+        if attachment is None or attachment.controls is None:
             return _result(error or "not_attached")
-        level = args.get("level")
-        if "level" in args and not _is_level(level):
-            return json.dumps({"error": "level must be a number from 0 to 1"})
-        result = await asyncio.wrap_future(attachment.volume(level))
+        if set(args) - {"muted", "volume"}:
+            return json.dumps({"error": "unknown controls field"})
+        if "muted" in args and not isinstance(args["muted"], bool):
+            return json.dumps({"error": "muted must be a boolean"})
+        if "volume" in args and not _is_level(args["volume"]):
+            return json.dumps({"error": "volume must be a number from 0 to 1"})
+        result = await asyncio.wrap_future(attachment.controls(args))
         return json.dumps(result)
 
     async def command(args: dict, **kw: Any) -> str:
@@ -259,9 +246,9 @@ def make_handlers(hub: Any) -> dict[str, Callable[..., Any]]:
         result = await asyncio.wrap_future(attachment.wake_word(phrase.strip() if phrase else None))
         return json.dumps(result, ensure_ascii=False)
 
-    return {"announce": announce, "speak_this": speak_this, "play_tone": play_tone, "standby": standby, "mute": mute,
+    return {"announce": announce, "speak_this": speak_this, "play_tone": play_tone, "standby": standby,
             "no_barge_in": no_barge_in, "command": command, "client_diagnostics": client_diagnostics,
-            "set_wake_word": set_wake_word, "volume": volume}
+            "set_wake_word": set_wake_word, "controls": controls}
 
 
 def register_tools(ctx: Any, hub: Any) -> None:
