@@ -559,9 +559,9 @@ async def test_server_standby_does_not_mark_earlier_voice_turn(rig, monkeypatch)
     assert server_turn.standby and not voice.standby
 
 
-async def test_proactive_reply_without_a_device_fails_and_silence_succeeds(rig):
+async def test_proactive_reply_without_a_device_is_accepted_without_offline_speech(rig):
     missing = await rig.adapter.send("den", "Anyone there?", metadata=NOTIFY)
-    assert not missing.success and "not_attached" in missing.error
+    assert missing.success and missing.error is None
     device = Device()
     rig.hub.attach("den", device)
     assert (await rig.adapter.send("den", "[SILENT]", metadata=NOTIFY)).success
