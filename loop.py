@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
 from . import speech, vad
-from . import _diagnostic_capability as diagnostic
+from . import _server_recording as diagnostic
 from .audio_transport import on_audio_thread
 from .level import InputLevel
 from .speech_detector import DEFAULT_VAD_MODEL, SpeechDetector

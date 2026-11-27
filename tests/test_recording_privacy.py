@@ -41,7 +41,7 @@ async def test_disabled_gate_stops_existing_stream_and_rms_timeline(tmp_path, mo
     monkeypatch.setenv('HERMES_VOICE_DEBUG', '0')
     r.audio(b'\x00\x00' * 1600)
     await r.wait_closed()
-    with wave.open(str(next(recording.ROOT.glob('*.wav'))), 'rb') as wav:
+    with wave.open(str(next(p for p in recording.ROOT.glob('*.wav') if not p.stem.endswith('-output'))), 'rb') as wav:
         assert wav.getnframes() == 1600
     assert '"rms": 1000.0' in next(recording.ROOT.glob('*.jsonl')).read_text()
     assert recording.ROOT.stat().st_mode & 0o777 == 0o700
@@ -109,8 +109,9 @@ finally:
         assert files.open()
     finally:
         files.close()
-    subprocess.run(command, check=True, timeout=5)
-    assert len(list(recording.ROOT.iterdir())) == 2
+    subprocess.run([command[0], command[1], command[2].replace('assert not files.open()', 'assert files.open()'), *command[3:]],
+                   check=True, timeout=5)
+    assert len(list(recording.ROOT.iterdir())) == 3
 
 
 def test_close_releases_other_handles_when_wav_close_fails():
@@ -133,7 +134,7 @@ async def test_mute_boundary_does_not_join_samples(tmp_path, monkeypatch):
         r.audio(packet)
     r.close()
     await r.wait_closed()
-    with wave.open(str(next(recording.ROOT.glob('*.wav'))), 'rb') as wav:
+    with wave.open(str(next(p for p in recording.ROOT.glob('*.wav') if not p.stem.endswith('-output'))), 'rb') as wav:
         assert wav.readframes(10) == b'BCDE'
 
 
@@ -145,6 +146,7 @@ def test_large_write_stops_when_disabled_between_chunks(monkeypatch):
         written.append(data)
         active[0] = False
     files.wav = SimpleNamespace(writeframesraw=write)
+    files.events = SimpleNamespace(write=lambda line: None)
     monkeypatch.setattr(recording, '_enabled', lambda: active[0])
     assert not files.write(b'\x01\x00' * 16000)
     assert 0 < len(written[0]) < 32000

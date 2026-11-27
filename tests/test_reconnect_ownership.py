@@ -25,7 +25,7 @@ async def test_reconnected_microphone_controls_the_running_audio(monkeypatch, ac
     recordings = []
 
     class Recorder:
-        def __init__(self, session):
+        def __init__(self, session, **kwargs):
             self.frames = []
             self.closed = False
             recordings.append(self)
@@ -33,7 +33,10 @@ async def test_reconnected_microphone_controls_the_running_audio(monkeypatch, ac
         def audio(self, data):
             pass
 
-        def frame(self, frame):
+        def output_audio(self, data):
+            pass
+
+        def frame(self, frame, **kwargs):
             assert not self.closed
             self.frames.append(frame)
 

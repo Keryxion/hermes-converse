@@ -54,7 +54,7 @@ from typing import Any, Awaitable, Callable, Optional
 
 from aiohttp import ClientError, ClientSession, ClientTimeout, web
 
-from . import _diagnostic_capability as diagnostic
+from . import _server_recording as diagnostic
 from . import command_catalog
 from .admin import ROUTE_PATH as ADMIN_ROUTE_PATH
 from .admin import Admin, client_address
@@ -424,7 +424,7 @@ class ConverseRoute:
                      device_id=device_id, hub=self.hub, attachment=attachment,
                      named_device=device, named_connection=connection, transcripts=transcripts,
                      relay=relay, adopted=adopted, audio=audio, wake_word=wake_word,
-                     default_route=default_route)
+                     default_route=default_route, ready_frame=ready)
 
 
 async def _model_options(base_url: str, api_key: str, http: ClientSession) -> dict[str, Any]:
@@ -584,9 +584,13 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                  transcripts: bool = False, relay: Optional[Relay] = None,
                  adopted: Optional[Detached] = None, audio=None,
                  wake_word: Optional[WakeWordLink] = None, default_route=(None, None),
-                 report: Callable[[dict], None] = lambda frame: None) -> None:
+                 report: Callable[[dict], None] = lambda frame: None, ready_frame=None) -> None:
     """Run socket input and its single driver; preserve an unfinished turn on disconnect."""
     loop = asyncio.get_running_loop()
+    async def _send_json(frame):
+        recording.frame(frame)
+        await ws.send_json(frame)
+
     session.enable_turn_control()
     if adopted is None:
         session.start()
@@ -594,7 +598,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
     diagnostics = ClientDiagnostics(ws)
     if attachment is not None:
         # Tools run on worker threads; frames go out through the socket's own loop.
-        attachment.send = lambda frame: asyncio.run_coroutine_threadsafe(ws.send_json(frame), loop)
+        attachment.send = lambda frame: asyncio.run_coroutine_threadsafe(_send_json(frame), loop)
         attachment.command = lambda command, args, timeout: asyncio.run_coroutine_threadsafe(
             _command_tool(command, args, timeout), loop)
         attachment.diagnostics = lambda: asyncio.run_coroutine_threadsafe(diagnostics.request(), loop)
@@ -629,7 +633,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
         except Exception:
             logger.warning("converse: model command failed", exc_info=True)
             if not ws.closed:
-                await ws.send_json({"type": "command", "name": frame["name"], "args": frame["args"], "error": "failed"})
+                await _send_json({"type": "command", "name": frame["name"], "args": frame["args"], "error": "failed"})
         finally:
             dispatched = False
             pending_state = None
@@ -650,8 +654,10 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
     relay = relay or Relay(ws)
     if adopted is not None:
         relay.attach(ws, audio=audio)
-    recording = diagnostic.ServerRecording(session)
+    recording = diagnostic.ServerRecording(session, output_rate=relay.source_rate or 24000)
     relay.recording = recording
+    if ready_frame is not None:
+        recording.frame(ready_frame)
     explicit_stop = False
     after_reply = None  # only the final reply returned by _run_turn, never an approval output
     async def _reply_wake(frame: dict) -> None:
@@ -660,7 +666,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
             reply = await _wake_response(frame, arbitrator=arbitrator, device_id=device_id, track_sent=True)
             if reply["type"] == "wake_grant":
                 session.note_wake(reply["claim_id"])
-            await ws.send_json(reply)
+            await _send_json(reply)
             sent = True
         except Exception:
             logger.debug("converse wake reply failed", exc_info=True)
@@ -690,6 +696,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                 elif msg.type == web.WSMsgType.TEXT:
                     try:
                         frame = json.loads(msg.data)
+                        recording.frame(frame, direction="client")
                     except (ValueError, TypeError):
                         continue
                     if not isinstance(frame, dict):
@@ -740,14 +747,14 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
                                 text, f"say-{uuid.uuid4().hex}", next_action="standby", transient=True))
                     if frame.get("type") == "commands":
                         listing = getattr(client, "commands", None)  # reads config.yaml: off the loop
-                        await ws.send_json({"type": "commands", "commands": await asyncio.to_thread(listing)}
+                        await _send_json({"type": "commands", "commands": await asyncio.to_thread(listing)}
                                            if listing else {"type": "commands", "error": "failed"})
                     if frame.get("type") == "current_model":
-                        await ws.send_json({"type": "current_model", "current_model": await snapshot()})
+                        await _send_json({"type": "current_model", "current_model": await snapshot()})
                     if frame.get("type") == "command":
                         if frame.get("name") in ("model", "reasoning") and frame.get("args"):
                             if not queue_model_change(frame):
-                                await ws.send_json({"type": "command", "name": frame["name"], "args": frame["args"],
+                                await _send_json({"type": "command", "name": frame["name"], "args": frame["args"],
                                                     "error": "change_pending", "current_model": await snapshot()})
                         else:
                             task = asyncio.create_task(_command(frame))
@@ -820,7 +827,7 @@ async def _serve(ws: web.WebSocketResponse, *, session: ConverseSession, synth: 
             reply["current_model"] = (await asyncio.to_thread(client.current_model, default_route)
                                       if asyncio.current_task() is model_change else await snapshot())
         if not ws.closed:
-            await ws.send_json(reply)
+            await _send_json(reply)
             if ("reply" in reply and command == "new"
                     and await asyncio.to_thread(client.session_id) != previous_session):
                 # The client reconnects and finds the fresh conversation with a normal start.

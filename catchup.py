@@ -241,6 +241,8 @@ class Relay:
         ws = self.ws
         if ws is not None:
             audio = self.audio
+            if self.recording is not None:
+                self.recording.output_audio(data)
             if audio is None:
                 await self._send("send_bytes", data)
             else:

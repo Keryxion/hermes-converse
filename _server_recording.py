@@ -18,10 +18,15 @@ log = logging.getLogger(__name__)
 ROOT = Path.home() / '.hermes/logs/converse-recordings'
 MAX_RECORDINGS = 20
 MAX_AGE_SECONDS = 24 * 60 * 60
-MAX_EVENTS = 2000
-MAX_EVENT_BYTES = 2048
 MAX_PCM_BYTES = 48000 * 2 * 60
 QUEUE_SIZE = 64
+
+
+class _Audio(bytes):
+    def __new__(cls, data):
+        item = super().__new__(cls, data)
+        item.timestamp = int(time.time() * 1000)
+        return item
 
 
 def _enabled():
@@ -44,7 +49,7 @@ def _locked_directory(*, create=False):
         os.close(fd)
 
 
-def _prune(directory):
+def _prune(directory, *, reserve=False):
     """Count retained stems, including legacy captures and sidecars without audio."""
     groups = {}
     cutoff = time.time() - MAX_AGE_SECONDS
@@ -53,9 +58,11 @@ def _prune(directory):
         if ((stem.startswith('input-') and suffix in ('wav', 'jsonl'))
                 or (stem.startswith('capture-') and suffix in ('wav', 'json'))):
             info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+            if stem.endswith('-output'):
+                stem, suffix = stem[:-7], 'output'
             groups.setdefault(stem, {})[suffix] = (name, info)
-    for stem, files in tuple(groups.items()):
-        if any(info.st_mtime > cutoff for _, info in files.values()):
+    for stem, files in sorted(groups.items(), key=lambda pair: max(info.st_mtime for _, info in pair[1].values())):
+        if (not reserve or len(groups) < MAX_RECORDINGS) and any(info.st_mtime > cutoff for _, info in files.values()):
             continue
         audio = files.get('wav')
         fd = None
@@ -117,6 +124,8 @@ class _Files:
     def __init__(self, session):
         self.session = session
         self.wav = self.events = self._wav_file = None
+        self.output = self._output_file = None
+        self.output_bytes = 0
         self.bytes = self.event_count = 0
         self._rms_sum = self._rms_count = 0
         self._carry = b''
@@ -124,7 +133,7 @@ class _Files:
     def open(self):
         try:
             with _locked_directory(create=True) as directory:
-                if _prune(directory) >= MAX_RECORDINGS or not _enabled():
+                if _prune(directory, reserve=True) >= MAX_RECORDINGS or not _enabled():
                     return False
                 stem = 'input-' + uuid.uuid4().hex
                 try:
@@ -135,37 +144,51 @@ class _Files:
                     self.wav.setsampwidth(2)
                     self.wav.setframerate(self.session._input_rate)
                     self.events = _open_private(directory, stem + '.jsonl', 'wb')
+                    self._output_file = _open_private(directory, stem + '-output.wav', 'wb')
+                    self.output = wave.open(self._output_file, 'wb')
+                    self.output.setnchannels(1)
+                    self.output.setsampwidth(2)
+                    self.output.setframerate(getattr(self.session, "_recording_output_rate", 24000))
                 except Exception:
                     self.close()
                     # A partial pair still counts against retention if removal fails.
-                    for suffix in ('.wav', '.jsonl'):
+                    for suffix in ('.wav', '.jsonl', '-output.wav'):
                         with suppress(OSError):
                             os.unlink(stem + suffix, dir_fd=directory)
                     raise
         except BlockingIOError:
             return False
         self.event('recording_started', session_id=self.session.session_id,
-                   rate=self.session._input_rate, vad=self.session._detector.name)
+                   rate=self.session._input_rate, output_rate=getattr(self.session, "_recording_output_rate", 24000),
+                   device_name=getattr(self.session, "device_name", None),
+                   vad=self.session._detector.name)
         return True
 
     def event(self, kind, **data):
-        if self.event_count < MAX_EVENTS and _enabled():
+        if _enabled():
             line = (json.dumps({'event': kind, 'unix_ms': int(time.time() * 1000), **data}) + '\n').encode()
-            if len(line) <= MAX_EVENT_BYTES:
-                self.events.write(line)
-                self.event_count += 1
+            self.events.write(line)
+            self.event_count += 1
 
     def write(self, item):
         if not _enabled():
             return False
         if isinstance(item, dict):
-            self.event('server', **item)
+            self.event(item.pop('event'), **item)
+            return True
+        if isinstance(item, tuple):
+            data, timestamp = item
+            self.event('audio', direction='output', received_unix_ms=timestamp,
+                       offset_samples=self.output_bytes // 2, samples=len(data) // 2)
+            self.output.writeframesraw(data)
+            self.output_bytes += len(data)
             return True
         if not item:  # mute boundary: never join a sample across it
             self._carry = b''
             return True
-        maximum = self.session._input_rate * 2 * 60
-        chunk = (self._carry + item)[:maximum - self.bytes]
+        self.event("audio", direction="input", received_unix_ms=getattr(item, "timestamp", None),
+                   offset_samples=self.bytes // 2, samples=len(item) // 2)
+        chunk = self._carry + item
         end = len(chunk) - len(chunk) % 2
         chunk, self._carry = chunk[:end], chunk[end:]
         rate = self.session._input_rate
@@ -185,12 +208,14 @@ class _Files:
                                rms=round(math.sqrt(self._rms_sum / self._rms_count), 2))
                     self._rms_sum = self._rms_count = 0
             self.bytes += len(part)
-        return _enabled() and self.bytes < maximum
+        return _enabled()
 
     def close(self):
         wav, events, wav_file = self.wav, self.events, self._wav_file
         self.wav = self.events = self._wav_file = None
-        for handle in (wav, events, wav_file):
+        output, output_file = self.output, self._output_file
+        self.output = self._output_file = None
+        for handle in (wav, events, wav_file, output, output_file):
             if handle is not None:
                 try:
                     handle.close()
@@ -217,7 +242,8 @@ def disarm():
 
 
 class ServerRecording:
-    def __init__(self, session):
+    def __init__(self, session, *, output_rate=24000):
+        session._recording_output_rate = output_rate
         self._queue = None
         self._task = None
         self._queued_bytes = 0
@@ -258,6 +284,8 @@ class ServerRecording:
                         break
                     if isinstance(item, bytes):
                         self._queued_bytes -= len(item)
+                    elif isinstance(item, tuple):
+                        self._queued_bytes -= len(item[0])
                     if not await asyncio.to_thread(self._write_if_armed, files.write, item):
                         break
         except TimeoutError:
@@ -281,27 +309,23 @@ class ServerRecording:
         if not _enabled() or queue.qsize() >= QUEUE_SIZE:
             self.close()
             return
-        if isinstance(item, bytes):
-            if self._queued_bytes + len(item) > MAX_PCM_BYTES:
+        size = len(item) if isinstance(item, bytes) else len(item[0]) if isinstance(item, tuple) else 0
+        if size:
+            if self._queued_bytes + size > MAX_PCM_BYTES:
                 self.close()
                 return
-            self._queued_bytes += len(item)
+            self._queued_bytes += size
         queue.put_nowait(item)
 
     def audio(self, data):
-        self._record(data[:MAX_PCM_BYTES])
+        self._record(_Audio(data[:MAX_PCM_BYTES]))
 
-    def frame(self, frame):
-        if self._queue is None:
-            return
-        fields = {}
-        for key in ('type', 'turn_id', 'next_action', 'quiet_seconds'):
-            value = frame.get(key)
-            if (isinstance(value, str) and len(value) <= 128) or isinstance(value, (int, float)):
-                fields[key] = value
-        if isinstance(frame.get('text'), str):
-            fields['text_chars'] = len(frame['text'])
-        self._record(fields)
+    def output_audio(self, data):
+        self._record((data, int(time.time() * 1000)))
+
+    def frame(self, frame, *, direction='server'):
+        self._record({'event': direction, 'frame': frame,
+                      'received_unix_ms': int(time.time() * 1000)})
 
     def disarm(self):
         disarm()
