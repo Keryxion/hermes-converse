@@ -7,7 +7,7 @@ the getter rather than the context so tests (and the CLI) can feed it a dict.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 from .arbitrate import DEFAULT_WAKE_WINDOW, POLICY_FIRST_TO_ENDPOINT, POLICY_WAKE_SIGNAL
@@ -66,6 +66,7 @@ class Settings:
     # Cooperative wake recommendations; never suppress streamed audio.
     arbitrate_enabled: bool = DEFAULT_ARBITRATE_ENABLED
     arbitrate_policy: str = DEFAULT_ARBITRATE_POLICY
+    arbitrate_volume_offsets_db: dict[str, float] = field(default_factory=dict)
     arbitrate_device_id: Optional[str] = DEFAULT_ARBITRATE_DEVICE_ID
     arbitrate_wake_window_seconds: float = DEFAULT_ARBITRATE_WAKE_WINDOW_SECONDS
     countdown_ring_timeout_seconds: int = DEFAULT_COUNTDOWN_RING_TIMEOUT_SECONDS
@@ -93,6 +94,22 @@ def _arbitrate_policy(raw: Any) -> str:
     if policy not in (POLICY_FIRST_TO_ENDPOINT, POLICY_WAKE_SIGNAL):
         return DEFAULT_ARBITRATE_POLICY
     return policy
+
+
+def _volume_offsets(raw: Any) -> dict[str, float]:
+    if not isinstance(raw, dict):
+        return {}
+    offsets = {}
+    for name, value in raw.items():
+        if not isinstance(name, str) or not name or not isinstance(value, (int, float)) or isinstance(value, bool):
+            continue
+        try:
+            number = float(value)
+        except OverflowError:
+            continue
+        if math.isfinite(number):
+            offsets[name] = number
+    return offsets
 
 
 def _wake_window(raw: Any) -> float:
@@ -136,6 +153,7 @@ def load_settings(get: Getter) -> Settings:
         api_base_url=str(get("api_base_url", "") or "").strip().rstrip("/"),
         arbitrate_enabled=_arbitrate_enabled(get("arbitrate_enabled", DEFAULT_ARBITRATE_ENABLED)),
         arbitrate_policy=_arbitrate_policy(get("arbitrate_policy", DEFAULT_ARBITRATE_POLICY)),
+        arbitrate_volume_offsets_db=_volume_offsets(get("arbitrate_volume_offsets_db", {})),
         arbitrate_device_id=_text(get("arbitrate_device_id", DEFAULT_ARBITRATE_DEVICE_ID)),
         arbitrate_wake_window_seconds=_wake_window(
             get("arbitrate_wake_window_seconds", DEFAULT_ARBITRATE_WAKE_WINDOW_SECONDS)),

@@ -503,6 +503,27 @@ good index without blocking the others; a bad hash prevents a switch; a changed
 model changes its advertised hash; cached models work when GitHub is
 unreachable; and unauthorized or out-of-folder requests are refused.
 
+## Wake selection
+
+The `wake_signal` policy scores a reported wake RMS level in dBFS plus a confidence
+bonus of up to 6 dB, as defined in `client.md` section 8. The plugin setting
+`arbitrate_volume_offsets_db` is a JSON mapping from `device_name` to a level correction:
+
+```json
+{"Office": 3, "MacBook Pro": -3}
+```
+
+Positive values compensate for a quieter microphone; negative values reduce a louder
+microphone's contribution. The default mapping is empty (0 dB correction). Restart the
+gateway after changing it. Corrections apply to wake selection only; audio samples and
+VAD/STT input gain are unchanged. Corrections are configured from measurements, not
+learned from election winners or room noise floors.
+
+Election diagnostics record each claim's raw volume, dBFS level, configured correction,
+corrected level, confidence bonus and final score. Missing-volume claims have no level
+or score and use the confidence fallback. The confidence coefficient is recorded with
+the election. These same components accompany the election trace.
+
 ## Gateway conversation
 
 Every voice conversation is a gateway session on the `converse` platform, the

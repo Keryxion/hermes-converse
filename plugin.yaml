@@ -87,7 +87,11 @@ config_schema:
     type: str
     choices: [first_to_endpoint, wake_signal]
     default: wake_signal
-    description: "wake_signal ranks exact-phrase wake claims by confidence, normalized volume, detection time, then arrival order. Legacy first_to_endpoint grants immediately."
+    description: "wake_signal ranks exact-phrase wake claims by calibrated microphone dB level plus a confidence bonus of up to 6 dB; detection time and arrival break ties. Legacy first_to_endpoint grants immediately."
+  arbitrate_volume_offsets_db:
+    type: dict
+    default: {}
+    description: "Microphone level corrections in dB by device_name, such as {Office: 3, MacBook Pro: -3}. Applied only to wake selection; restart the gateway after changes."
   arbitrate_device_id:
     type: str
     default: ""
