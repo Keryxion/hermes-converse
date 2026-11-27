@@ -57,7 +57,10 @@ def _prune(directory, *, reserve=False):
         stem, _, suffix = name.rpartition('.')
         if ((stem.startswith('input-') and suffix in ('wav', 'jsonl'))
                 or (stem.startswith('capture-') and suffix in ('wav', 'json'))):
-            info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+            try:
+                info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
             if stem.endswith('-output'):
                 stem, suffix = stem[:-7], 'output'
             groups.setdefault(stem, {})[suffix] = (name, info)
@@ -68,14 +71,19 @@ def _prune(directory, *, reserve=False):
         fd = None
         try:
             if audio is not None and stat.S_ISREG(audio[1].st_mode):
-                fd = os.open(audio[0], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
                 try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    continue  # a recorder still owns this pair
+                    fd = os.open(audio[0], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+                except FileNotFoundError:
+                    pass
+                if fd is not None:
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        continue  # a recorder still owns this pair
             for name, info in files.values():
                 if not stat.S_ISDIR(info.st_mode):
-                    os.unlink(name, dir_fd=directory)
+                    with suppress(FileNotFoundError):
+                        os.unlink(name, dir_fd=directory)
             if not any(stat.S_ISDIR(info.st_mode) for _, info in files.values()):
                 del groups[stem]
         finally:
@@ -129,6 +137,8 @@ class _Files:
         self.bytes = self.event_count = 0
         self._rms_sum = self._rms_count = 0
         self._carry = b''
+        self._stem = None
+        self._directory_identity = None
 
     def open(self):
         try:
@@ -149,6 +159,9 @@ class _Files:
                     self.output.setnchannels(1)
                     self.output.setsampwidth(2)
                     self.output.setframerate(getattr(self.session, "_recording_output_rate", 24000))
+                    self._stem = stem
+                    info = os.fstat(directory)
+                    self._directory_identity = (info.st_dev, info.st_ino)
                 except Exception:
                     self.close()
                     # A partial pair still counts against retention if removal fails.
@@ -170,9 +183,37 @@ class _Files:
             self.events.write(line)
             self.event_count += 1
 
+    def _current(self):
+        """Open handles must still belong to all three named files in the current directory."""
+        if self._stem is None:
+            return False
+        try:
+            info = os.stat(ROOT, follow_symlinks=False)
+            if (info.st_dev, info.st_ino) != self._directory_identity:
+                return False
+            for suffix, handle in (('.wav', self._wav_file), ('.jsonl', self.events),
+                                   ('-output.wav', self._output_file)):
+                named = os.stat(ROOT / (self._stem + suffix), follow_symlinks=False)
+                opened = os.fstat(handle.fileno())
+                if (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino):
+                    return False
+            return True
+        except FileNotFoundError:
+            return False
+
     def write(self, item):
         if not _enabled():
             return False
+        if not self._current():
+            self.close()
+            self.__init__(self.session)
+            try:
+                if not self.open():
+                    return False
+            except FileNotFoundError:
+                # Another deletion raced reopening; retry on the next queued event.
+                self.close()
+                return True
         if isinstance(item, dict):
             self.event(item.pop('event'), **item)
             return True
@@ -213,6 +254,7 @@ class _Files:
     def close(self):
         wav, events, wav_file = self.wav, self.events, self._wav_file
         self.wav = self.events = self._wav_file = None
+        self._stem = self._directory_identity = None
         output, output_file = self.output, self._output_file
         self.output = self._output_file = None
         for handle in (wav, events, wav_file, output, output_file):
@@ -275,7 +317,11 @@ class ServerRecording:
     async def _run(self, session, queue):
         files = _Files(session)
         try:
-            if await asyncio.to_thread(self._write_if_armed, files.open):
+            try:
+                opened = await asyncio.to_thread(self._write_if_armed, files.open)
+            except FileNotFoundError:
+                opened = True  # deletion raced the first open; retry with the next event
+            if opened:
                 deadline = asyncio.get_running_loop().time() + MAX_AGE_SECONDS
                 while _enabled():
                     async with asyncio.timeout_at(deadline):

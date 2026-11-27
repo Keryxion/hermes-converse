@@ -31,7 +31,9 @@ capture separate pre-AEC channels from the device.
 For VAD or AEC investigation, copy all three files with the same ID, listen to the microphone
 around the relevant frame, and compare it with the reply waveform and RMS timeline. Recording
 continues across turns for the socket lifetime, up to 24 hours, without a 60-second cutoff.
-Reconnects create a new set; `session_id` joins a resumed interaction across sets.
+Reconnects create a new set; `session_id` joins a resumed interaction across sets. If any active
+file or the recording directory is deleted or replaced, the next recording event opens a fresh
+set, recreating the directory when needed. Deleted audio is not copied into the new set.
 
 Recording is off by default. Enable it with the consent of people whose audio and text may
 be captured. Server mute closes and permanently disarms recording for the process; a restart
