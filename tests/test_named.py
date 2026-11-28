@@ -109,7 +109,7 @@ async def test_two_devices_sharing_assistant_keep_separate_conversations(tmp_pat
     async with Harness(fake, device_store=DeviceStore(tmp_path/'devices.db')) as client:
         first, a = await connect(client)
         second, b = await connect(client, device_name='Kitchen')
-        assert a['recipient_id'] != b['recipient_id'] and len(fake.store.ids) == 2
+        assert a['recipient_id'] != b['recipient_id'] and not fake.store.ids
         await first.close()
         await second.close()
 
@@ -125,7 +125,7 @@ async def test_replacement_closes_old_socket_before_admitting_new_audio(tmp_path
         assert (await closing).data == 4409
         assert first.close_code == 4409
         assert a['session_id'] != b['session_id']
-        assert a['recipient_id'] == b['recipient_id'] and len(fake.store.ids) == 1
+        assert a['recipient_id'] == b['recipient_id'] and not fake.store.ids
         await _audio_turn(second)
         await second.close()
 
@@ -209,7 +209,7 @@ async def test_concurrent_first_connections_create_one_conversation(tmp_path, mo
     async with harness as client:
         results = await asyncio.gather(connect(client), connect(client))
         assert all(ready['type'] == 'ready' for _, ready in results)
-        assert len(fake.store.ids) == 1
+        assert not fake.store.ids
         assert len({r['recipient_id'] for _, r in results}) == 1
         assert len(harness.route.hub._attachments) == 1
         for ws, _ in results:

@@ -178,12 +178,12 @@ class ConverseAdapter(BasePlatformAdapter):
                                  user_id=recipient_id, user_name=device_name)
 
     async def bind(self, source: Any) -> str:
-        """Make sure the gateway conversation for this chat exists; return its session key."""
+        """The gateway session key for this chat. The session itself is created by the chat's
+        first message, so a device that connects and says nothing leaves no session behind."""
         store = getattr(self, "_session_store", None)
         if store is None:
             raise RuntimeError("gateway session store unavailable")
-        entry = await asyncio.to_thread(store.get_or_create_session, source, touch_activity=False)
-        return entry.session_key
+        return store._generate_session_key(source)
 
     async def run_command(self, source: Any, text: str, *, approved: bool = False) -> Optional[str]:
         """Run the gateway slash command *text* for the chat, as a chat user would. Its reply is
@@ -506,6 +506,7 @@ class GatewayTurns:
         self._settle_timeout = settle_timeout
         self._turn: Optional[_VoiceTurn] = None
         self._following: Optional[_VoiceTurn] = None  # the earlier run the turn in flight follows
+        self._default_model: Optional[tuple[str, Optional[str]]] = None  # voice default awaiting the session
 
     @property
     def history(self) -> History:
@@ -554,6 +555,7 @@ class GatewayTurns:
     async def run_turn(self, *, text: str, on_delta: Callable[[str], None],
                        instructions: Optional[str] = None, turn_id: Optional[str] = None) -> TurnResult:
         adapter = self._adapter
+        await self._apply_default_model()
         # The client's turn id is the message's platform id, so replay names the turn as live did.
         turn_id = turn_id or uuid.uuid4().hex
         event = MessageEvent(
@@ -657,9 +659,24 @@ class GatewayTurns:
         return live.get(self._session_key) or self._adapter._session_store.get_model_override(self._session_key) or {}
 
     async def apply_voice_default(self, model, provider):
-        if model and not await asyncio.to_thread(self.model_override):
-            args = f"{model} --provider {provider}" if provider else model
-            await self.run_command(f"/model {args} --session", stop=False)
+        """Select the voice model for a conversation that has none. Before the first message there is
+        no session to hold it: it is applied then, and reported as the current model until it is."""
+        if not model or await asyncio.to_thread(self.model_override):
+            return
+        if await asyncio.to_thread(self.session_id) is None:
+            self._default_model = (model, provider)
+            return
+        await self._set_default_model(model, provider)
+
+    async def _set_default_model(self, model, provider):
+        args = f"{model} --provider {provider}" if provider else model
+        await self._adapter.run_command(self._source, f"/model {args} --session")
+
+    async def _apply_default_model(self):
+        """The conversation's first message is about to create its session: give it the voice model."""
+        pending, self._default_model = self._default_model, None
+        if pending is not None:
+            await self._set_default_model(*pending)
 
     def current_model(self, default_route):
         from .reasoning import capability, gateway_levels, level
@@ -667,6 +684,8 @@ class GatewayTurns:
         override = self.model_override()
         if override.get("model"):
             model, provider = override["model"], override.get("provider")
+        elif self._default_model is not None:
+            model, provider = self._default_model
         else:
             try:
                 defaults = self.configured_route()
@@ -704,6 +723,7 @@ class GatewayTurns:
         """Run a command, stopping the turn first unless called from its own voice tool."""
         if stop:
             await self.stop()
+        await self._apply_default_model()
         return await self._adapter.run_command(self._source, text, approved=approved)
 
     async def stop(self) -> None:

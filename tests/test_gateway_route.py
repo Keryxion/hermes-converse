@@ -56,12 +56,29 @@ async def test_reconnect_keeps_the_same_gateway_conversation(tmp_path, monkeypat
     assert len(fake.store.ids) == 1
 
 
+async def test_connecting_without_a_message_leaves_no_gateway_session(tmp_path, monkeypatch):
+    fake = _patch(monkeypatch)
+    async with Harness(fake, device_store=DeviceStore(tmp_path / "devices.db")) as client:
+        ws, ready = await _connect(client)
+        assert ready["type"] == "ready"
+        await ws.close()
+        ws, _ = await _connect(client)
+        await ws.close()
+        assert not fake.store.ids
+        ws, _ = await _connect(client)
+        await _say(ws)  # the first message creates it; a reconnect continues it
+        await ws.close()
+        ws, _ = await _connect(client)
+        await ws.close()
+    assert len(fake.store.ids) == 1
+
+
 async def test_scheduled_reply_is_spoken_on_the_attached_device(tmp_path, monkeypatch):
     fake = _patch(monkeypatch)
     harness = Harness(fake, device_store=DeviceStore(tmp_path / "devices.db"))
     async with harness as client:
         ws, _ = await _connect(client)
-        chat_id = next(iter(fake.store.ids)).rsplit(":", 1)[-1]
+        chat_id = next(iter(harness.route.hub._attachments))
         sent = await harness.adapter.send(chat_id, "Your timer is done.", metadata=NOTIFY)
         assert sent.success
         frames, pcm = await _collect_turn(ws)

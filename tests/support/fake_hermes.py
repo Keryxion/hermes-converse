@@ -50,8 +50,11 @@ class FakeStore:
     def _db_for_session_id(self, session_id):
         return SimpleNamespace(get_messages=lambda sid, **_: list(self.messages.get(sid, [])))
 
+    def _generate_session_key(self, source):
+        return f"agent:main:converse:dm:{source.chat_id}"
+
     def get_or_create_session(self, source, force_new=False, touch_activity=True):
-        key = f"agent:main:converse:dm:{source.chat_id}"
+        key = self._generate_session_key(source)
         self.ids.setdefault(key, f"sid-{source.chat_id}")
         return SimpleNamespace(session_key=key, session_id=self.ids[key])
 
@@ -126,6 +129,7 @@ class FakeHermes:
     async def handle(self, event: Any) -> Optional[str]:
         adapter = self.adapter
         key = adapter._source_session_key(event.source)
+        self.store.get_or_create_session(event.source)  # a message creates its conversation, as Hermes does
         if event.get_command() in {"new", "reset"}:
             self.store.ids[key] = uuid.uuid4().hex
         if event.get_command() == "model":
