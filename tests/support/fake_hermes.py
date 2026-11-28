@@ -74,6 +74,7 @@ class FakeHermes:
         self.tool_calls = tool_calls
         self.reasoning_tokens = tuple(reasoning_tokens)  # one provider report per model call
         self.hang = hang
+        self.after_hang: tuple[str, ...] = ()  # text the model sends once the hang ends
         self.fail: Optional[Exception] = None  # raised by the runner instead of answering
         self.store = FakeStore()
         self.adapter: Any = None
@@ -129,9 +130,12 @@ class FakeHermes:
             self.store.ids[key] = uuid.uuid4().hex
         if event.get_command() == "model":
             self.commands.append(event.text)
-            args = event.get_command_args().split()
-            self.store.models[key] = None if args == ["reset"] else {
-                "model": args[0], **({"provider": args[2]} if len(args) > 2 else {})}
+            from hermes_cli.model_switch import parse_model_switch_args
+            selection = parse_model_switch_args(event.get_command_args())
+            if selection.errors:
+                return " ".join(selection.error_messages())
+            self.store.models[key] = None if selection.is_reset else {
+                "model": selection.target, "provider": selection.explicit_provider or None}
             return "Model switched."
         if event.get_command() in self.command_replies:
             self.commands.append(event.text)
@@ -165,6 +169,11 @@ class FakeHermes:
                 await asyncio.sleep(0)
             while self.hang and not interrupted() and not self._redirects:
                 await asyncio.sleep(0.01)
+            for delta in self.after_hang:
+                if interrupted() or self._redirects:
+                    break
+                adapter.on_stream_delta(delta=delta, kind="text", session_id=sid)
+                await asyncio.sleep(0)
             if not self._redirects or interrupted():
                 break
             self._redirects.clear()
@@ -172,7 +181,7 @@ class FakeHermes:
         if interrupted():
             turn["status"] = "interrupted"
             return None
-        turn["status"], turn["output"] = "completed", "".join(self.deltas)
+        turn["status"], turn["output"] = "completed", "".join(self.deltas + self.after_hang)
         if turn["output"]:
             self.store.add(sid, "assistant", turn["output"])
         return turn["output"] or None

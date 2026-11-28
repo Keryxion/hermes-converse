@@ -1,0 +1,28 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: NousResearch/hermes-agent
+          path: hermes-agent
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq libopus0
+      - run: |
+          cd hermes-agent
+          source ./activate --test-extras all,voice
+          cd ..
+          python -m pip install pytest pytest-asyncio numpy av pyyaml
+          python -m pytest
+        env:
+          HERMES_AGENT_ROOT: ${{ github.workspace }}/hermes-agent

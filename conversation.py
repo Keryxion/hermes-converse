@@ -7,7 +7,11 @@ import threading
 import time
 from typing import Any, Awaitable, Callable, Optional
 
+import uuid
+
 from .loop import ConversationOutput
+
+ANNOUNCE_TTL = 60.0  # seconds an announcement may wait behind the device's current exchange
 
 
 @dataclass
@@ -21,6 +25,7 @@ class Attachment:
     command: Optional[Callable[[str, list[str], float], Any]] = None
     diagnostics: Optional[Callable[[], Any]] = None
     wake_word: Optional[Callable[[Optional[str]], Any]] = None  # lists phrases, or switches to one
+    controls: Optional[Callable[[dict], Any]] = None
 
 
 class ConversationHub:
@@ -53,11 +58,25 @@ class ConversationHub:
             if self._attachments.get(conversation_id) is attachment:
                 self._attachments.pop(conversation_id)
 
+    def announce(self, conversation_id: str, message: str) -> bool:
+        """Speak *message* on the device attached to the conversation, as prepared speech with the
+        announcement tone at its start. It waits behind the device's current exchange and is
+        dropped when that takes longer than the TTL."""
+        return self.publish(conversation_id, message, f"announce:{uuid.uuid4().hex}",
+                            expires_at=time.time() + ANNOUNCE_TTL, transient=True,
+                            tones=("announcement",)) == "accepted"
+
+    def announce_all(self, message: str, *, but: str = "") -> int:
+        """Announce on every attached device except the conversation *but*; how many accepted."""
+        with self._lock:
+            targets = [key for key in self._attachments if key != but]
+        return sum(self.announce(key, message) for key in targets)
+
     def publish(self, conversation_id: str, text: str, event_id: str, *,
                 expires_at: float, next_action: Optional[str] = None, unheard: bool = False,
                 no_barge_in: bool = False,
                 after_playback: Optional[Callable[[], Awaitable[None]]] = None,
-                transient: bool = False) -> str:
+                transient: bool = False, tones: tuple[str, ...] = ()) -> str:
         with self._lock:
             item = self._attachments.get(conversation_id)
             if item is None or item.session.stopped:
@@ -73,7 +92,7 @@ class ConversationHub:
                 item.seen.popitem(last=False)
             item.pending += 1
             output = ConversationOutput(text, event_id, next_action=next_action, unheard=unheard,
-                                        transient=transient, no_barge_in=no_barge_in)
+                                        transient=transient, no_barge_in=no_barge_in, tones=tones)
             output.after_playback = after_playback
             def consumed():
                 with self._lock:

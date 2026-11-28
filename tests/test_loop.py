@@ -3,6 +3,7 @@ shared turn driver (control-frame ordering, history cap, session mode, timeouts,
 
 from __future__ import annotations
 
+from array import array
 import asyncio
 import contextvars
 import json
@@ -18,8 +19,8 @@ from hermes_converse import loop as cl
 from hermes_converse import speech, vad
 from hermes_converse.loop import (
     AsyncQueue,
-    HISTORY_MAX_MESSAGES, ConverseSession, QuietTick, TailBarge, Utterance,
-    drive_converse_turns, parse_start_config)
+    HISTORY_MAX_MESSAGES, TONE_GAIN, ConverseSession, QuietTick, TailBarge, Tone, Utterance,
+    drive_converse_turns, parse_start_config, tone_pcm)
 from hermes_converse.synth import decode_audio_file_to_pcm16, resample_synth, resolve_synthesizer
 
 from tests.support.converse_audio import calibration, silence, speech_like
@@ -680,7 +681,7 @@ class _EchoSynth:
         yield text.encode("utf-8")
 
 
-def _run_driver(session, history, replies, quiet_interval=0.0, interrupt_turn=None, **kw):
+def _run_driver(session, history, replies, quiet_interval=0.0, interrupt_turn=None, synth=None, **kw):
     sent: list = []
 
     async def _send_json(obj):
@@ -693,12 +694,13 @@ def _run_driver(session, history, replies, quiet_interval=0.0, interrupt_turn=No
 
     async def _run_turn(transcript, on_delta, *, interrupted):
         reply = next(reply_iter)
-        on_delta(reply)
-        return reply, None
+        for delta in reply if isinstance(reply, list) else [reply]:
+            on_delta(delta)
+        return "".join(reply), None
 
     async def _main():
         await drive_converse_turns(
-            session=session, synth=_EchoSynth(), cap=4000, loop=asyncio.get_running_loop(),
+            session=session, synth=synth or _EchoSynth(), cap=4000, loop=asyncio.get_running_loop(),
             send_json=_send_json, send_bytes=_send_bytes, run_turn=_run_turn, history=history,
             quiet_interval=quiet_interval, interrupt_turn=interrupt_turn, **kw)
 
@@ -730,12 +732,41 @@ def _turn_done_frame(sent):
     frame = next(f for f in sent if isinstance(f, dict) and f.get("type") == "turn_done")
     assert set(frame) in ({"type", "turn_id"}, {"type", "turn_id", "next_action"})
     if "next_action" in frame:
-        assert frame["next_action"] in ("standby", "mute")
+        assert frame["next_action"] in ("listen", "standby", "mute")
     return frame
 
 
 def _spoken_bytes(sent):
     return b"".join(f[1] for f in sent if isinstance(f, tuple) and f[0] == "bytes")
+
+
+def test_a_tone_plays_in_the_reply_audio_between_the_speech_around_it():
+    sent = _run_driver(_FakeConverseSession(["turn it on"]), [],
+                       [["Done. ", Tone("confirm"), "Anything else?"]])
+    assert _spoken_bytes(sent) == b"Done." + tone_pcm("confirm", 24000) + b"Anything else?"
+    assert "tone" not in _types(sent)
+
+
+def test_a_tone_with_no_turn_running_plays_on_its_own():
+    # play_tone between turns publishes an output with no text, only the tone.
+    tone_only = cl.ConversationOutput("", "tone:1", transient=True, tones=("confirm",))
+    sent = _run_driver(_FakeConverseSession([tone_only]), [], [])
+    assert _spoken_bytes(sent) == tone_pcm("confirm", 24000)
+    assert "tone" not in _types(sent)
+
+
+def test_tone_notes_are_ramped_and_timed():
+    error = array("h", tone_pcm("error", 16000))
+    assert len(error) == 3 * 1120  # three 70 ms slots: note, rest, note
+    assert error[0] == 0 and error[1119] == 0 and set(error[1120:2240]) == {0}
+    assert max(error) <= round(32767 * TONE_GAIN)
+
+
+def test_a_tone_is_sent_joined_to_the_speech_after_it():
+    # Alone, it would play out before the speech after it is synthesized: a client underrun.
+    sent = _run_driver(_FakeConverseSession(["delete it"]), [], [[Tone("approval"), "Delete the file?"]])
+    assert [f[1] for f in sent if isinstance(f, tuple) and f[0] == "bytes"] == [
+        tone_pcm("approval", 24000) + b"Delete the file?"]
 
 
 def test_driver_barge_in_interrupts_the_in_flight_turn():
@@ -1162,8 +1193,7 @@ async def test_accepted_barge_in_is_captured_in_every_phase(monkeypatch, phase):
     if phase == 'speaking':
         session.set_playing(True, tts_stop=stop)
     elif phase == 'tail':
-        session.end_turn()
-        session.begin_playback_tail('active', 5)
+        session.finish_turn('active', 5)
         session.on_tail_barge = lambda turn_id: interrupted.set()
     session.start()
     try:
@@ -1172,8 +1202,7 @@ async def test_accepted_barge_in_is_captured_in_every_phase(monkeypatch, phase):
         assert await _until(interrupted.is_set, 3)
         assert await session.transcripts.get_async(3) == 'continued request'
         assert len(calls) == 1
-        if phase != 'tail':
-            assert stop.is_set()
+        assert stop.is_set()
     finally:
         session.stop()
         await session._worker
@@ -1331,8 +1360,13 @@ def test_voice_transcripts_are_opt_in(monkeypatch, enabled):
             return []
     monkeypatch.setattr(speech, "sentence_chunker", Chunker)
     monkeypatch.setattr("hermes_converse.loop.split_text_for_tts_stream", lambda text, cap: [text])
-    sent = _run_driver(_FakeConverseSession(["Hello"]), [], ["Hello there."], transcripts=enabled,
-                       message_ids=_Ids())
+    recorded = []
+    session = _FakeConverseSession(["Hello"])
+    session.take_origin = lambda: ('wake-2', 'wake')
+    sent = _run_driver(session, [], ["Hello there."], transcripts=enabled,
+                       message_ids=_Ids(), record_transcript=recorded.append)
+    assert [(f['role'], f['text']) for f in recorded] == [('user', 'Hello'), ('assistant', 'Hello there.')]
+    assert recorded[0]['activation'] == {'kind': 'wake', 'claim_id': 'wake-2'}
     records = [frame for frame in sent if isinstance(frame, dict) and frame.get("type") == "transcript"]
     if enabled:
         assert [(record["role"], record["text"], record.get("message_id")) for record in records] == [
@@ -1483,7 +1517,7 @@ def _pace_driver(sent, *, turn_timeout=0.0, rate=8000):
 
 
 def _pace_turn():
-    return types.SimpleNamespace(pcm_q=asyncio.Queue(), tts_stop=threading.Event(), meta={}, pcm_chunks=0,
+    return types.SimpleNamespace(pcm_q=asyncio.Queue(), tts_stop=threading.Event(), meta={}, pcm_chunks=0, skipping=False,
                                  ns={}, timed_out=False, result={}, state=None)
 
 
@@ -1673,3 +1707,85 @@ def test_waiting_for_transcripts_and_the_playback_tail_holds_no_pool_thread():
         assert not any(s._tail_active for s in sessions)
 
     asyncio.run(main())
+
+
+def test_outbound_question_explicitly_opens_listening():
+    from hermes_converse.loop import ConversationOutput
+
+    session = _FakeConverseSession([ConversationOutput("Okay?", "approval", next_action="listen")])
+    sent = _run_driver(session, [], [])
+    assert _turn_done_frame(sent)["next_action"] == "listen"
+
+
+def test_driver_does_not_speak_a_silent_reply():
+    assert _spoken_bytes(_run_driver(_FakeConverseSession(["hi"]), [], ["Hello."])) == b"Hello."
+    sent = _run_driver(_FakeConverseSession(["never mind"]), [], ["[SILENT]"])
+    assert _spoken_bytes(sent) == b""
+    assert not any(isinstance(f, dict) and f.get("type") == "transcript" and f.get("role") == "assistant"
+                   for f in sent)
+
+
+def test_a_synthesis_failure_ends_the_turn_as_a_failure():
+    """Synthesis is part of the run: a reply that cannot be spoken sends `error` and then a
+    `turn_done` with no `next_action`, never an ordinary completion after silence."""
+    class _BrokenSynth:
+        sample_rate = 24000
+
+        def synth(self, text):
+            raise RuntimeError("tts backend unreachable at 10.0.0.9")
+
+    sent = _run_driver(_FakeConverseSession(["what time is it"]), [], ["It's noon."],
+                       synth=_BrokenSynth())
+    assert _types(sent)[-2:] == ["error", "turn_done"]
+    assert "speaking" not in _types(sent) and _spoken_bytes(sent) == b""
+    error = next(f for f in sent if isinstance(f, dict) and f["type"] == "error")["error"]
+    assert "10.0.0.9" not in error and "RuntimeError" not in error  # spoken-safe, no internals
+    assert "next_action" not in _turn_done_frame(sent)
+
+
+def test_a_cancelled_outbound_question_does_not_open_the_microphone():
+    """An interrupted or cancelled turn carries no `next_action`, so a cancelled approval
+    question cannot tell an idle device to open its microphone."""
+    from hermes_converse.loop import ConversationOutput
+
+    class _CancellingSession(_FakeConverseSession):
+        def begin_turn(self, turn_id=None, *, tts_stop=None, on_interrupt=None):
+            super().begin_turn(turn_id)
+            tts_stop.set()  # `cancel` landed before the question was spoken
+
+    session = _CancellingSession([ConversationOutput("Okay?", "approval", next_action="listen")])
+    sent = _run_driver(session, [], [])
+    assert "interrupted" in _types(sent)
+    assert "next_action" not in _turn_done_frame(sent)
+
+
+def test_an_outbound_question_leaves_an_already_listening_device_alone():
+    """`listen` only switches a device that is not listening; one still listening is left as is."""
+    from hermes_converse.loop import ConversationOutput
+
+    class _ListeningSession(_FakeConverseSession):
+        def exchange_listening(self):
+            return True
+
+    session = _ListeningSession([ConversationOutput("Okay?", "approval", next_action="listen")])
+    assert "next_action" not in _turn_done_frame(_run_driver(session, [], []))
+
+
+def test_the_session_remembers_whether_it_left_the_device_listening():
+    session = ConverseSession(np)
+    assert not session.exchange_listening()
+    session.record_next_action("listen")
+    assert session.exchange_listening()
+    session.record_next_action("standby")
+    assert not session.exchange_listening()
+
+
+def test_a_silent_server_started_turn_still_sends_its_standby():
+    """A server-started turn kept silent by `speak_this("")` still ends: its `turn_done` carries
+    the standby it asked for, and nothing is spoken."""
+    from hermes_converse.loop import ConversationOutput
+
+    session = _FakeConverseSession([ConversationOutput("", "send:1", next_action="standby")])
+    sent = _run_driver(session, [], [])
+    assert _spoken_bytes(sent) == b"" and "speaking" not in _types(sent)
+    assert _turn_done_frame(sent)["next_action"] == "standby"

@@ -73,8 +73,9 @@ async def test_summary_names_the_assistant_and_asks_okay(rig, monkeypatch):
     request = await asked(rig, frames)
     summary = "Arya wants to open a network connection to the Kitchen speaker to read its logs. Okay?"
     assert request["type"] == "approval_request" and request["summary"] == summary
-    assert frames[1] == {"type": "tone", "tone": "approval"}
-    assert [o.text for o in session.outputs] == [summary + " Say yes or no."]
+    assert len(frames) == 1  # the tone is audio, not a frame
+    assert [(o.tones, o.text) for o in session.outputs] == [(("approval",), summary + " Say yes or no.")]
+    assert session.outputs[0].next_action == "listen"
     assert "wants to" in seen[0][0] and "nc 10.0.4.17 6053" in seen[0][1]
     rig.approvals._settle(rig.approvals._pending["den"], "deny", "denied")
 
