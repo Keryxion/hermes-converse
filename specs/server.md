@@ -298,8 +298,8 @@ text. Counters reset at each turn's start.
 Send opt-in user and assistant `transcript` frames as defined in
 [the client spec](client.md), for both voice replies and outbound output. Send
 each piece of reply text when it is submitted for speech, before the PCM that
-speaks it, and never hold PCM back for it. After the last piece, send a closing frame with empty
-text and the message's `message_id`. Distinguish generated text,
+speaks it, and never hold PCM back for it. After the last piece of a completed stored reply, send a closing frame with empty
+text and the turn's `turn_id`; message IDs remain internal. Distinguish generated text,
 PCM sent, and client playback drain. `turn_done`
 means sending finished. The client's `state` leaving `speaking` means playback
 finished or was discarded; it cannot prove the user heard the response. An interruption records that a reply
@@ -509,6 +509,25 @@ same kind of session a Telegram or Slack chat has. The plugin registers the plat
 it needs no credentials and is enabled with the plugin. The WebSocket route, its URL,
 and API-key authentication stay on the API server.
 
+The device's gateway channel and routing identity persist independently of both
+its Hermes session and the WebSocket. The socket is an attachable transport, not
+the channel or the session. A channel or session change does not itself close
+the socket; it also stays open while no turn is active. Ending or cancelling a
+turn does not close it. A socket
+disconnect detaches the transport without ending the channel, session, or a
+running turn. Reattach a replacement transport to the same channel. This does
+not imply that output generated without an attached device was delivered.
+An absent or disconnected device WebSocket must not surface `not_attached` or
+an equivalent transport-disconnected channel failure to Hermes. Channel acceptance
+is not confirmation of device delivery or playback, and does not guarantee that
+missed output is persisted or queued. Device-directed tools retain their explicit
+results specified below; those results are not channel transport failures.
+Verify an idle socket, turn completion and cancellation, channel change, session replacement by
+command and elsewhere, and disconnect/reconnect during a turn. Check that the
+channel identity survives, the socket stays open across session and turn changes,
+absence and disconnection do not produce a transport-disconnected channel failure
+to Hermes, and reconnect neither repeats a request nor claims unheard output was delivered.
+
 | Voice event | Gateway interface |
 |---|---|
 | Endpointed utterance | `handle_message` with a text `MessageEvent`; the voice prompt is its `channel_prompt` |
@@ -536,7 +555,8 @@ background process completion, runs as an ordinary turn. Its final reply reaches
 |---|---|
 | Device attached and idle | Spoken once. |
 | Device capturing or replying | Spoken after the current exchange. |
-| No device attached, or the reply expired after 60 s | `send` reports failure; nothing is queued for a later connection. |
+| No device attached | `send` accepts without a transport-disconnected channel failure; this does not confirm delivery, and nothing is queued for a later connection. |
+| Reply expired after 60 s | `send` reports failure; nothing is queued for a later connection. |
 | `speak_this` with `""`, or an empty or `[SILENT]` reply | No speech. |
 | Voice turn interrupted | Its late reply is discarded. |
 | Stream delta arriving after the final | Discarded, so nothing is spoken twice. |
@@ -676,76 +696,72 @@ filter by the slash-access policy; the gateway applies it when a command runs. A
 a `command` frame whose `name` is not one of Hermes's commands or aliases with
 `unknown_command` instead of sending it.
 
-After a command that starts a new conversation (`new`, or any alias of it), send the answer and
-then close the socket with `4410 conversation_changed`. Do not move the live
-socket to the new conversation: the device reconnects and attaches to it in the
-ordinary way. The conversation keeps the title
+After a command that starts a new conversation (`new`, or any alias of it), send
+the answer and keep the socket attached to the device's channel as the channel
+switches to the new session. Send `ready` with `new_session: true`, followed by
+the new conversation's replay before live frames, so the client clears its old
+view. Apply the same notification when the session changes elsewhere while the
+socket is attached. The conversation keeps the title
 `<assistant_name>: <device_name>`.
 
 ## Catching up
 
-Give every user `transcript` frame, and the closing assistant frame of each
-turn, a `message_id`: Hermes's message id for that message, as an opaque string.
-Hermes stores a message only once it is whole, which is why the ID follows the
-text instead of travelling with it: the user frame is sent after the agent turn
-starts, and the assistant's ID comes in a closing frame with empty text.
+Create a durable turn parent with a stable unique `turn_id` in conversation
+order before beginning each inbound or proactive conversational turn, including
+work started while no client is attached. The identity survives reconnect,
+restart, interruption and completion. Associate zero or any number of stored
+message rows with that parent as they are stored, including user, assistant and
+internal rows; never derive the parent from a message ID or assume one message
+per turn. Persist the turn parent and its conversation order durably, including
+turns with no message rows. Message IDs remain internal and are not sent to
+clients. This contract requires no migration or backward compatibility; do not
+delete existing data.
+Unassociated existing rows remain intact and are not guessed into turns or
+replayed as if their association were known.
 
-Never send a user `transcript` without its `message_id`. Send it when Hermes
-has stored the message, with the stored message's words, which include any
-earlier request carried into it. Look the message up by the turn's own
-`turn_id`, which is its platform message id, never by whichever turn is
-running. When a turn is cancelled or interrupted around the handover, settle
-the turn first, then look: send the frame before `interrupted` if the message
-is there, and no frame if it is not. If Hermes's messages cannot be read, send
-no user `transcript`.
+Every client tracks its last displayed turn ID and owns its catch-up presentation.
+Do not automatically speak the backlog. With `transcripts: true`, `start.after`
+is that turn ID, not a message ID. Immediately after `ready` and before live
+frames, replay the entire anchor turn inclusively and then subsequent turns in
+durable conversation order. Within each turn, send associated replayable user
+and assistant messages in stored order as `transcript` frames with the same
+`turn_id` and `replay: true`; never send internal message IDs, tool calls, tool
+results, reasoning or system text. The client replaces/deduplicates the anchor
+and appends later turns in order. The replay is not evidence of delivery.
 
-Words that arrive while a run is going are stored differently: Hermes puts the
-message's origin, a line of JSON that carries its id, ahead of the words, gives
-the row no platform message id, and wraps a redirected run's copy in its steer
-marker. Read the id from the origin, and send and replay the words alone. With
-Hermes's `privacy.redact_pii` the origin's id is hashed, so such a message is
-not found and has no transcript.
+Without `after`, replay the most recent 20 turns. With a valid anchor, replay it
+and all subsequent turns, oldest first, without splitting a turn. Turns without
+replayable transcripts send no transcript frame. Include associated messages
+folded away by compaction when Hermes still has them.
 
-Text that is not a Hermes message gets no `transcript` frame of either kind:
-`say`, an announcement, and the spoken approval summary. A server-started reply is a Hermes
-message and closes with its `message_id` like any other.
+When `start` has `after`, set `ready.new_session` false for an available turn
+in the current conversation; otherwise set it true and send no replay for that
+request. An unavailable anchor need not mean the conversation changed. On an
+attached socket, send `ready` with `new_session: true` for an actual session
+change even without `after`, followed by initial replay only if requested.
 
-When a client connects with `transcripts: true`, replay what it missed from
-Hermes's own messages for the device's conversation, right after `ready` and
-before any live frame. Keep no second copy.
-
-- Replay user and assistant messages only, as `transcript` frames with
-  `replay: true`: no tool calls, tool results, reasoning, or system text.
-- An assistant message's `text` is what the turn says aloud, worked out from
-  Hermes's messages and not from what was synthesized: the reply text with
-  Markdown removed, or, for a turn that used `speak_this`, the text given to the
-  tool. It is the same whether the reply was played in full, cut short, or
-  finished with nobody attached. A turn that says nothing, such as `[SILENT]`
-  or `speak_this` with `""`, is not replayed.
-- A turn still running is replayed up to its user message only. Its reply so
-  far goes in one more frame, as below.
-- With `after`, replay every such message after it, up to the most recent 100.
-  Without `after`, or when `after` is not a message of the current
-  conversation, replay the most recent 20.
-- When `start` carried `after`, say in `ready` whether it still applies:
-  `new_session` is false when `after` is a message of the current
-  conversation and true when it is not. True is how a client learns its conversation
-  was replaced, whatever replaced it: a `command` frame, the Hermes web UI, or a
-  deleted conversation.
-- Include messages that compaction has folded away when Hermes still has them.
+Send a user transcript only after its associated message is stored; if storage
+races cancellation or interruption, settle the handover first and send it before
+`interrupted` only if stored. If messages cannot be read, do not invent text.
+Send no transcript for `say` or spoken approval summaries. Assistant replay
+contains the text prepared for speech, with Markdown removed or from
+`speak_this`, not proof of synthesis, playback, or delivery. Silent output has
+no assistant transcript. An incomplete, cancelled or failed turn retains its
+parent and whatever rows actually exist; do not invent a reply or attribute
+unassociated data. Never delete real data to satisfy this contract.
 
 ### A turn running at reconnect
 
-A replacement connection takes over the running turn. After the replay, send
-one assistant `transcript` with `replay: true` and no `message_id` holding the
-turn's text so far, by the same rule as replayed text and including what was
-generated while nobody was attached; then `state` with the turn's current
-state and a `thinking` frame at once, with the turn's counters as they stand;
-then any pending `approval_request`. Text pieces sent afterwards continue from
-the end of that frame, so the pieces a client appends to it add up to the text
-a later replay gives. Audio resumes with the first text generated after the
-reconnect, behind a new `speaking`; do not synthesize what was generated while
-nobody was attached, and do not resend audio.
+Replay its associated stored messages under its existing turn ID. With transcripts
+enabled, if reply text is still being generated, send one `replay: true`
+assistant snapshot of the current text so far, including text generated while
+unattached; the client replaces any previously displayed partial reply rather
+than duplicating it. Do not duplicate an already replayed stored reply in that
+snapshot. Then send current `state`, `thinking` with current counters and any
+pending `approval_request`, followed by remaining live pieces and terminal
+frames. Subsequent pieces append to the snapshot. Audio resumes only with text
+generated after reconnect behind a new `speaking`; never synthesize or resend
+audio for text generated while unattached.
 
 ### Nobody attached
 
@@ -761,14 +777,17 @@ that is expected:
 - Nothing is queued to be spoken later.
 - A pending approval is held, as described under Approvals.
 
-Verify: a reply that finished while the device was away is replayed as a
-transcript and never spoken; no speech is synthesized for it; connecting twice
-with the same `after` replays the same frames; connecting with the newest `message_id`
-replays none; a turn cancelled after its message was stored replays a user transcript with no
-reply, and one cancelled before that replays nothing; no user `transcript` is
-ever sent without a `message_id`; `say` sends no `transcript`; a
-reconnect during a turn receives the replay and then the rest of the turn live;
-a replayed frame never starts a turn on the client.
+Verify: inbound and proactive turns receive durable IDs before work and retain
+them across reconnect and restart; zero, one and multiple stored rows associate
+with one turn. Reconnect at a partially displayed anchor and replace it with
+the entire stored turn, then append subsequent turns in order without duplicates;
+repeat the same cursor, test the initial 20-turn bound and replay beyond 100
+subsequent turns without splitting turns, and reject an unavailable or foreign
+anchor with no replay. Test incomplete and
+interrupted turns, an active reply snapshot followed by live pieces, unassociated
+rows left untouched, silent turns, and no client-visible message IDs. Replay does
+not start a turn, prove delivery or cause backlog speech; disconnected output is
+not synthesized for later playback. `say` sends no transcript.
 
 ## Client diagnostics
 
@@ -962,10 +981,9 @@ A command that starts a new conversation (`new`, or any alias of it) returns
 `{"result":"Approved. The new conversation starts when this reply has played."}`
 after approval. This acknowledges deferral, not execution. Wait until the
 calling turn's final reply has played (the device's `state` leaves `speaking`
-for that reply, or its playback tail ends), then submit the command and close
-the socket with `4410 conversation_changed` after its reply, as after the
-frame. Close only if Hermes actually changed the session; a refusal or a failed
-command leaves the socket open. Playback of the approval question or another
+for that reply, or its playback tail ends), then submit the command and notify
+the client of an actual session change as after the frame. A refusal or failed
+command does not change the session. Playback of the approval question or another
 turn does not trigger it.
 If the socket disconnects or the turn is cancelled or interrupted before the
 final reply has played, drop the deferred command.

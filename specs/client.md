@@ -11,6 +11,16 @@ Each Arya has a name and uses an existing Hermes conversation, titled
 which handles voice activity detection, endpointing, speech-to-text, and the
 agent turn, then streams reply audio back. Conversation history persists across
 turns and reconnects; closing the socket does not end the Hermes conversation.
+The device's gateway channel and routing identity persist independently of the
+Hermes session and the WebSocket. The socket is an attachable transport, not the
+channel or session: keep it open across channel changes, session replacement,
+turn completion, and cancellation. It can receive channel events with no active turn. A drop
+detaches the transport; it does not itself end the channel, session, or a
+running turn, and does not establish that any output was delivered.
+An absent or disconnected device WebSocket must not surface `not_attached` or
+an equivalent transport-disconnected channel failure to Hermes. Acceptance by
+the channel is not confirmation that the device received or played output; a
+reconnect does not by itself guarantee delivery of missed output.
 If the conversation is deleted in Hermes, the next turn reuses a compatible
 conversation with the same title or starts a fresh one, on the open socket or
 after reconnecting. The device name and routing identity stay the same;
@@ -62,7 +72,7 @@ closes with `4401 unauthorized`; a non-`start` first frame closes with
 | `models` | Boolean; only `true` includes the model catalog in `ready`. Defaults to `false`. See section 11. |
 | `wake_word_format` | The wake-word model format this device runs: `micro_wake_word` or `open_wake_word`. Only a device that sends it is given a wake word; see section 8. |
 | `transcripts` | Boolean; request user and assistant transcript frames when `true`. Defaults to `false`. See section 4. |
-| `after` | The `message_id` of the last transcript this client has shown, to catch up on what it missed. Only with `transcripts: true`. See "Catching up" in section 4. |
+| `after` | The `turn_id` of the last turn this client has shown, to catch up on what it missed. Only with `transcripts: true`. See "Catching up" in section 4. |
 | `assistant_name` | What you call the assistant, normally `Arya`, without “Hey”. Used in the voice system prompt; separate from the device label, such as `Den Echo`. |
 
 `assistant_name` and `device_name` are both required. `start` has no `profile`,
@@ -88,7 +98,7 @@ come out the same are the same device.
 | `quiet_interval` above 3600 | 3600. |
 | `transcripts` or `models` other than `true` | `false`. |
 | `after` that is not a string | As if absent. |
-| `after` that is not a message of the device's conversation | `new_session: true` ("Catching up", section 4). |
+| `after` that is not an available turn of the device's conversation | `new_session: true` ("Catching up", section 4). |
 | Any other field | Ignored. |
 
 Every close before `ready` is preceded by an error frame naming it, such as
@@ -176,7 +186,6 @@ may already have happened.
 | `4409 attachment_replaced` | Another connection with the same names replaced this one. Stop sending on it. |
 | `4404 conversation_unavailable` | The conversation could not be opened. Show the failure rather than claiming restored context. It says nothing about audio. |
 | `4503 audio_unavailable` | `start` was valid, but the server cannot set up the requested `audio_format`, for example Opus on a server without its codec. Reconnect with `pcm16`, which every server provides. |
-| `4410 conversation_changed` | The device's conversation is a different one now, for example after the `new` command. Reconnect at once; `ready` then says whether the cursor still applies ("Catching up", section 4). |
 | `conversation_busy` error before `ready` | Earlier work is still stopping. Retry later. |
 
 ## 3. Client control frames (send anytime)
@@ -198,7 +207,7 @@ All are JSON text frames:
 | `{"type": "controls", "muted": false, "volume": 0.4}` | The device's microphone mute and playback volume, after `ready` and whenever either changes; see section 12. |
 | `{"type": "approval_response", "approval_id": "...", "choice": "once"}` | Answer a pending approval from a screen with one of its `choices`; see "Approvals" in section 4. |
 
-Every control frame has a `type`. To end the session, close the socket: the
+Every control frame has a `type`. To detach, close the socket: the
 device's conversation and its history are kept for reconnection, and a turn
 still running finishes without being spoken ("Catching up", section 4). To stop
 that turn as well, send `cancel` before closing.
@@ -314,13 +323,13 @@ keep a command from a device, it is still listed, and running it brings Hermes's
 refusal back in `reply`. The list can change when the server's
 Hermes is updated; ask again after each `ready` rather than storing it.
 
-A command that starts a new conversation, `new` or its alias `reset`, needs nothing special from the
-app. After the command changes the conversation and the server answers, it closes the connection with
-`4410 conversation_changed`. The app reconnects as it would after any drop, and
-`ready` comes back with `new_session: true`, which is where it clears its view
-("Catching up", section 4). The earlier conversation is not deleted; it stays
-in Hermes's history. Other commands, such as `title`, leave the connection
-open.
+A command that starts a new conversation, `new` or its alias `reset`, keeps the
+socket open. After the command answer, the server sends `ready` with
+`new_session: true`, then the new conversation's replay before live frames. Clear
+the old view on that `ready` ("Catching up", section 4). The same applies when
+the session changes elsewhere while connected. The earlier conversation is not
+deleted; it stays in Hermes's history. Other commands, such as `title`, leave
+the connection open too.
 
 A command that did not run is answered with `error` in place of `reply`, and
 nothing changes:
@@ -495,14 +504,14 @@ Speech during thinking (turn A is cut, B answers the continuation):
 ```
 ← {"type":"state","turn_id":"A","state":"thinking"}
 ← {"type":"thinking","turn_id":"A","tool_calls":0,"reasoning_tokens":null}
-← {"type":"transcript","role":"user","turn_id":"A","message_id":"m-10","text":"Turn on the light"}
+← {"type":"transcript","role":"user","turn_id":"A","text":"Turn on the light"}
      (the person speaks)
 ← {"type":"interrupted","turn_id":"A"}
 ← {"type":"turn_done","turn_id":"A"}
      (the person stops; the server endpoints and transcribes)
 ← {"type":"state","turn_id":"B","state":"thinking"}
 ← {"type":"thinking","turn_id":"B","tool_calls":0,"reasoning_tokens":null}
-← {"type":"transcript","role":"user","turn_id":"B","message_id":"m-11","text":"and make it warm white"}
+← {"type":"transcript","role":"user","turn_id":"B","text":"and make it warm white"}
 ← {"type":"state","turn_id":"B","state":"speaking"}
 ← {"type":"speaking","turn_id":"B"}
 ← binary audio for B
@@ -841,48 +850,31 @@ time, so the words are on screen as they are spoken:
 ```
 
 ```json
-{"type":"transcript","message_id":"m-124","role":"assistant","turn_id":"turn-42","text":""}
+{"type":"transcript","role":"assistant","turn_id":"turn-42","text":""}
 ```
 
 Each frame with text is the next piece of the reply, sent before the PCM that
-speaks it. Append the pieces for a `turn_id` in the order they arrive. They
-carry no `message_id`.
+speaks it. Append the pieces for a `turn_id` in the order they arrive. A closing
+frame with empty `text` marks a complete stored reply. An interrupted or failed
+reply has no closing frame; a silent turn has no assistant frame. Stored message
+IDs are internal and never appear in transcript frames.
 
-When the reply is complete, one closing frame follows with empty `text` and the
-reply's `message_id`. It adds nothing to show: it says the reply is whole and
-gives the ID to keep as the catch-up cursor. Every reply that is a message of
-the conversation ends this way, so a one-sentence reply is two frames. That
-covers ordinary replies and server-started replies (section 9). A reply that is
-interrupted or fails has no closing frame, and a silent turn has no assistant
-frame at all.
-
-Speech that is not a message of the conversation has no `transcript` frames,
-neither pieces nor a closing frame, and is never replayed: `say`, an
-announcement (section 9), and the spoken question of an approval. So every `message_id` a client receives names a
-message of the conversation and works as `after`.
+Speech that is not a message of the conversation, including `say`, an
+announcement (section 9), and an approval's spoken question, has no transcript
+and is never replayed.
 
 When a reply is interrupted and the request is run again, the new reply arrives
 under a new `turn_id`, with no user `transcript` between the two. Replace the
 interrupted reply with the new one; do not show both. An interrupted reply with
 a new user `transcript` after it stays, marked as interrupted.
 
-A user `transcript` is one frame and always carries `message_id`. It is sent
-when the request has become a message of the conversation, so it follows that
-turn's first `thinking` frame and comes before its `interrupted`, `error`, or
-`turn_done`. Its `text` is that message. A `message_id` is unique in the
-conversation; treat it as opaque.
-
-A request that never became a message has no user `transcript`, live or
-replayed. Where a `cancel` or an interruption lands decides which:
-
-| The turn is cut | Live | Replayed later |
-|---|---|---|
-| Before the request reaches the conversation: during capture, transcription, or before the agent starts | No user `transcript`. | Nothing. Words cut by the person's further speech are not lost: they become part of the continuation's message. |
-| While it is being handed over | The server waits to learn which it was. A user `transcript` with its `message_id` comes before `interrupted` if the message was stored; otherwise none. | The same as live. |
-| After the message is stored | The user `transcript`, with its `message_id`. | The user `transcript`, with no assistant transcript after it when no reply was stored: show it as not answered. |
-
-Live and replay always agree: a client that saw no user `transcript` for a
-turn will not be sent one on catching up, and one it saw will be there.
+A user `transcript` is sent when its request has been stored, after the turn's
+first `thinking` and before its `interrupted`, `error`, or `turn_done`. Its
+text is the stored request. A request not stored has no user transcript. If
+interruption races storage, the server settles the handover first: a stored
+request is sent before `interrupted`, otherwise no request is invented. A
+stored request without a stored reply remains unanswered; do not infer delivery
+or an answer from replay. Unassociated stored data is not attributed to a turn.
 
 Assistant text is what the reply says aloud: the reply text with Markdown
 removed, or the text given to the assistant's speech tool. Live pieces stop
@@ -893,57 +885,53 @@ credentials, and internal errors are never sent.
 
 ### Catching up
 
-A client that was away, for example an app returning to the foreground or
-relaunched, is caught up when it connects. Send the `message_id` of the last transcript
-it has shown as `after` in `start`:
+Arya iOS and macOS local persistence requirements are in
+[client_storage.md](client_storage.md); they do not apply to other clients.
+
+A client on every device, including iOS, macOS, ESP32 and Echo, persists the
+last `turn_id` it displayed in this conversation and sends it as `after` with
+`transcripts: true` on reconnect. The client owns presentation; it may notify
+or otherwise indicate catch-up, but never automatically speaks the backlog.
+Message IDs are internal, not cursors. No migration or backwards compatibility
+with message-ID cursors is provided.
 
 ```json
 {"type":"start","key":"<API_SERVER_KEY>","input_rate":16000,"output_rate":24000,
- "assistant_name":"Arya","device_name":"Darrell's iPhone","transcripts":true,"after":"m-122"}
+ "assistant_name":"Arya","device_name":"Darrell's iPhone","transcripts":true,"after":"turn-41"}
 ```
 
-Right after `ready`, and before anything live, the server sends the transcripts
-since then as ordinary `transcript` frames marked `replay`:
+After `ready`, before live frames, replay includes the entire anchor turn
+`turn-41`, then subsequent turns in durable conversation order. Each turn's
+associated, replayable user and assistant transcripts are sent in stored order
+with `replay: true` and the same `turn_id`. Replace the displayed contents of
+the anchor turn with its replay, deduplicate by turn ID, then append subsequent
+turns in order. Replay is catch-up data, not a live turn: do not start timers,
+play audio, open the microphone, or resend a request. Text prepared for speech
+is not proof of delivery or playback.
 
 ```json
-{"type":"transcript","message_id":"m-123","role":"user","turn_id":"turn-41","text":"What's on my calendar tomorrow?","replay":true}
+{"type":"transcript","role":"user","turn_id":"turn-41","text":"What's on my calendar tomorrow?","replay":true}
+{"type":"transcript","role":"assistant","turn_id":"turn-41","text":"Two things: the dentist at nine and lunch with Sam.","replay":true}
 ```
 
-```json
-{"type":"transcript","message_id":"m-124","role":"assistant","turn_id":"turn-41","text":"Two things: the dentist at nine and lunch with Sam.","replay":true}
-```
+Without `after`, replay the most recent 20 turns. With a valid `after`, replay
+the anchor and all subsequent turns, oldest first, without splitting a turn.
+A turn without replayable transcripts produces no transcript frame; its existence
+alone does not establish a displayed turn or delivery.
 
-Omit `after` the first time; the server then sends the most recent 20. Keep the
-last `message_id` shown and send it on every connect, so nothing is shown twice.
+When `start` carries `after`, `ready.new_session` is false if the turn is
+available in the current conversation. If it is unavailable or belongs to
+another conversation, `new_session` is true and no replay is sent for that
+request: clear the old view and cursor. This does not prove a session change.
+On an attached socket, an actual session change also sends `ready` with
+`new_session: true`; clear the old view and cursor and handle the new session's
+initial replay before live frames.
 
-When `start` carries `after`, `ready` carries `new_session`:
-
-```json
-{"type":"ready","session_id":"socket-10","recipient_id":"device-7","transcripts":true,"new_session":true}
-```
-
-| `new_session` | Meaning | What to do |
-|---|---|---|
-| `false` | The cursor is a message of the device's conversation. | Append the replayed transcripts. |
-| `true` | The conversation is a different one now: a new one was started, from this app or anywhere else, or the old one is gone. | Clear the conversation view and forget the cursor, then show what is replayed. A brand-new conversation replays nothing. |
-
-This is the one place a client learns the conversation was cleared, however it
-happened.
-
-A replayed assistant transcript is the whole reply in one frame: everything
-the reply says aloud, however much of it was played. A reply that finished
-while no device was connected was never spoken, and is replayed with the text
-it would have said. A reply that says nothing is not replayed. If the client
-already shows pieces for that `turn_id`, replace them with the replayed frame.
-
-A `replay` transcript is only for display. It does not start a turn: do not arm
-a timer, show thinking, play audio, resend the request, or open the microphone
-because of one. A user transcript with no assistant transcript after it, and no
-turn running, was not answered: show it that way.
-
-A turn does not end because the connection dropped. If the person asked
-something and the app went away, the assistant still finishes, and the answer is
-there to catch up on. It is not spoken later. `cancel` still ends a turn.
+A running or interrupted turn may contain only some stored messages or none.
+Replay only what exists and its current reply snapshot as described below; do
+not invent a completed reply or claim an unanswered request was delivered. A
+turn that finishes while disconnected can be shown from its stored transcripts,
+but is not spoken later. `cancel` still ends a turn.
 
 ### Reconnecting during a turn
 
@@ -955,21 +943,21 @@ running when the client reconnects continues on the new connection. After
    among them once it is a message.
 2. With `transcripts: true`, when the running turn has reply text: one
    assistant `transcript` with that `turn_id`, `replay: true`, and no
-   `message_id`, holding the reply's text so far, including text prepared
+   message ID, holding the reply's text so far, including text prepared
    while the client was away. Replace any pieces shown for that `turn_id` with
-   it. It is not a cursor.
+   it. Its `turn_id` is the cursor once displayed.
 3. `state` for the turn with its current state, then `thinking` with the turn's
    counters. The counters carry on from where they were; they do not restart at
    zero. `thinking` then repeats every 5 seconds as before.
 4. `approval_request` again, if the turn is waiting on one.
 5. The rest of the turn, live: further assistant pieces to append after the
    frame from step 2, `speaking` and audio, the closing `transcript` with the
-   reply's `message_id`, and `turn_done`.
+   same `turn_id`, and `turn_done`.
 
 ```
-→ {"type":"start", ..., "transcripts":true,"after":"m-122"}
+→ {"type":"start", ..., "transcripts":true,"after":"turn-41"}
 ← {"type":"ready", ..., "new_session":false}
-← {"type":"transcript","message_id":"m-123","role":"user","turn_id":"turn-41","text":"What's on my calendar tomorrow?","replay":true}
+← {"type":"transcript","role":"user","turn_id":"turn-41","text":"What's on my calendar tomorrow?","replay":true}
 ← {"type":"transcript","role":"assistant","turn_id":"turn-41","text":"Two things tomorrow.","replay":true}
 ← {"type":"state","turn_id":"turn-41","state":"thinking"}
 ← {"type":"thinking","turn_id":"turn-41","tool_calls":3,"reasoning_tokens":2400}
@@ -977,7 +965,7 @@ running when the client reconnects continues on the new connection. After
 ← {"type":"state","turn_id":"turn-41","state":"speaking"}
 ← {"type":"speaking","turn_id":"turn-41"}
 ← binary audio
-← {"type":"transcript","message_id":"m-124","role":"assistant","turn_id":"turn-41","text":""}
+← {"type":"transcript","role":"assistant","turn_id":"turn-41","text":""}
 ← {"type":"turn_done","turn_id":"turn-41"}
 ```
 
@@ -1039,7 +1027,7 @@ the client must enter the active-turn state even without a preceding
 
 ## 7. turn_id
 
-Every turn gets a `turn_id`. It appears on `transcript`, `thinking`,
+Every conversational turn gets a stable `turn_id`, durably allocated before work starts and shared by all its stored messages. It appears on `transcript`, `thinking`,
 `speaking`, `interrupted`, `error`, and `turn_done` frames of that turn, so
 you can match frames to a turn. `cancel` and the client's `state` accept an
 optional `turn_id` to target a specific turn.

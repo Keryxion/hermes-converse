@@ -367,9 +367,11 @@ class ConverseAdapter(BasePlatformAdapter):
         status = self._hub.publish(chat_id, text, event_id, expires_at=time.time() + OUTPUT_TTL,
                                    next_action=next_action, no_barge_in=no_barge_in,
                                    after_playback=after_playback)
-        if status == "accepted":
+        if status in ("accepted", "not_attached"):
+            # The persistent channel accepts output even without a transport. Nothing is queued
+            # for later speech; this receipt does not establish device delivery or playback.
             return SendResult(success=True, message_id=event_id)
-        # No live device (or it is saturated): report it; nothing is queued for a later connection.
+        # Expired or saturated output still fails; do not hide an attached device's refusal.
         return SendResult(success=False, error=f"converse device {status}", retryable=status == "busy")
 
     @staticmethod
