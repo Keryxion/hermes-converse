@@ -141,8 +141,8 @@ def test_capture_quiet_uses_speech_off_threshold(monkeypatch):
 
 def test_echo_rejected_and_speech_over_echo_detected(monkeypatch):
     # For the loop, playback and its drain tail both pass playing=True.
-    detector = scripted(monkeypatch, [0.99]*60)
-    echo = [1200, 1500, 900, 1400]*9
+    detector = scripted(monkeypatch, [0.99]*80)
+    echo = [1200, 1500, 900, 1400]*15  # past the 1.5 s the baseline needs
     for level in echo:
         assert detector.feed(np.full(480, level, np.int16), True) is None
     events = [detector.feed(np.full(480, 4000, np.int16), True) for _ in range(12)]
@@ -235,11 +235,26 @@ def test_real_model_rejects_noise(real_model):
     assert all(detector.feed(block, False) is None for block in np.split(noise, 100))
 
 
-def test_playback_baseline_is_available_after_about_half_a_second(monkeypatch):
-    detector = scripted(monkeypatch, [0.99]*32)
-    for _ in range(16):
+def test_microphone_cannot_interrupt_in_the_first_1500_ms_of_playback(monkeypatch):
+    # A device's echo canceller is at its worst as a reply starts. Those 1.5 s only teach the
+    # detector the device's echo level: a loud stretch inside them is not an interruption.
+    detector = scripted(monkeypatch, [0.99]*220)
+    opening = [1200]*20 + [4000]*9 + [1200]*21  # 50 blocks; the burst is 270 ms, over MIN_SPEECH_MS
+    assert len(opening) * 30 == 1500
+    assert [detector.feed(np.full(480, level, np.int16), True) for level in opening] == [None]*50
+    # What was heard in the opening is the level to beat: the same loudness straight after it
+    # is still the reply's echo as far as the detector knows.
+    assert [detector.feed(np.full(480, 4000, np.int16), True) for _ in range(12)] == [None]*12
+    # Once the reply has run on at its ordinary level, the burst leaves the 3 s reference and a
+    # voice over the echo interrupts as before.
+    assert [detector.feed(np.full(480, 1200, np.int16), True) for _ in range(130)] == [None]*130
+    assert 'playback' in [detector.feed(np.full(480, 4000, np.int16), True) for _ in range(12)]
+
+
+def test_playback_baseline_is_available_after_1500_ms(monkeypatch):
+    detector = scripted(monkeypatch, [0.99]*70)
+    for _ in range(50):
         assert detector.feed(np.full(480, 1200, np.int16), True) is None
-    # The older port accidentally added 300 ms lag to a full 500 ms warm-up.
     assert 'playback' in [detector.feed(np.full(480, 4000, np.int16), True) for _ in range(12)]
 
 
@@ -315,9 +330,12 @@ def test_real_quiet_speech_is_valid_input_but_not_an_interruption(real_model, pl
                for block in blocks(original.astype(np.int16)))
 
 
+WARM_BLOCKS = 60  # steady bleed past the 1.5 s warm-up, so the echo gate exists
+
+
 def _over_playback(detector, pattern):
     """Feed steady playback bleed, then *pattern*: True = a loud spoken block, False = bleed."""
-    for _ in range(40):
+    for _ in range(WARM_BLOCKS):
         assert detector.feed(np.full(480, 1200, np.int16), True) is None
     return [detector.feed(np.full(480, 4000 if loud else 1200, np.int16), True) for loud in pattern]
 
@@ -325,21 +343,21 @@ def _over_playback(detector, pattern):
 def test_words_with_gaps_interrupt_playback(monkeypatch):
     # Three-block words with a one-block gap: never 250 ms unbroken, but 250 ms within the window.
     pattern = ([True]*3 + [False])*5
-    probabilities = [0.99]*40 + [0.99 if loud else 0.1 for loud in pattern]
+    probabilities = [0.99]*WARM_BLOCKS + [0.99 if loud else 0.1 for loud in pattern]
     assert 'playback' in _over_playback(scripted(monkeypatch, probabilities), pattern)
 
 
 def test_earlier_speech_does_not_raise_the_echo_gate(monkeypatch):
     # A first try too short to interrupt, then the same level again within the 3 s reference.
     pattern = [True]*5 + [False]*30 + [True]*12
-    detector = scripted(monkeypatch, [0.99]*(40 + len(pattern)))
+    detector = scripted(monkeypatch, [0.99]*(WARM_BLOCKS + len(pattern)))
     events = _over_playback(detector, pattern)
     assert events[:35] == [None]*35 and 'playback' in events[35:]
 
 
 def test_a_lone_loud_block_does_not_interrupt_playback(monkeypatch):
     pattern = ([True] + [False]*9)*4
-    probabilities = [0.99]*40 + [0.99 if loud else 0.1 for loud in pattern]
+    probabilities = [0.99]*WARM_BLOCKS + [0.99 if loud else 0.1 for loud in pattern]
     assert _over_playback(scripted(monkeypatch, probabilities), pattern) == [None]*len(pattern)
 
 
