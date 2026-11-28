@@ -66,9 +66,9 @@ so endpointing and `quiet` retain their audio timing. `ready.input.format` and
 for sample rates and codec state across turns.
 
 For wake-word clients, detect the wake word locally, send `wake`, and buffer all microphone
-PCM while awaiting arbitration for up to **1000 ms**. Only a matching grant starts streaming:
+PCM while awaiting arbitration for up to **1000 ms**. A timely matching grant or timeout starts streaming:
 flush the buffered audio in capture order, then continue live PCM16 mono at `input_rate`
-(30 ms blocks are ideal). Denial or timeout discards the buffer and returns to local wake detection.
+(30 ms blocks are ideal). A timely matching denial discards the buffer and silently returns to local wake detection.
 A non-wake client may stream after `ready`. The server answers:
 
 | frame | meaning |
@@ -232,11 +232,17 @@ At INFO level, arbitration logs include claim receipt timestamps, election IDs,
 claim/device IDs, election age, winners, and decision wait times, without audio,
 wake phrases, or transcripts. Use election IDs to distinguish a shared election
 from a late claim opening a second one. After deployment, verify that only one
-physical device responds and the loser silently resumes wake detection.
+physical device responds when decisions arrive in time and the denied client
+silently resumes wake detection. Timeouts may let multiple devices proceed.
 
-Clients buffer audio while waiting for up to **1000 ms** and ignore late decisions. On a grant,
-send the complete buffer before live audio so the beginning of the utterance is preserved.
-On denial or timeout, discard the buffer without streaming. The grant covers the activation
+Clients buffer audio while waiting for up to **1000 ms** and ignore late decisions. On a timely
+matching grant or timeout, send the complete buffer once before live audio so the beginning of
+the utterance is preserved. A timely matching denial discards the buffer without streaming or
+a listening tone. Timeout enters listening once, without another wake or cancel; a late grant
+or denial cannot flush again or interrupt that activation. Disconnect, mute, Stop listening,
+session close, invalid wake, or buffer failure abandons the pending activation instead; queued
+timeouts and late decisions cannot reopen it or carry it to a replacement socket.
+The activation covers the initial request
 and its follow-up conversation, including uninterrupted upstream audio during thinking and
 playback for barge-in/control detection. The server's selection is advisory: it still accepts
 audio sent by noncooperating clients after a denial or without a claim. Cooperating clients
