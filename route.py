@@ -153,6 +153,7 @@ class ConverseRoute:
                     bus=LocalBus(),
                     policy=settings.arbitrate_policy,
                     wake_window=settings.arbitrate_wake_window_seconds,
+                    volume_offsets_db=settings.arbitrate_volume_offsets_db,
                 )
                 logger.info(
                     "converse: arbitration enabled (policy=%s, wake_window=%.2fs)",

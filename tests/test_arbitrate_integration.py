@@ -101,7 +101,7 @@ async def test_wake_report_does_not_filter_or_rewrite_transcript(monkeypatch, tr
 
 
 @pytest.mark.parametrize('first_signals,second_signals', [
-    ({'confidence': 1, 'volume': 0.5}, {'confidence': 0.5, 'volume': 1}),
+    ({'confidence': 0.5, 'volume': 1}, {'confidence': 1, 'volume': 0.5}),
     ({'confidence': 0.9, 'volume': 0.8}, {'confidence': 0.9, 'volume': 0.2}),
 ])
 @pytest.mark.asyncio
@@ -234,3 +234,20 @@ async def test_default_window_over_websockets(monkeypatch, spacing, second_phras
             await asyncio.gather(first_task, return_exceptions=True)
             await first.close()
             await second.close()
+
+
+@pytest.mark.parametrize('offsets,winner', [({}, 'second'), ({'Den Echo': 15}, 'first')])
+async def test_volume_score_and_device_correction_are_wired_from_settings(monkeypatch, offsets, winner):
+    async with Harness(_patch(monkeypatch), settings={'arbitrate_enabled': True,
+            'arbitrate_volume_offsets_db': offsets}) as client:
+        first, second = await _connect(client, 'Den Echo'), await _connect(client, 'Kitchen Echo')
+        await first.send_json({'type': 'wake', 'claim_id': 'first', 'wake_word': 'Hey Arya',
+                               'confidence': .99, 'volume': .05})
+        await second.send_json({'type': 'wake', 'claim_id': 'second', 'wake_word': 'Hey Arya',
+                                'confidence': .8, 'volume': .2})
+        frames = await asyncio.gather(first.receive_json(timeout=1), second.receive_json(timeout=1))
+        assert [(f['claim_id'], f['type']) for f in frames] == [
+            ('first', 'wake_grant' if winner == 'first' else 'wake_deny'),
+            ('second', 'wake_grant' if winner == 'second' else 'wake_deny')]
+        await first.close()
+        await second.close()

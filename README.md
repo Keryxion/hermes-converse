@@ -202,6 +202,7 @@ plugin settings form):
 | `api_base_url` | `""` | loopback URL of the API server when it cannot be derived from the listener |
 | `arbitrate_enabled` | `false` | enable advisory wake selection for cooperating clients |
 | `arbitrate_policy` | `wake_signal` | rank wake claims with `wake_signal` |
+| `arbitrate_volume_offsets_db` | `{}` | microphone level corrections in dB by `device_name`, such as `{"Office": 3, "MacBook Pro": -3}`; restart after changes |
 | `arbitrate_device_id` | `""` | optional label prefix for server-generated unique socket identifiers |
 | `arbitrate_wake_window_seconds` | `0.75` | how long the arbitrator collects concurrent wake claims for the same wake word before electing the primary device |
 | `countdown_ring_timeout_seconds` | `900` | how long a countdown alarm rings if nobody ends it; sent to the device as `ring_seconds` |
@@ -215,8 +216,9 @@ STT and TTS come from your normal Hermes `stt.*` and `tts.*` configuration.
 `wake_signal` policy, devices send a `wake` frame with a client-generated `claim_id`,
 the exact detected `wake_word` phrase, and optional `confidence` (0–1), normalized
 RMS `volume` (0–1), and `heard_at` (Unix milliseconds). Reports for the same phrase
-within a 750 ms window compete: highest confidence, then highest volume, then
-earliest detection time, then arrival order. The server echoes the request ID
+within a 750 ms window compete by corrected microphone dBFS level plus `6 × confidence`.
+With equal corrections, a factor of two in RMS amplitude outweighs any confidence difference. Equal scores use
+earliest detection time, then arrival order. Without reported volume, confidence is the fallback. The server echoes the request ID
 in `wake_grant` or `wake_deny`. Different phrases and claims arriving after the
 window elect independently; the larger window mitigates detector skew without
 making selection exclusive.

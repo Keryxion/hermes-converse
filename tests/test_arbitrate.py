@@ -25,7 +25,7 @@ async def _pair(arb, first=None, second=None):
 
 
 @pytest.mark.parametrize('first,second,winner', [
-    ({'confidence': 0.6, 'volume': 1}, {'confidence': 0.9, 'volume': 0}, 'd2'),
+    ({'confidence': 0.6, 'volume': 1}, {'confidence': 0.9, 'volume': 0}, 'd1'),
     ({'confidence': 0.9, 'volume': 0.2}, {'confidence': 0.9, 'volume': 0.8}, 'd2'),
     ({'volume': 0.5, 'heard_at': 500}, {'volume': 0.5, 'heard_at': 200}, 'd2'),
     ({}, {}, 'd1'),
@@ -230,7 +230,7 @@ async def test_election_closes_when_the_only_silent_device_unregisters():
     assert (await asyncio.wait_for(claim, timeout=1))[0]
 
 
-async def test_diagnostic_election_explains_confidence_winner(monkeypatch):
+async def test_diagnostic_election_explains_volume_led_score(monkeypatch):
     from hermes_converse import arbitrate
     recorded = []
     monkeypatch.setattr(arbitrate.diagnostic, 'record_for_sessions', lambda sessions, frame: recorded.append((sessions, frame)))
@@ -242,6 +242,55 @@ async def test_diagnostic_election_explains_confidence_winner(monkeypatch):
     assert len(recorded) == 1
     sessions, frame = recorded[0]
     assert sessions == {'s1', 's2'}
-    assert frame['decided_by'] == 'confidence'
-    assert frame['winner_session_id'] == 's2'
-    assert [(c['device_name'], c['claim.outcome']) for c in frame['claims']] == [('Office', 'denied'), ('MacBook Pro', 'granted')]
+    assert frame['decided_by'] == 'score'
+    assert frame['winner_session_id'] == 's1'
+    assert frame['claims'][0]['wake.score'] == pytest.approx(-20 + 6 * .91)
+    assert frame['claims'][1]['wake.confidence_bonus_db'] == pytest.approx(6 * .98)
+    assert [(c['device_name'], c['claim.outcome']) for c in frame['claims']] == [('Office', 'granted'), ('MacBook Pro', 'denied')]
+
+
+@pytest.mark.parametrize('first,second,winner', [
+    ({'volume': .05, 'confidence': .99}, {'volume': .2, 'confidence': .8}, 'd2'),
+    ({'volume': .2, 'confidence': 0}, {'volume': .1, 'confidence': 1}, 'd1'),
+    ({'volume': .1, 'confidence': .9}, {'volume': .105, 'confidence': .8}, 'd1'),
+    ({'volume': .1}, {'volume': .1, 'confidence': .1}, 'd2'),
+    ({'confidence': 1}, {'volume': .001, 'confidence': .1}, 'd2'),
+    ({'volume': 0, 'confidence': .9}, {'volume': .001, 'confidence': 0}, 'd2'),
+    ({}, {}, 'd1'),
+    ({'volume': .1, 'confidence': .8}, {'volume': .1, 'confidence': .8, 'heard_at': 100}, 'd2'),
+])
+async def test_volume_led_composite_and_missing_signals(first, second, winner):
+    results = await _pair(await _arbitrator(), first, second)
+    assert [r[1] for r in results] == [winner, winner]
+
+
+async def test_device_offsets_change_selection_without_socket_identity_dependence(monkeypatch):
+    from hermes_converse import arbitrate
+    recorded = []
+    monkeypatch.setattr(arbitrate.diagnostic, 'record_for_sessions', lambda sessions, frame: recorded.append(frame))
+    arb = Arbitrator(wake_window=.02, volume_offsets_db={'Office': 3, 'MacBook Pro': -3})
+    await arb.register('d1', device_name='Office')
+    await arb.register('d2', device_name='MacBook Pro')
+    first = {'volume': .0968332216428177, 'confidence': .9176470637321472}
+    second = {'volume': .10210340649225874, 'confidence': .9848515391349792}
+    # With no correction the Mac's reported level and confidence are both higher.
+    assert (await _pair(await _arbitrator(), first, second))[1][0]
+    assert (await _pair(arb, first, second))[0][0]
+    office = recorded[-1]['claims'][0]
+    assert office['wake.calibrated_volume_db'] == pytest.approx(office['wake.volume_db'] + 3)
+    assert office['wake.score'] == pytest.approx(office['wake.calibrated_volume_db'] + 6 * first['confidence'])
+    await arb.unregister('d1')
+    await arb.register('d1-reconnected', device_name='Office')
+    result = await asyncio.gather(
+        arb.claim_wake('d1-reconnected', claim_id='again', wake_word='Hey Arya', **first),
+        arb.claim_wake('d2', claim_id='again', wake_word='Hey Arya', **second))
+    assert result[0][0]
+
+
+def test_volume_offsets_settings_tolerate_invalid_entries():
+    settings = load_settings({'arbitrate_volume_offsets_db': {
+        'Office': 3, 'MacBook Pro': -3.5, 'nan': float('nan'), 'inf': float('inf'),
+        'bool': True, 'text': '3', 'huge': 10**1000, '': 1, 42: 2}}.get)
+    assert settings.arbitrate_volume_offsets_db == {'Office': 3., 'MacBook Pro': -3.5}
+    assert load_settings({'arbitrate_volume_offsets_db': []}.get).arbitrate_volume_offsets_db == {}
+    assert load_settings({}.get).arbitrate_volume_offsets_db == {}

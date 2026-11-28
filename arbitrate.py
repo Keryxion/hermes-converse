@@ -1,8 +1,8 @@
 """Advisory wake selection for cooperating clients; never gates streamed audio.
 
-Exact wake phrases share a short collection window. Rank reported confidence,
-volume, detection time, then arrival order. A decision creates no reservation:
-clients decide whether to stream, and every streamed utterance runs normally.
+Exact wake phrases share a short collection window. Combine calibrated microphone
+level with a bounded confidence bonus; detection time and arrival break ties.
+A decision creates no reservation: clients decide whether to stream, and every streamed utterance runs normally.
 """
 
 from __future__ import annotations
@@ -24,6 +24,8 @@ POLICY_FIRST_TO_ENDPOINT = "first_to_endpoint"  # legacy compatibility: grant im
 POLICY_WAKE_SIGNAL = "wake_signal"
 DEFAULT_POLICY = POLICY_WAKE_SIGNAL
 DEFAULT_WAKE_WINDOW = 0.75
+CONFIDENCE_BONUS_DB = 6.0
+MIN_VOLUME = 1e-9  # -180 dBFS, keeping zero-volume scores finite in JSON diagnostics
 
 
 @dataclass(frozen=True)
@@ -134,7 +136,8 @@ class Arbitrator:
     """Recommend a single wake claimant without reserving a conversation or turn."""
 
     def __init__(self, *, bus: Optional[Bus] = None, policy: str = DEFAULT_POLICY,
-                 wake_window: float = DEFAULT_WAKE_WINDOW) -> None:
+                 wake_window: float = DEFAULT_WAKE_WINDOW,
+                 volume_offsets_db: Optional[dict[str, float]] = None) -> None:
         if policy not in (POLICY_WAKE_SIGNAL, POLICY_FIRST_TO_ENDPOINT):
             raise ValueError(f"unknown arbitrate policy {policy!r}")
         if not math.isfinite(wake_window) or wake_window < 0:
@@ -142,6 +145,7 @@ class Arbitrator:
         self.bus = bus or LocalBus()
         self.policy = policy
         self.wake_window = wake_window
+        self._volume_offsets_db = dict(volume_offsets_db or {})
         self._lock = asyncio.Lock()
         self._devices: dict[str, Device] = {}
         self._wake_open: dict[str, _WakeElection] = {}
@@ -272,6 +276,7 @@ class Arbitrator:
             attrs = {
                 "election_id": election.election_id,
                 "election.policy": self.policy,
+                "election.confidence_bonus_db": CONFIDENCE_BONUS_DB,
                 "election.window_ms": 0 if election.immediate else round(self.wake_window * 1000, 1),
                 "election.claims": len(election.records),
                 "election.immediate": election.immediate,
@@ -288,6 +293,7 @@ class Arbitrator:
                          "wake.confidence": claim.confidence, "wake.volume": claim.volume,
                          "wake.heard_at": claim.heard_at, "claim.arrival": claim.arrival,
                          "claim.outcome": record.outcome or "error"}
+                event.update(self._score_components(claim))
                 if record.sent is not None:
                     event["decision.sent"] = record.sent
                 events.append(("wake.claim", claim.received_ns, event))
@@ -295,6 +301,7 @@ class Arbitrator:
                 'type': 'arbitration', 'election_id': election.election_id, 'policy': self.policy,
                 'decided_by': election.decided_by or ('only_claim' if len(election.records) == 1 else 'immediate'),
                 'window_ms': attrs['election.window_ms'],
+                'confidence_bonus_db': CONFIDENCE_BONUS_DB,
                 'winner_device_id': election.winner.device_id if election.winner else None,
                 'winner_session_id': election.winner.session_id if election.winner else None,
                 'claims': [event for _, _, event in events],
@@ -337,17 +344,29 @@ class Arbitrator:
         if not others:
             return None
         runner_up = min(others, key=self._rank_wake_signal)
-        for name, won, lost in zip(("confidence", "volume", "detection_time", "arrival_order"),
+        score_name = "confidence" if election.winner.volume is None and runner_up.volume is None else "score"
+        for name, won, lost in zip(("volume_available", score_name, "detection_time", "arrival_order"),
                                    self._rank_wake_signal(election.winner),
                                    self._rank_wake_signal(runner_up)):
             if won != lost:
                 return name
         return None
 
-    @staticmethod
-    def _rank_wake_signal(claim: WakeClaim) -> tuple[float, float, float, float]:
-        return (-(claim.confidence if claim.confidence is not None else -1),
-                -(claim.volume if claim.volume is not None else -1),
+    def _score_components(self, claim: WakeClaim) -> dict[str, Optional[float]]:
+        offset = self._volume_offsets_db.get(claim.device_name, 0.0)
+        level = 20 * math.log10(max(claim.volume, MIN_VOLUME)) if claim.volume is not None else None
+        calibrated = level + offset if level is not None else None
+        bonus = CONFIDENCE_BONUS_DB * (claim.confidence if claim.confidence is not None else 0.0)
+        return {"wake.volume_db": level, "wake.volume_offset_db": offset,
+                "wake.calibrated_volume_db": calibrated, "wake.confidence_bonus_db": bonus,
+                "wake.score": calibrated + bonus if calibrated is not None else None}
+
+    def _rank_wake_signal(self, claim: WakeClaim) -> tuple[float, float, float, float]:
+        score = self._score_components(claim)["wake.score"]
+        # Unknown microphone levels do not outrank measured levels. If all are unknown,
+        # confidence still makes a useful recommendation for older clients.
+        return (claim.volume is None,
+                -score if score is not None else -(claim.confidence if claim.confidence is not None else -1),
                 claim.heard_at if claim.heard_at is not None else float("inf"),
                 claim.claimed_at)
 
