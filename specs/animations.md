@@ -10,6 +10,7 @@ Consistent on every device:
 - The state being shown and what it means.
 - The state's color.
 - The character of its motion: steady, breathing, pulsing, or travelling.
+- Its prominence: a small mark or the full indication (see below).
 - Mute and faults are always visible.
 
 Free to differ per device:
@@ -27,21 +28,43 @@ LEDs convey the same state and audio activity across the room.
 
 A device shows one state at a time.
 
-| State | Meaning | Color | Animation |
-|---|---|---|---|
-| `booting` | Starting up | Neutral | One 400 ms fade-in |
-| `unconfigured` | Connection or settings required | Blue | Travelling chase, 1.38 s per lap, until configured |
-| `connecting` | Opening the connection or awaiting `ready` | Blue | Smooth 1.6 s breath |
-| `reconnecting` | Connection lost; retrying | Orange | Two 180 ms pulses 180 ms apart, then a 1.46 s rest |
-| `idle` | No active session and no wake detector | Neutral | Small, gently breathing or twinkling mark |
-| `standby` | Connected; waiting for the wake word or manual Talk | Neutral | Small, gently breathing or twinkling mark |
-| `arbitrating` | Wake word heard; waiting for a matching decision | Orange | Smooth 1 s breath between 35% and 100% brightness |
-| `wake_denied` | Matching `wake_deny` received before the deadline | Red | Steady for 1.5 s, then standby |
-| `listening` | Wake granted or timed out, manual Talk, follow-up listening, or waiting for an approval answer | Green | Steady, with a meter driven by the microphone level where the device can show one |
-| `thinking` | The agent turn has started | Orange | Clockwise circular chase, 1.2 s per lap, on a ring or square display; a breath on a single LED |
-| `speaking` | Reply playing, including its local tail | Speaking blue | Prominent within the indicator, driven by the reply audio level where the device can show it |
-| `error` | Connection, authentication, capture, or playback failure | Fault red | Persistent pulse, with error text or a warning symbol where available |
-| `ended` | Session explicitly ended | Neutral | 600 ms fade to idle |
+| State | Meaning | Color | Prominence | Animation |
+|---|---|---|---|---|
+| `booting` | Starting up | Neutral | Full | One 400 ms fade-in |
+| `unconfigured` | Connection or settings required | Blue | Full | Travelling chase, 1.38 s per lap, until configured |
+| `connecting` | Opening the connection or awaiting `ready` | Blue | Full | Smooth 1.6 s breath |
+| `reconnecting` | Connection lost; retrying | Orange | Full | Two 180 ms pulses 180 ms apart, then a 1.46 s rest |
+| `idle` | No active session and no wake detector | Neutral | Small | Gently breathing or twinkling |
+| `standby` | Connected; waiting for the wake word or manual Talk | Neutral | Small | Gently breathing or twinkling |
+| `arbitrating` | Wake word heard; waiting for a matching decision | Orange | Small | Smooth 1 s breath between 35% and 100% brightness |
+| `wake_denied` | Matching `wake_deny` received before the deadline | Red | Small | Steady for 1.5 s, then standby |
+| `listening` | Wake granted or timed out, manual Talk, follow-up listening, or waiting for an approval answer | Green | Full | Steady, with a meter driven by the microphone level where the device can show one |
+| `thinking` | The agent turn has started | Orange | Full | Clockwise circular chase, 1.2 s per lap, on a ring or square display; a breath on a single LED |
+| `speaking` | Reply playing, including its local tail | Speaking blue | Full | Prominent within the indicator, driven by the reply audio level where the device can show it |
+| `error` | Connection, authentication, capture, or playback failure | Fault red | Full | Persistent pulse, with error text or a warning symbol where available |
+| `ended` | Session explicitly ended | Neutral | Full | 600 ms fade to idle |
+
+### Prominence
+
+Every state is shown at one of two sizes, and the size is part of its meaning.
+
+- **Small:** a mark that occupies a small part of the indicator. It says the
+  device is present or has noticed something, and that nothing is being asked
+  of the person. The states before a turn belongs to this device are small:
+  `idle`, `standby`, `arbitrating`, and `wake_denied`.
+- **Full:** the whole indicator. It says this device has the turn or needs
+  attention: `listening`, `thinking`, `speaking`, setup, connection, and faults.
+
+So a wake reads by size as well as color. The small mark turns orange while the
+decision is pending. It then grows to the full green of `listening` if this
+device answers, or turns red for 1.5 s and stays small if another device
+answered.
+
+A small mark keeps its state's color and motion. It is drawn in the same place
+in every small state, so the change of color is seen without the mark moving.
+Each device chooses what "small" is on its hardware; see
+[Device adaptations](#device-adaptations). A device that cannot vary size, such
+as a single LED, shows a small state at lower brightness than a full one.
 
 An orange travelling animation always means thinking. Faults pulse and never
 rotate: rotation means work is in progress. Idle and
@@ -222,13 +245,13 @@ colors, audio-source rules, and mute visibility as the square indicator.
 
 | Device | Rendering |
 |---|---|
-| macOS menu mark | The `)` arc stays visible in every state. The dot takes the state color and animation; larger animations such as thinking and mute also color and animate the arc. The level meter sits beside the dot. The mark stays legible on light and dark menu bars. |
-| Square status display | The shared compact indicator above, with a state and microphone-status label where space permits. |
-| LED ring (Voice PE, Echo) | Travelling states chase clockwise around the ring. Audio level modulates the extent or brightness of the indication while retaining its state color and motion. Where the device knows the talker's direction, listening points toward the talker. |
-| Pyramid top display and side LEDs | The Atom S3R top display shows the shared square indicator. All four side LED groups show the same state and audio activity at the same time as the display, using level-driven extent or brightness within each group. Adapt travelling motion to the LED layout while preserving its direction and period. |
+| macOS menu mark | The `)` arc stays visible in every state. The dot takes the state color and animation: a small state colors the dot alone, and a full state such as thinking, or mute, also colors and animates the arc. The level meter sits beside the dot. The mark stays legible on light and dark menu bars. |
+| Square status display | The shared compact indicator above, with a state and microphone-status label where space permits. A small state colors the center orb alone; a full state also takes the rings, glow, and background. |
+| LED ring (Voice PE, Echo) | A small state lights a short arc, about a quarter of the ring, at one fixed position; a full state uses the whole ring. Travelling states chase clockwise around the ring. Audio level modulates the extent or brightness of the indication while retaining its state color and motion. Where the device knows the talker's direction, listening points toward the talker. |
+| Pyramid top display and side LEDs | The Atom S3R top display shows the shared square indicator. All four side LED groups show the same state and audio activity at the same time as the display, using level-driven extent or brightness within each group. A small state lights a small part of each group. Adapt travelling motion to the LED layout while preserving its direction and period. |
 | Echo screen band | The ring unrolled into a band with the talker at the center, using the ring's colors and timing. |
 | Echo face | Eyes and mouth express the state: attentive while listening, searching while thinking, mouth moving with the reply while speaking. The face uses the state color and agrees with the band. |
-| Single LED (Echo Input) | Travelling states breathe or pulse instead. Color and brightness carry the state. |
+| Single LED (Echo Input) | Travelling states breathe or pulse instead. Color and brightness carry the state: a small state is dimmer than a full one. |
 
 When Reduce Motion is enabled, remove chasing, decorative breathing, and
 pulsing. Show a static state color with text, an icon, or a shape; keep mute
