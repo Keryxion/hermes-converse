@@ -15,6 +15,7 @@ from hermes_converse import command_catalog
 from hermes_converse.approvals import phrase
 from hermes_converse.voice_tools import make_handlers, register_tools
 from tests.support.fake_hermes import FakeHermes
+from tests.support.plugin_ctx import tool_ctx
 from tests.test_route import (API_KEY, VOICE_PROTOCOL, Harness, _FakeStreamer, _key_protocol, _patch_speech,
                               _recv, _speech_then_silence_pcm, _start_msg)
 
@@ -32,10 +33,9 @@ class ToolHermes(FakeHermes):
 
     def _call_tool(self) -> str:
         from tools.registry import ToolRegistry
-        from types import SimpleNamespace
 
         registry = ToolRegistry()
-        register_tools(SimpleNamespace(register_tool=registry.register), self.hub)
+        register_tools(tool_ctx(registry), self.hub)
         return json.loads(registry.dispatch("command", self.tool_args))["result"]
 
     async def handle(self, event):

@@ -11,6 +11,7 @@ from hermes_converse import client_diagnostics
 from hermes_converse.conversation import ConversationHub
 from hermes_converse.voice_tools import make_handlers, register_tools
 from tests.support.fake_hermes import FakeHermes
+from tests.support.plugin_ctx import tool_ctx
 from tests.test_command_tool import _frames_until
 from tests.test_route import (API_KEY, VOICE_PROTOCOL, Harness, _FakeStreamer, _end, _key_protocol,
                               _patch_speech, _speech_then_silence_pcm, _start_msg)
@@ -66,7 +67,7 @@ class DiagnosticsHermes(FakeHermes):
     def _call_tool(self):
         from tools.registry import ToolRegistry
         registry = ToolRegistry()
-        register_tools(SimpleNamespace(register_tool=registry.register), self.hub)
+        register_tools(tool_ctx(registry), self.hub)
         return json.loads(registry.dispatch("client_diagnostics", {}))
 
     async def handle(self, event):
