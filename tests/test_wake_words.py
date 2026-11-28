@@ -14,6 +14,7 @@ from hermes_converse.voice_tools import make_handlers, register_tools
 from hermes_converse.wake_words import WakeWordError, WakeWords, wake_phrase, wake_word_repositories
 from tests.support.fake_github import FakeGitHub, sha256
 from tests.support.fake_hermes import FakeHermes
+from tests.support.plugin_ctx import tool_ctx
 from tests.test_route import (API_KEY, DEVICE_NAME, VOICE_PROTOCOL, Harness, _FakeStreamer, _end,
                               _key_protocol, _patch_speech, _start_msg)
 
@@ -383,7 +384,7 @@ async def test_hermes_dispatches_the_tool_to_the_calling_device(connected):
     from tools.registry import ToolRegistry
 
     registry = ToolRegistry()
-    register_tools(SimpleNamespace(register_tool=registry.register), connected.hub)
+    register_tools(tool_ctx(registry), connected.hub)
     listed = json.loads(await asyncio.to_thread(registry.dispatch, "set_wake_word", {}))
     assert listed["wake_word"] == "Hey Arya" and len(listed["phrases"]) == 3
     task = asyncio.create_task(asyncio.to_thread(registry.dispatch, "set_wake_word", {"phrase": "Hey Sakura"}))
